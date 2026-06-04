@@ -1,0 +1,236 @@
+@php
+    $dayLabels = [
+        'monday' => 'Segunda-feira',
+        'tuesday' => 'Terça-feira',
+        'wednesday' => 'Quarta-feira',
+        'thursday' => 'Quinta-feira',
+        'friday' => 'Sexta-feira',
+        'saturday' => 'Sábado',
+        'sunday' => 'Domingo',
+    ];
+
+    $typeLabels = [
+        'basic' => 'Matéria Básica',
+        'specific' => 'Matéria de Conhecimento Específico',
+        'review' => 'Revisão',
+        'questions' => 'Resolução de Questões',
+        'other' => 'Complementar',
+    ];
+
+    $typeBadgeClasses = [
+        'basic' => 'badge-basic',
+        'specific' => 'badge-specific',
+        'review' => 'badge-review',
+        'questions' => 'badge-questions',
+        'other' => 'badge-other',
+    ];
+@endphp
+
+<div class="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+    <aside class="card-panel">
+        <p class="text-sm uppercase tracking-[0.25em] text-slate-400">Resumo do plano</p>
+        <h2 class="mt-3 text-2xl font-semibold text-white">{{ $studyPlan->name }}</h2>
+        <div class="mt-6 flex items-center justify-center">
+            <div class="progress-ring" style="--progress: {{ min(100, $studyPlan->progress_percentage) }}%;">
+                <div class="progress-ring-inner">
+                    <span class="text-3xl font-semibold text-white">{{ $studyPlan->progress_percentage }}%</span>
+                    <span class="mt-1 text-xs uppercase tracking-[0.2em] text-slate-400">concluído</span>
+                </div>
+            </div>
+        </div>
+        <div class="mt-6 space-y-4">
+            <div class="card-subtle">
+                <p class="stat-label">Curso</p>
+                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->course->name }}</p>
+            </div>
+            <div class="card-subtle">
+                <p class="stat-label">Trilha</p>
+                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->studyTrack?->name ?? 'Plano geral do curso' }}</p>
+            </div>
+            <div class="card-subtle">
+                <p class="stat-label">Prova</p>
+                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->exam_date_label }}</p>
+            </div>
+            <div class="card-subtle">
+                <p class="stat-label">Dias restantes</p>
+                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->days_until_exam_label }}</p>
+            </div>
+            <div class="card-subtle">
+                <p class="stat-label">Carga concluída</p>
+                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->completed_hours_minutes }} / {{ $studyPlan->required_hours_minutes }}</p>
+            </div>
+            <div class="card-subtle">
+                <p class="stat-label">Tempo total em revisão</p>
+                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->weekly_review_hours_minutes }}</p>
+            </div>
+            <div class="card-subtle">
+                <p class="stat-label">Tempo total em questões</p>
+                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->weekly_questions_hours_minutes }}</p>
+            </div>
+            <div class="card-subtle">
+                <p class="stat-label">Viabilidade</p>
+                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->viability_label }}</p>
+                <p class="mt-2 text-sm text-slate-400">{{ $studyPlan->viability_message }}</p>
+            </div>
+            <div class="card-subtle">
+                <p class="stat-label">Estrutura do ciclo</p>
+                <p class="mt-2 text-sm text-slate-300">Seg–Sex: matéria básica e conhecimento específico primeiro.</p>
+                <p class="mt-2 text-sm text-slate-300">Fechamento do dia: revisão e resolução de questões.</p>
+            </div>
+        </div>
+    </aside>
+
+    <section class="space-y-6">
+        <div class="card-panel">
+            <div class="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
+                <div class="max-w-2xl">
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Visão geral do plano</p>
+                    <h3 class="mt-2 text-2xl font-semibold text-white">Seu progresso fica claro em um só lugar.</h3>
+                    <p class="mt-3 text-sm text-slate-300">A cada tarefa concluída, este painel atualiza automaticamente para mostrar o avanço real do ciclo, o que já foi consolidado e o que ainda pede atenção.</p>
+                    <div class="mt-5 h-4 overflow-hidden rounded-full bg-slate-900/90">
+                        <div class="progress-glow h-full rounded-full bg-gradient-to-r from-emerald-400 via-amber-300 to-sky-400 transition-all duration-500" style="width: {{ min(100, $overviewSummary['completion_percentage']) }}%"></div>
+                    </div>
+                    <div class="mt-3 flex flex-wrap items-center gap-3 text-sm text-slate-300">
+                        <span>{{ $overviewSummary['tasks_completed'] }} tarefa(s) concluída(s)</span>
+                        <span class="text-slate-500">•</span>
+                        <span>{{ $overviewSummary['tasks_pending'] }} pendente(s)</span>
+                        <span class="text-slate-500">•</span>
+                        <span>{{ \App\Support\StudyTime::formatMinutes($overviewSummary['minutes_completed']) }} estudados</span>
+                    </div>
+                </div>
+
+                <div class="progress-ring shrink-0 self-center" style="--progress: {{ min(100, $overviewSummary['completion_percentage']) }}%">
+                    <div class="progress-ring-inner">
+                        <span class="text-3xl font-semibold text-white">{{ $overviewSummary['completion_percentage'] }}%</span>
+                        <span class="mt-1 text-xs uppercase tracking-[0.2em] text-slate-400">Concluído</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div class="metric-card">
+                    <p class="stat-label">Tarefas totais</p>
+                    <p class="mt-3 stat-value">{{ $overviewSummary['tasks_total'] }}</p>
+                </div>
+                <div class="metric-card">
+                    <p class="stat-label">Concluídas</p>
+                    <p class="mt-3 stat-value">{{ $overviewSummary['tasks_completed'] }}</p>
+                </div>
+                <div class="metric-card">
+                    <p class="stat-label">Carga concluída</p>
+                    <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($overviewSummary['minutes_completed']) }}</p>
+                </div>
+                <div class="metric-card">
+                    <p class="stat-label">Carga pendente</p>
+                    <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($overviewSummary['minutes_pending']) }}</p>
+                </div>
+            </div>
+
+            <div class="mt-6 grid gap-4 xl:grid-cols-2">
+                @foreach ($typeOverview as $typeStat)
+                    <div class="card-subtle">
+                        <div class="flex items-center justify-between gap-3">
+                            <div>
+                                <p class="text-sm font-semibold text-white">{{ $typeStat['label'] }}</p>
+                                <p class="mt-1 text-xs text-slate-400">{{ $typeStat['completed_tasks'] }} de {{ $typeStat['tasks'] }} tarefas • {{ $typeStat['minutes_label'] }}</p>
+                            </div>
+                            <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-100">{{ $typeStat['progress'] }}%</span>
+                        </div>
+                        <div class="mt-4 h-3 overflow-hidden rounded-full bg-slate-900/90">
+                            <div class="h-full rounded-full transition-all duration-500 {{ $typeBadgeClasses[$typeStat['key']] ?? $typeBadgeClasses['other'] }}" style="width: {{ min(100, $typeStat['progress']) }}%"></div>
+                        </div>
+                    </div>
+                @endforeach
+            </div>
+        </div>
+
+        <div class="card-panel">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Semana selecionada</p>
+                    <h3 class="mt-2 text-2xl font-semibold text-white">Visualize uma semana por vez para focar na execução.</h3>
+                    @if ($selectedWeekRange)
+                        <p class="mt-2 text-sm text-slate-400">Período da semana: {{ $selectedWeekRange }}.</p>
+                    @endif
+                    <div class="mt-4 rounded-2xl border border-sky-400/15 bg-sky-400/10 p-4">
+                        <p class="text-sm font-medium text-sky-100">{{ $weeklyFocusMessage }}</p>
+                        <p class="mt-2 text-sm text-slate-300">{{ $weeklyBreakdownMessage }}</p>
+                    </div>
+                </div>
+                <div class="grid gap-2 md:grid-cols-3">
+                    @foreach ($availableWeeks as $weekNumber)
+                        <label class="rounded-2xl border px-4 py-3 text-sm font-semibold transition {{ $selectedWeek === $weekNumber ? 'border-amber-300/40 bg-amber-300 text-slate-950' : 'border-white/10 bg-white/5 text-slate-200' }}">
+                            <input wire:click="selectWeek({{ $weekNumber }})" type="radio" name="week_selector" class="sr-only" {{ $selectedWeek === $weekNumber ? 'checked' : '' }}>
+                            Semana {{ $weekNumber }}
+                        </label>
+                    @endforeach
+                </div>
+            </div>
+
+            <div class="mt-6 grid gap-4 md:grid-cols-4">
+                <div class="metric-card">
+                    <p class="stat-label">Tarefas</p>
+                    <p class="mt-3 stat-value">{{ $weeklySummary['tasks'] }}</p>
+                </div>
+                <div class="metric-card">
+                    <p class="stat-label">Tempo total</p>
+                    <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($weeklySummary['total_minutes']) }}</p>
+                </div>
+                <div class="metric-card">
+                    <p class="stat-label">Revisão</p>
+                    <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($weeklySummary['review_minutes']) }}</p>
+                    <p class="mt-2 text-xs text-slate-400">Momento de respirar, retomar e fixar o que você estudou.</p>
+                </div>
+                <div class="metric-card">
+                    <p class="stat-label">Resolução de questões</p>
+                    <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($weeklySummary['questions_minutes']) }}</p>
+                    <p class="mt-2 text-xs text-slate-400">Momento de colocar a memória para trabalhar e ganhar ritmo.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card-panel">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Semana {{ $selectedWeek }}</p>
+                    <h3 class="mt-2 text-2xl font-semibold text-white">Hoje é dia de cumprir o ciclo.</h3>
+                </div>
+                <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
+                    {{ collect($selectedWeekItems)->flatten()->count() }} tarefas
+                </div>
+            </div>
+
+            <div class="mt-6 space-y-4">
+                @foreach ($selectedWeekItems as $date => $items)
+                    <div class="card-subtle">
+                        <div class="flex items-center justify-between">
+                            <h4 class="text-lg font-semibold text-white">{{ $date }}</h4>
+                            <p class="text-sm text-slate-400">{{ $dayLabels[$items->first()->day_of_week] ?? $items->first()->day_of_week }}</p>
+                        </div>
+
+                        <div class="mt-4 grid gap-3 xl:grid-cols-2">
+                            @foreach ($items as $item)
+                                <div class="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                                    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                        <div>
+                                            <div class="flex flex-wrap items-center gap-2">
+                                                <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-200">Bloco {{ $loop->iteration }}</span>
+                                                <span class="badge-chip {{ $typeBadgeClasses[$item->type] ?? $typeBadgeClasses['other'] }}">{{ $typeLabels[$item->type] ?? $item->type }}</span>
+                                                <span class="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-200">{{ $item->estimated_minutes }} min</span>
+                                            </div>
+                                            <p class="mt-3 text-sm font-semibold text-white">{{ $item->title }}</p>
+                                            <p class="mt-2 text-sm text-slate-400">{{ $item->description }}</p>
+                                        </div>
+                                        <div class="lg:shrink-0">
+                                            <livewire:toggle-study-plan-item :item="$item" :key="$item->id" />
+                                        </div>
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+                    </div>
+                @endforeach
+            </div>
+        </div>
+    </section>
+</div>
