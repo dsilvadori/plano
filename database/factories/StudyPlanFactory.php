@@ -29,6 +29,7 @@ class StudyPlanFactory extends Factory
             'study_track_id' => null,
             'name' => 'Plano de Estudos',
             'exam_date' => $examDate,
+            'exam_date_confirmed' => true,
             'start_date' => $startDate,
             'available_days' => ['monday', 'wednesday', 'friday'],
             'available_minutes_by_day' => ['monday' => 120, 'wednesday' => 120, 'friday' => 120],

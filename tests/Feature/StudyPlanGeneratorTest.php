@@ -93,7 +93,7 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertSame(2, $mondayItem->week_number);
     }
 
-    public function test_generator_keeps_review_and_questions_at_the_end_of_the_weekday(): void
+    public function test_generator_interleaves_basic_and_specific_with_questions_and_reviews_after_each_cycle(): void
     {
         $course = Course::factory()->create();
         $student = User::factory()->create();
@@ -113,15 +113,68 @@ class StudyPlanGeneratorTest extends TestCase
             now()->addWeek()->toDateString(),
             now()->next('monday')->toDateString(),
             ['monday'],
-            ['monday' => 120],
+            ['monday' => 180],
             'balanced',
         );
 
         $types = $plan->items()->where('day_of_week', 'monday')->orderBy('sort_order')->pluck('type')->values()->all();
 
-        $this->assertGreaterThanOrEqual(4, count($types));
-        $this->assertSame('review', $types[count($types) - 2]);
-        $this->assertSame('questions', $types[count($types) - 1]);
-        $this->assertTrue(collect(array_slice($types, 0, -2))->every(fn (string $type) => in_array($type, ['basic', 'specific'], true)));
+        $this->assertSame([
+            'basic',
+            'specific',
+            'questions',
+            'review',
+            'basic',
+            'specific',
+            'questions',
+            'review',
+        ], $types);
+    }
+
+    public function test_generator_skips_intro_module_and_uses_generic_review_when_needed(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Apresentação e Boas-Vindas',
+            'type' => 'review',
+            'workload_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Classes de Palavras',
+            'type' => 'basic',
+            'workload_minutes' => 120,
+            'sort_order' => 2,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Legislação - Lei Orgânica',
+            'type' => 'specific',
+            'workload_minutes' => 120,
+            'sort_order' => 3,
+        ]);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            now()->addWeek()->toDateString(),
+            now()->next('monday')->toDateString(),
+            ['monday'],
+            ['monday' => 90],
+            'balanced',
+        );
+
+        $titles = $plan->items()->orderBy('sort_order')->pluck('title')->implode(' | ');
+
+        $this->assertStringNotContainsString('Apresentação e Boas-Vindas', $titles);
+        $this->assertStringContainsString('Bloco 4 · Revisão', $titles);
     }
 }

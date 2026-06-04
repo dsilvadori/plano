@@ -184,7 +184,7 @@
                                 "
                                 class="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100"
                             >
-                            <p class="mt-2 text-xs text-slate-500">O padrão é `00:00`. Você pode digitar só `2` e sair do campo para virar `02:00`.</p>
+                            <p class="mt-2 text-xs text-slate-500">Ao marcar o dia, sugerimos `02:00` automaticamente. Você pode alterar livremente para a sua realidade — até digitando só `2` para virar `02:00` ao sair do campo.</p>
                             @error("available_minutes_by_day.$day") <p class="mt-2 text-sm text-rose-300">{{ $message }}</p> @enderror
                         </div>
                     </label>

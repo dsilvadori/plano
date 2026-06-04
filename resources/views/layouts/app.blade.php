@@ -12,8 +12,9 @@
     <title>{{ config('app.name', 'Laravel') }}</title>
 
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="icon" type="image/webp" href="{{ asset('images/vencendo-concursos-logo-white.webp') }}">
-    <link rel="apple-touch-icon" href="{{ asset('images/vencendo-concursos-logo-white.webp') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ asset('favicon.svg') }}">
+    <link rel="shortcut icon" href="{{ asset('favicon.svg') }}">
+    <link rel="apple-touch-icon" href="{{ asset('favicon.svg') }}">
     <link rel="preconnect" href="https://fonts.bunny.net">
     <link href="https://fonts.bunny.net/css?family=instrument-sans:400,500,600,700,800&display=swap" rel="stylesheet" />
 

@@ -80,6 +80,22 @@ class StudyPlanBuilder extends Component
         $this->syncExamDateFromCourse();
     }
 
+    public function updatedAvailableDays(): void
+    {
+        foreach (array_keys($this->dayLabels) as $day) {
+            $isSelected = in_array($day, $this->available_days, true);
+            $currentValue = $this->available_minutes_by_day[$day] ?? '00:00';
+
+            if ($isSelected && $currentValue === '00:00') {
+                $this->available_minutes_by_day[$day] = '02:00';
+            }
+
+            if (! $isSelected && $currentValue === '02:00') {
+                $this->available_minutes_by_day[$day] = '00:00';
+            }
+        }
+    }
+
     public function render(): View
     {
         $courses = Auth::user()

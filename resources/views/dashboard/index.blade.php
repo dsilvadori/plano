@@ -56,7 +56,7 @@
                 </div>
                 <div class="metric-card">
                     <p class="stat-label">Dias até prova</p>
-                    <p class="mt-3 stat-value">{{ $activePlan?->days_until_exam ?? '-' }}</p>
+                    <p class="mt-3 stat-value">{{ $activePlan?->days_until_exam_label ?? 'Sem previsão' }}</p>
                 </div>
             </div>
 
@@ -71,9 +71,9 @@
                             $activeCompletedMinutes = (int) $activePlan->items->whereNotNull('completed_at')->sum('estimated_minutes');
                             $activePendingMinutes = max(0, (int) $activePlan->total_required_minutes - $activeCompletedMinutes);
                             $activeTypeMinutes = [
-                                'Base' => (int) $activePlan->items->where('type', 'basic')->sum('estimated_minutes'),
-                                'Específica' => (int) $activePlan->items->where('type', 'specific')->sum('estimated_minutes'),
-                                'Revisão' => (int) $activePlan->items->where('type', 'review')->sum('estimated_minutes'),
+                                'Matérias Básicas' => (int) $activePlan->items->where('type', 'basic')->sum('estimated_minutes'),
+                                'Conhecimentos Específicos' => (int) $activePlan->items->where('type', 'specific')->sum('estimated_minutes'),
+                                'Revisões' => (int) $activePlan->items->where('type', 'review')->sum('estimated_minutes'),
                                 'Questões' => (int) $activePlan->items->where('type', 'questions')->sum('estimated_minutes'),
                             ];
                             $activeTypeTotal = max(1, array_sum($activeTypeMinutes));

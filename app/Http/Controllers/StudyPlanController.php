@@ -44,7 +44,7 @@ class StudyPlanController extends Controller
             $data['intensity'],
         );
 
-        sleep(1);
+        sleep(2);
 
         return redirect()->route('study-plans.show', $plan);
     }
@@ -81,7 +81,7 @@ class StudyPlanController extends Controller
             $data['intensity'],
         );
 
-        sleep(1);
+        sleep(2);
 
         return redirect()
             ->route('study-plans.show', $plan)
@@ -95,7 +95,7 @@ class StudyPlanController extends Controller
 
         $plan = $generator->smartRebalance($studyPlan);
 
-        sleep(1);
+        sleep(2);
 
         return redirect()
             ->route('study-plans.show', $plan)

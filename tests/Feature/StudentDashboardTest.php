@@ -167,6 +167,7 @@ class StudentDashboardTest extends TestCase
         $this->assertSame($course->id, $plan->course_id);
         $this->assertNull($plan->study_track_id);
         $this->assertSame('intense', $plan->intensity);
+        $this->assertTrue($plan->exam_date_confirmed);
         $this->assertGreaterThan(0, $plan->items()->count());
     }
 

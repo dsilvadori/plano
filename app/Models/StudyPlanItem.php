@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Str;
 
 class StudyPlanItem extends Model
 {
@@ -45,5 +46,27 @@ class StudyPlanItem extends Model
         $this->forceFill([
             'completed_at' => $this->completed_at ? null : now(),
         ])->save();
+    }
+
+    public function getDisplayTitleAttribute(): string
+    {
+        return Str::of($this->title)
+            ->replace('Matéria de Conhecimento Específico', 'Conhecimentos Específicos')
+            ->replace('Matérias Básicas', 'Matéria Básica')
+            ->replace('Conhecimento Específico', 'Conhecimentos Específicos')
+            ->replace('Revisões gerais', 'Revisão')
+            ->replace('Revisões', 'Revisão')
+            ->replace('Bloco complementar', 'Bloco de apoio')
+            ->value();
+    }
+
+    public function getDisplayDescriptionAttribute(): string
+    {
+        return Str::of($this->description)
+            ->replace('matéria de conhecimento específico', 'conhecimentos específicos')
+            ->replace('matérias básicas', 'matéria básica')
+            ->replace('conhecimento específico', 'conhecimentos específicos')
+            ->replace('Sábado de revisões', 'Sábado de revisão')
+            ->value();
     }
 }

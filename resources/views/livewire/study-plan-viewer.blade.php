@@ -11,7 +11,7 @@
 
     $typeLabels = [
         'basic' => 'Matéria Básica',
-        'specific' => 'Matéria de Conhecimento Específico',
+        'specific' => 'Conhecimentos Específicos',
         'review' => 'Revisão',
         'questions' => 'Resolução de Questões',
         'other' => 'Complementar',
@@ -39,6 +39,7 @@
                         <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-100">Prova: {{ $studyPlan->exam_date_label }}</span>
                         <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-100">Dias restantes: {{ $studyPlan->days_until_exam_label }}</span>
                         <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-100">Viabilidade: {{ $studyPlan->viability_label }}</span>
+                        <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-100">Carga do curso: {{ $studyPlan->required_hours_minutes }}</span>
                     </div>
                     <div class="mt-5 h-4 overflow-hidden rounded-full bg-slate-900/90">
                         <div class="progress-glow h-full rounded-full bg-gradient-to-r from-emerald-400 via-amber-300 to-sky-400 transition-all duration-500" style="width: {{ min(100, $overviewSummary['completion_percentage']) }}%"></div>
@@ -138,7 +139,7 @@
                     <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($weeklySummary['total_minutes']) }}</p>
                 </div>
                 <div class="metric-card">
-                    <p class="stat-label">Revisão</p>
+                    <p class="stat-label">Revisões</p>
                     <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($weeklySummary['review_minutes']) }}</p>
                     <p class="mt-2 text-xs text-slate-400">Momento de respirar, retomar e fixar o que você estudou.</p>
                 </div>
@@ -172,17 +173,17 @@
                         <div class="mt-4 grid gap-3 xl:grid-cols-2">
                             @foreach ($items as $item)
                                 <div class="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
-                                    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                    <div class="flex h-full flex-col justify-between gap-4">
                                         <div>
                                             <div class="flex flex-wrap items-center gap-2">
                                                 <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-200">Bloco {{ $loop->iteration }}</span>
                                                 <span class="badge-chip {{ $typeBadgeClasses[$item->type] ?? $typeBadgeClasses['other'] }}">{{ $typeLabels[$item->type] ?? $item->type }}</span>
                                                 <span class="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-200">{{ $item->estimated_minutes }} min</span>
                                             </div>
-                                            <p class="mt-3 text-sm font-semibold text-white">{{ $item->title }}</p>
-                                            <p class="mt-2 text-sm text-slate-400">{{ $item->description }}</p>
+                                            <p class="mt-3 text-sm font-semibold text-white">{{ $item->display_title }}</p>
+                                            <p class="mt-2 text-sm text-slate-400">{{ $item->display_description }}</p>
                                         </div>
-                                        <div class="lg:shrink-0">
+                                        <div class="mt-auto flex justify-end pt-2">
                                             <livewire:toggle-study-plan-item :item="$item" :key="$item->id" />
                                         </div>
                                     </div>

@@ -127,8 +127,9 @@ class StudyPlanGenerator
             $studyPlan->forceFill([
                 'name' => filled($examDate)
                     ? 'Plano ' . Str::title($studyPlan->course->name) . ' até ' . $exam->format('d/m/Y')
-                    : 'Plano ' . Str::title($studyPlan->course->name) . ' sem data de prova definida',
+                    : 'Plano ' . Str::title($studyPlan->course->name) . ' sem previsão de prova',
                 'exam_date' => $exam,
+                'exam_date_confirmed' => $studyPlan->exam_date_confirmed,
                 'total_available_minutes' => $totalAvailableMinutes,
                 'intensity' => $studyPlan->intensity,
                 'status' => 'active',
@@ -161,7 +162,7 @@ class StudyPlanGenerator
             }
 
             $studyPlan->forceFill([
-                'total_required_minutes' => (int) $studyPlan->items()->sum('estimated_minutes'),
+                'total_required_minutes' => (int) $modules->sum('workload_minutes'),
             ])->save();
 
             return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
@@ -196,8 +197,9 @@ class StudyPlanGenerator
                 'study_track_id' => $studyTrack?->id,
                 'name' => filled($examDate)
                     ? 'Plano ' . Str::title($course->name) . ' até ' . $exam->format('d/m/Y')
-                    : 'Plano ' . Str::title($course->name) . ' sem data de prova definida',
+                    : 'Plano ' . Str::title($course->name) . ' sem previsão de prova',
                 'exam_date' => $exam,
+                'exam_date_confirmed' => filled($examDate),
                 'start_date' => $start,
                 'available_days' => array_values($availableDays),
                 'available_minutes_by_day' => $availableMinutesByDay,
@@ -215,10 +217,31 @@ class StudyPlanGenerator
     protected function resolveModules(Course $course, ?StudyTrack $studyTrack): Collection
     {
         if ($studyTrack) {
-            return $studyTrack->modules()->where('course_modules.is_active', true)->get();
+            return $studyTrack->modules()
+                ->where('course_modules.is_active', true)
+                ->get()
+                ->reject(fn (CourseModule $module) => $this->shouldSkipModule($module))
+                ->values();
         }
 
-        return $course->modules()->where('is_active', true)->get();
+        return $course->modules()
+            ->where('is_active', true)
+            ->get()
+            ->reject(fn (CourseModule $module) => $this->shouldSkipModule($module))
+            ->values();
+    }
+
+    protected function shouldSkipModule(CourseModule $module): bool
+    {
+        $normalizedName = Str::of($module->name)->lower()->ascii()->value();
+
+        return Str::contains($normalizedName, [
+            'apresentacao',
+            'boas-vindas',
+            'boas vindas',
+            'bem-vindo',
+            'bem vindo',
+        ]);
     }
 
     protected function calculateAvailableMinutes(Carbon $start, Carbon $exam, array $availableDays, array $availableMinutesByDay): int
@@ -346,32 +369,7 @@ class StudyPlanGenerator
 
     protected function buildWeekdayBlueprint(string $dayKey, int $remainingToday, string $intensity): array
     {
-        $focusType = in_array($dayKey, ['monday', 'wednesday', 'friday'], true) ? 'basic' : 'specific';
-        $secondaryType = $focusType === 'basic' ? 'specific' : 'basic';
-        $slots = [];
-        $reserveForWrapUp = $remainingToday >= 60 ? 30 : 0;
-        $contentMinutes = max(0, $remainingToday - $reserveForWrapUp);
-        $contentSlotIndex = 0;
-
-        while ($contentMinutes >= 15) {
-            $minutes = min($contentMinutes, $contentMinutes >= 60 ? 45 : 30);
-            $type = $contentSlotIndex % 2 === 0 ? $focusType : $secondaryType;
-
-            if ($intensity === 'intense' && $contentMinutes > 90) {
-                $type = 'specific';
-            }
-
-            $slots[] = ['type' => $type, 'minutes' => $minutes];
-            $contentMinutes -= $minutes;
-            $contentSlotIndex++;
-        }
-
-        if ($reserveForWrapUp === 30) {
-            $slots[] = ['type' => 'review', 'minutes' => 15];
-            $slots[] = ['type' => 'questions', 'minutes' => 15];
-        }
-
-        return $slots;
+        return $this->buildInterleavedStudyBlueprint($remainingToday);
     }
 
     protected function buildSaturdayBlueprint(int $remainingToday): array
@@ -389,19 +387,39 @@ class StudyPlanGenerator
 
     protected function buildSundayBlueprint(int $remainingToday): array
     {
-        $slots = [];
-        $reserveForWrapUp = $remainingToday >= 30 ? 30 : 0;
-        $contentMinutes = max(0, $remainingToday - $reserveForWrapUp);
+        return $this->buildInterleavedStudyBlueprint($remainingToday);
+    }
 
-        while ($contentMinutes >= 15) {
-            $minutes = min(30, $contentMinutes);
-            $slots[] = ['type' => 'specific', 'minutes' => $minutes];
-            $contentMinutes -= $minutes;
+    protected function buildInterleavedStudyBlueprint(int $remainingToday): array
+    {
+        $slots = [];
+
+        while ($remainingToday >= 90) {
+            $slots[] = ['type' => 'basic', 'minutes' => 30];
+            $slots[] = ['type' => 'specific', 'minutes' => 30];
+            $slots[] = ['type' => 'questions', 'minutes' => 15];
+            $slots[] = ['type' => 'review', 'minutes' => 15];
+            $remainingToday -= 90;
         }
 
-        if ($reserveForWrapUp === 30) {
-            $slots[] = ['type' => 'review', 'minutes' => 15];
+        if ($remainingToday >= 60) {
+            $slots[] = ['type' => 'basic', 'minutes' => 30];
+            $slots[] = ['type' => 'specific', 'minutes' => 30];
+            $remainingToday -= 60;
+        }
+
+        if ($remainingToday >= 30) {
+            $slots[] = ['type' => 'basic', 'minutes' => 30];
+            $remainingToday -= 30;
+        }
+
+        if ($remainingToday >= 15) {
             $slots[] = ['type' => 'questions', 'minutes' => 15];
+            $remainingToday -= 15;
+        }
+
+        if ($remainingToday >= 15) {
+            $slots[] = ['type' => 'review', 'minutes' => 15];
         }
 
         return $slots;
@@ -512,13 +530,14 @@ class StudyPlanGenerator
             ];
         }
 
-        if ($type === 'review' && $completedModules !== []) {
+        if ($type === 'review') {
             $topic = collect($completedModules)->take(-2)->implode(' e ');
-
             return [
                 null,
-                'Bloco ' . $blockNumber . ' · Revisão geral',
-                'Retome resumos, mapas mentais e pontos críticos de ' . $topic . '.',
+                'Bloco ' . $blockNumber . ' · Revisão',
+                $topic !== ''
+                    ? 'Retome resumos, mapas mentais e pontos críticos de ' . $topic . '.'
+                    : 'Retome resumos, mapas mentais e os principais pontos estudados para consolidar a memória.',
             ];
         }
 
@@ -541,7 +560,7 @@ class StudyPlanGenerator
     {
         return match ($type) {
             'basic' => 'Bloco ' . $blockNumber . ' · Matéria Básica: ' . $moduleName,
-            'specific' => 'Bloco ' . $blockNumber . ' · Matéria de Conhecimento Específico: ' . $moduleName,
+            'specific' => 'Bloco ' . $blockNumber . ' · Conhecimentos Específicos: ' . $moduleName,
             'review' => 'Bloco ' . $blockNumber . ' · Revisão: ' . $moduleName,
             'questions' => 'Bloco ' . $blockNumber . ' · Resolução de Questões: ' . $moduleName,
             default => 'Bloco ' . $blockNumber . ' · ' . $moduleName,
@@ -552,9 +571,9 @@ class StudyPlanGenerator
     {
         return match ($type) {
             'basic' => 'Bloco de até 60 minutos para fortalecer sua matéria básica em ' . $moduleName . '.',
-            'specific' => 'Bloco de até 60 minutos para avançar na matéria de conhecimento específico em ' . $moduleName . '.',
+            'specific' => 'Bloco de até 60 minutos para avançar em conhecimentos específicos com foco em ' . $moduleName . '.',
             'review' => $dayKey === 'saturday'
-                ? 'Sábado de revisão geral: retome pontos-chave de ' . $moduleName . ' com foco em fixação.'
+                ? 'Sábado de revisão: retome pontos-chave de ' . $moduleName . ' com foco em fixação.'
                 : 'Bloco de revisão para reforçar a retenção em ' . $moduleName . '.',
             'questions' => 'Bloco de resolução de questões para aplicar na prática o conteúdo de ' . $moduleName . '.',
             default => 'Bloco de estudo planejado para manter consistência até a prova.',

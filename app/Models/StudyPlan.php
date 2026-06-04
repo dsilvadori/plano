@@ -20,6 +20,7 @@ class StudyPlan extends Model
         'study_track_id',
         'name',
         'exam_date',
+        'exam_date_confirmed',
         'start_date',
         'available_days',
         'available_minutes_by_day',
@@ -34,6 +35,7 @@ class StudyPlan extends Model
 
     protected $casts = [
         'exam_date' => 'date',
+        'exam_date_confirmed' => 'boolean',
         'start_date' => 'date',
         'available_days' => 'array',
         'available_minutes_by_day' => 'array',
@@ -76,7 +78,7 @@ class StudyPlan extends Model
 
     public function getDaysUntilExamAttribute(): int
     {
-        if (! $this->exam_date) {
+        if (! $this->exam_date || ! $this->exam_date_confirmed) {
             return 0;
         }
 
@@ -85,14 +87,16 @@ class StudyPlan extends Model
 
     public function getDaysUntilExamLabelAttribute(): string
     {
-        return $this->exam_date
+        return $this->exam_date_confirmed
             ? (string) $this->days_until_exam
-            : 'A definir';
+            : 'Sem previsão';
     }
 
     public function getExamDateLabelAttribute(): string
     {
-        return $this->exam_date?->format('d/m/Y') ?? 'Ainda sem data definida';
+        return $this->exam_date_confirmed
+            ? ($this->exam_date?->format('d/m/Y') ?? 'Sem previsão')
+            : 'Sem previsão';
     }
 
     public function getViabilityLabelAttribute(): string

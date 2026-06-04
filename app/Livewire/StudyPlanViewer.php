@@ -57,9 +57,9 @@ class StudyPlanViewer extends Component
             'completion_percentage' => $this->studyPlan->progress_percentage,
         ];
         $typeLabels = [
-            'basic' => 'Matéria Básica',
-            'specific' => 'Conhecimento Específico',
-            'review' => 'Revisão',
+            'basic' => 'Matérias Básicas',
+            'specific' => 'Conhecimentos Específicos',
+            'review' => 'Revisões',
             'questions' => 'Resolução de Questões',
             'other' => 'Complementar',
         ];
