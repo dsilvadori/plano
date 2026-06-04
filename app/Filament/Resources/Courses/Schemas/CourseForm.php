@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Courses\Schemas;
 
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -29,6 +30,11 @@ class CourseForm
                     ->columnSpanFull(),
                 TextInput::make('tutory_product_id')
                     ->label('ID do produto na Tutory'),
+                DatePicker::make('exam_date')
+                    ->label('Data da prova do curso')
+                    ->native(false)
+                    ->displayFormat('d/m/Y')
+                    ->helperText('Se este curso já tem prova definida, o aluno verá essa data preenchida e bloqueada no plano.'),
                 Toggle::make('is_active')
                     ->label('Ativo')
                     ->default(true),

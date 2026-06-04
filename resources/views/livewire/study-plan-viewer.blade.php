@@ -26,60 +26,7 @@
     ];
 @endphp
 
-<div class="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
-    <aside class="card-panel">
-        <p class="text-sm uppercase tracking-[0.25em] text-slate-400">Resumo do plano</p>
-        <h2 class="mt-3 text-2xl font-semibold text-white">{{ $studyPlan->name }}</h2>
-        <div class="mt-6 flex items-center justify-center">
-            <div class="progress-ring" style="--progress: {{ min(100, $studyPlan->progress_percentage) }}%;">
-                <div class="progress-ring-inner">
-                    <span class="text-3xl font-semibold text-white">{{ $studyPlan->progress_percentage }}%</span>
-                    <span class="mt-1 text-xs uppercase tracking-[0.2em] text-slate-400">concluído</span>
-                </div>
-            </div>
-        </div>
-        <div class="mt-6 space-y-4">
-            <div class="card-subtle">
-                <p class="stat-label">Curso</p>
-                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->course->name }}</p>
-            </div>
-            <div class="card-subtle">
-                <p class="stat-label">Trilha</p>
-                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->studyTrack?->name ?? 'Plano geral do curso' }}</p>
-            </div>
-            <div class="card-subtle">
-                <p class="stat-label">Prova</p>
-                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->exam_date_label }}</p>
-            </div>
-            <div class="card-subtle">
-                <p class="stat-label">Dias restantes</p>
-                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->days_until_exam_label }}</p>
-            </div>
-            <div class="card-subtle">
-                <p class="stat-label">Carga concluída</p>
-                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->completed_hours_minutes }} / {{ $studyPlan->required_hours_minutes }}</p>
-            </div>
-            <div class="card-subtle">
-                <p class="stat-label">Tempo total em revisão</p>
-                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->weekly_review_hours_minutes }}</p>
-            </div>
-            <div class="card-subtle">
-                <p class="stat-label">Tempo total em questões</p>
-                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->weekly_questions_hours_minutes }}</p>
-            </div>
-            <div class="card-subtle">
-                <p class="stat-label">Viabilidade</p>
-                <p class="mt-2 text-sm text-slate-100">{{ $studyPlan->viability_label }}</p>
-                <p class="mt-2 text-sm text-slate-400">{{ $studyPlan->viability_message }}</p>
-            </div>
-            <div class="card-subtle">
-                <p class="stat-label">Estrutura do ciclo</p>
-                <p class="mt-2 text-sm text-slate-300">Seg–Sex: matéria básica e conhecimento específico primeiro.</p>
-                <p class="mt-2 text-sm text-slate-300">Fechamento do dia: revisão e resolução de questões.</p>
-            </div>
-        </div>
-    </aside>
-
+<div class="space-y-6">
     <section class="space-y-6">
         <div class="card-panel">
             <div class="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
@@ -87,6 +34,12 @@
                     <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Visão geral do plano</p>
                     <h3 class="mt-2 text-2xl font-semibold text-white">Seu progresso fica claro em um só lugar.</h3>
                     <p class="mt-3 text-sm text-slate-300">A cada tarefa concluída, este painel atualiza automaticamente para mostrar o avanço real do ciclo, o que já foi consolidado e o que ainda pede atenção.</p>
+                    <div class="mt-4 flex flex-wrap gap-3">
+                        <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-100">{{ $studyPlan->course->name }}</span>
+                        <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-100">Prova: {{ $studyPlan->exam_date_label }}</span>
+                        <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-100">Dias restantes: {{ $studyPlan->days_until_exam_label }}</span>
+                        <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-100">Viabilidade: {{ $studyPlan->viability_label }}</span>
+                    </div>
                     <div class="mt-5 h-4 overflow-hidden rounded-full bg-slate-900/90">
                         <div class="progress-glow h-full rounded-full bg-gradient-to-r from-emerald-400 via-amber-300 to-sky-400 transition-all duration-500" style="width: {{ min(100, $overviewSummary['completion_percentage']) }}%"></div>
                     </div>
@@ -120,11 +73,19 @@
                     <p class="stat-label">Carga concluída</p>
                     <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($overviewSummary['minutes_completed']) }}</p>
                 </div>
-                <div class="metric-card">
-                    <p class="stat-label">Carga pendente</p>
-                    <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($overviewSummary['minutes_pending']) }}</p>
+                    <div class="metric-card">
+                        <p class="stat-label">Carga pendente</p>
+                        <p class="mt-3 stat-value">{{ \App\Support\StudyTime::formatMinutes($overviewSummary['minutes_pending']) }}</p>
+                    </div>
+                    <div class="metric-card">
+                        <p class="stat-label">Tempo em revisão</p>
+                        <p class="mt-3 stat-value">{{ $studyPlan->weekly_review_hours_minutes }}</p>
+                    </div>
+                    <div class="metric-card">
+                        <p class="stat-label">Tempo em questões</p>
+                        <p class="mt-3 stat-value">{{ $studyPlan->weekly_questions_hours_minutes }}</p>
+                    </div>
                 </div>
-            </div>
 
             <div class="mt-6 grid gap-4 xl:grid-cols-2">
                 @foreach ($typeOverview as $typeStat)

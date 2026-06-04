@@ -6,38 +6,52 @@ const ASSETS = [
     '/images/vencendo-concursos-logo-white.webp',
 ];
 
-self.addEventListener('install', (event) => {
-    event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),
-    );
-});
+const isLocalhost = self.location.hostname === 'localhost' || self.location.hostname === '127.0.0.1';
 
-self.addEventListener('activate', (event) => {
-    event.waitUntil(
-        caches.keys().then((keys) => Promise.all(keys
-            .filter((key) => key !== CACHE_NAME)
-            .map((key) => caches.delete(key)))).then(() => self.clients.claim()),
-    );
-});
+if (isLocalhost) {
+    self.addEventListener('install', () => self.skipWaiting());
+    self.addEventListener('activate', (event) => {
+        event.waitUntil(
+            caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))).then(() => self.clients.claim()),
+        );
+    });
+    self.addEventListener('fetch', (event) => {
+        event.respondWith(fetch(event.request));
+    });
+} else {
+    self.addEventListener('install', (event) => {
+        event.waitUntil(
+            caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),
+        );
+    });
 
-self.addEventListener('fetch', (event) => {
-    if (event.request.method !== 'GET') {
-        return;
-    }
+    self.addEventListener('activate', (event) => {
+        event.waitUntil(
+            caches.keys().then((keys) => Promise.all(keys
+                .filter((key) => key !== CACHE_NAME)
+                .map((key) => caches.delete(key)))).then(() => self.clients.claim()),
+        );
+    });
 
-    event.respondWith(
-        caches.match(event.request).then((response) => {
-            if (response) {
-                return response;
-            }
+    self.addEventListener('fetch', (event) => {
+        if (event.request.method !== 'GET') {
+            return;
+        }
 
-            return fetch(event.request).then((networkResponse) => {
-                const responseClone = networkResponse.clone();
+        event.respondWith(
+            caches.match(event.request).then((response) => {
+                if (response) {
+                    return response;
+                }
 
-                caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+                return fetch(event.request).then((networkResponse) => {
+                    const responseClone = networkResponse.clone();
 
-                return networkResponse;
-            }).catch(() => caches.match('/dashboard'));
-        }),
-    );
-});
+                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+
+                    return networkResponse;
+                }).catch(() => caches.match('/dashboard'));
+            }),
+        );
+    });
+}

@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\Course;
-use App\Models\StudyTrack;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Services\StudyPlanGenerator;
@@ -34,12 +33,10 @@ class StudyPlanController extends Controller
         [$data, $parsedAvailability] = $this->validatePlanRequest($request);
 
         $course = Course::findOrFail($data['course_id']);
-        $track = $data['study_track_id'] ? StudyTrack::findOrFail($data['study_track_id']) : null;
-
         $plan = $generator->generate(
             $request->user(),
             $course,
-            $track,
+            null,
             $data['exam_date'] ?: null,
             $data['start_date'],
             $data['available_days'],
@@ -60,7 +57,7 @@ class StudyPlanController extends Controller
         $this->resetBuilderSession();
 
         return view('dashboard.study-plans.create', [
-            'studyPlan' => $studyPlan->loadMissing('course', 'studyTrack'),
+            'studyPlan' => $studyPlan->loadMissing('course'),
             'builderKey' => 'study-plan-builder-edit-' . $studyPlan->id . '-' . now()->timestamp,
         ]);
     }
@@ -73,12 +70,10 @@ class StudyPlanController extends Controller
         [$data, $parsedAvailability] = $this->validatePlanRequest($request);
 
         $course = Course::findOrFail($data['course_id']);
-        $track = $data['study_track_id'] ? StudyTrack::findOrFail($data['study_track_id']) : null;
-
         $plan = $generator->regenerate(
             $studyPlan,
             $course,
-            $track,
+            null,
             $data['exam_date'] ?: null,
             $data['start_date'],
             $data['available_days'],
@@ -139,9 +134,14 @@ class StudyPlanController extends Controller
 
     protected function validatePlanRequest(Request $request): array
     {
+        $baseData = $request->validate([
+            'course_id' => ['required', 'exists:courses,id'],
+        ]);
+
+        $course = Course::findOrFail($baseData['course_id']);
+
         $data = $request->validate([
             'course_id' => ['required', 'exists:courses,id'],
-            'study_track_id' => ['nullable', 'exists:study_tracks,id'],
             'exam_date' => ['nullable', 'date', 'after_or_equal:start_date'],
             'start_date' => ['required', 'date', 'after_or_equal:today'],
             'available_days' => ['required', 'array', 'min:1'],
@@ -149,6 +149,8 @@ class StudyPlanController extends Controller
             'available_minutes_by_day' => ['required', 'array'],
             'intensity' => ['required', Rule::in(['light', 'balanced', 'intense'])],
         ]);
+
+        $data['exam_date'] = $course->exam_date?->toDateString() ?? ($data['exam_date'] ?: null);
 
         $parsedAvailability = [];
 

@@ -12,9 +12,12 @@
                         Reajustar mantendo progresso
                     </button>
                 </form>
-                <a href="{{ route('study-plans.edit', $studyPlan) }}" class="rounded-2xl border border-sky-400/20 bg-sky-400/10 px-5 py-3 text-sm font-semibold text-sky-100">
-                    Editar este plano
-                </a>
+                <form method="POST" action="{{ route('study-plans.rebalance', $studyPlan) }}" onsubmit="return confirm('Deseja editar o plano por meio de um reajuste automático, mantendo o progresso já concluído?');">
+                    @csrf
+                    <button type="submit" class="rounded-2xl border border-sky-400/20 bg-sky-400/10 px-5 py-3 text-sm font-semibold text-sky-100">
+                        Editar plano
+                    </button>
+                </form>
                 <form method="POST" action="{{ route('study-plans.destroy', $studyPlan) }}" onsubmit="return confirm('Deseja apagar este plano e começar outro?');">
                     @csrf
                     @method('DELETE')

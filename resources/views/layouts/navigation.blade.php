@@ -1,3 +1,10 @@
+@php
+    $navigationPlans = Auth::user()?->isStudent()
+        ? Auth::user()->studyPlans()->with('course')->where('status', 'active')->latest()->get()
+        : collect();
+    $currentStudyPlan = request()->route('studyPlan');
+@endphp
+
 <nav x-data="{ open: false }">
     <div class="border-b border-white/10 bg-slate-950/70 backdrop-blur lg:hidden">
         <div class="flex items-center justify-between px-4 py-4">
@@ -38,9 +45,22 @@
         </div>
 
         <div class="mt-8 flex-1 space-y-2 px-4">
-            <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Dashboard</a>
+            <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->isStudent())
                 <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
+                @if ($navigationPlans->isNotEmpty())
+                    <div class="pt-4">
+                        <p class="px-4 text-xs uppercase tracking-[0.25em] text-slate-500">Seus planos</p>
+                        <div class="mt-2 space-y-2">
+                            @foreach ($navigationPlans as $plan)
+                                <a href="{{ route('study-plans.show', $plan) }}"
+                                   class="nav-pill text-sm {{ request()->routeIs('study-plans.show') && $currentStudyPlan?->id === $plan->id ? 'nav-pill-active' : '' }}">
+                                    Plano - {{ $plan->course->name }}
+                                </a>
+                            @endforeach
+                        </div>
+                    </div>
+                @endif
             @endif
             @if (Auth::user()->isAdmin())
                 <a href="/admin" class="nav-pill">Painel admin</a>
@@ -67,9 +87,15 @@
 
     <div :class="{'block': open, 'hidden': ! open}" class="hidden border-b border-white/10 bg-slate-950/95 px-4 pb-4 lg:hidden">
         <div class="space-y-2">
-            <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Dashboard</a>
+            <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->isStudent())
                 <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
+                @foreach ($navigationPlans as $plan)
+                    <a href="{{ route('study-plans.show', $plan) }}"
+                       class="nav-pill {{ request()->routeIs('study-plans.show') && $currentStudyPlan?->id === $plan->id ? 'nav-pill-active' : '' }}">
+                        Plano - {{ $plan->course->name }}
+                    </a>
+                @endforeach
             @endif
             @if (Auth::user()->isAdmin())
                 <a href="/admin" class="nav-pill">Painel admin</a>

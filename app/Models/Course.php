@@ -17,11 +17,13 @@ class Course extends Model
         'slug',
         'description',
         'tutory_product_id',
+        'exam_date',
         'is_active',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'exam_date' => 'date',
     ];
 
     public function modules(): HasMany

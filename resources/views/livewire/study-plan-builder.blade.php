@@ -85,7 +85,7 @@
             </div>
         </div>
 
-        <div class="card-subtle">
+        <div class="card-subtle lg:col-span-2">
             <label class="stat-label">Curso</label>
             <select name="course_id" wire:model.live="course_id" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100">
                 <option value="">Selecione</option>
@@ -97,26 +97,22 @@
         </div>
 
         <div class="card-subtle">
-            <label class="stat-label">Trilha</label>
-            <select name="study_track_id" wire:model="study_track_id" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100">
-                <option value="">Sem trilha específica</option>
-                @foreach ($tracks as $track)
-                    <option value="{{ $track->id }}">{{ $track->name }}</option>
-                @endforeach
-            </select>
-        </div>
-
-        <div class="card-subtle">
             <label class="stat-label">Data de início</label>
-            <input name="start_date" wire:model="start_date" type="date" min="{{ now()->toDateString() }}" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100">
+            <input name="start_date" wire:model="start_date" type="date" min="{{ now()->toDateString() }}" x-on:click="$el.showPicker && $el.showPicker()" x-on:focus="$el.showPicker && $el.showPicker()" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 color-scheme-dark">
             <p class="mt-2 text-xs text-slate-500">Escolha quando você realmente começa. Não permitimos datas passadas para o plano ficar fiel à sua rotina atual.</p>
             @error('start_date') <p class="mt-2 text-sm text-rose-300">{{ $message }}</p> @enderror
         </div>
 
         <div class="card-subtle">
-            <label class="stat-label">Data da prova <span class="text-slate-500 normal-case tracking-normal">(opcional)</span></label>
-            <input name="exam_date" wire:model="exam_date" type="date" min="{{ $start_date ?: now()->toDateString() }}" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100">
-            <p class="mt-2 text-xs text-slate-500">Se o edital ainda não saiu, deixe em branco. O sistema cria um ciclo contínuo e você pode ajustar depois.</p>
+            <label class="stat-label">Data da prova <span class="text-slate-500 normal-case tracking-normal">{{ $exam_date_locked ? '(definida no curso)' : '(opcional)' }}</span></label>
+            @if ($exam_date_locked)
+                <input type="hidden" name="exam_date" value="{{ $exam_date }}">
+                <input value="{{ $exam_date }}" type="date" disabled class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-slate-300 opacity-80 color-scheme-dark">
+                <p class="mt-2 text-xs text-slate-500">Este curso já tem data de prova cadastrada. O aluno usa essa data como padrão e não pode alterá-la aqui.</p>
+            @else
+                <input name="exam_date" wire:model.live="exam_date" type="date" min="{{ $start_date ?: now()->toDateString() }}" x-on:click="$el.showPicker && $el.showPicker()" x-on:focus="$el.showPicker && $el.showPicker()" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 color-scheme-dark">
+                <p class="mt-2 text-xs text-slate-500">Se o edital ainda não saiu, deixe em branco. O sistema cria um ciclo contínuo e você pode ajustar depois.</p>
+            @endif
             @error('exam_date') <p class="mt-2 text-sm text-rose-300">{{ $message }}</p> @enderror
         </div>
 
