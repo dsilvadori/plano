@@ -6,15 +6,21 @@ window.Alpine = Alpine;
 
 Alpine.start();
 
-const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+const disabledServiceWorkerHosts = [
+    'localhost',
+    '127.0.0.1',
+    'dev.vencendoconcursos.com.br',
+];
 
-if ('serviceWorker' in navigator && ! isLocalhost) {
+const isServiceWorkerDisabled = disabledServiceWorkerHosts.includes(window.location.hostname);
+
+if ('serviceWorker' in navigator && ! isServiceWorkerDisabled) {
     window.addEventListener('load', () => {
         navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     });
 }
 
-if ('serviceWorker' in navigator && isLocalhost) {
+if ('serviceWorker' in navigator && isServiceWorkerDisabled) {
     window.addEventListener('load', async () => {
         const registrations = await navigator.serviceWorker.getRegistrations();
 

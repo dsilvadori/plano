@@ -1,14 +1,28 @@
 const CACHE_NAME = 'plano-vc-v2';
 const ASSETS = [
     '/',
-    '/dashboard',
     '/manifest.webmanifest',
     '/images/vencendo-concursos-logo-white.webp',
 ];
 
 const isLocalhost = self.location.hostname === 'localhost' || self.location.hostname === '127.0.0.1';
+const disabledHosts = new Set([
+    'localhost',
+    '127.0.0.1',
+    'dev.vencendoconcursos.com.br',
+]);
+const isServiceWorkerDisabled = disabledHosts.has(self.location.hostname);
 
-if (isLocalhost) {
+const isStaticAssetRequest = (requestUrl) => {
+    return requestUrl.origin === self.location.origin && !requestUrl.pathname.startsWith('/login') &&
+        !requestUrl.pathname.startsWith('/dashboard') &&
+        !requestUrl.pathname.startsWith('/admin') &&
+        !requestUrl.pathname.startsWith('/livewire') &&
+        !requestUrl.pathname.startsWith('/logout') &&
+        !requestUrl.pathname.startsWith('/profile');
+};
+
+if (isServiceWorkerDisabled) {
     self.addEventListener('install', () => self.skipWaiting());
     self.addEventListener('activate', (event) => {
         event.waitUntil(
@@ -38,6 +52,18 @@ if (isLocalhost) {
             return;
         }
 
+        if (event.request.mode === 'navigate') {
+            event.respondWith(fetch(event.request));
+            return;
+        }
+
+        const requestUrl = new URL(event.request.url);
+
+        if (!isStaticAssetRequest(requestUrl)) {
+            event.respondWith(fetch(event.request));
+            return;
+        }
+
         event.respondWith(
             caches.match(event.request).then((response) => {
                 if (response) {
@@ -50,7 +76,7 @@ if (isLocalhost) {
                     caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
 
                     return networkResponse;
-                }).catch(() => caches.match('/dashboard'));
+                });
             }),
         );
     });
