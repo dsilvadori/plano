@@ -1,9 +1,11 @@
 <div
     x-data="{
         isBuilding: false,
-        progress: 18,
+        progress: 0,
         step: 0,
         timer: null,
+        finalizing: false,
+        canSubmitForm: false,
         steps: [
             'Lendo sua disponibilidade semanal',
             'Organizando matéria básica e conhecimento específico',
@@ -11,21 +13,47 @@
             'Validando a viabilidade até a prova',
             'Finalizando seu plano personalizado'
         ],
+        queueSubmit() {
+            if (this.canSubmitForm) {
+                return true;
+            }
+
+            this.startPlanProgress();
+            return false;
+        },
         startPlanProgress() {
             window.scrollTo({ top: 0, behavior: 'smooth' });
             this.isBuilding = true;
-            this.progress = 18;
+            this.progress = 0;
             this.step = 0;
+            this.finalizing = false;
+            this.canSubmitForm = false;
             clearInterval(this.timer);
+
+            const startedAt = Date.now();
             this.timer = setInterval(() => {
-                if (this.progress < 96) {
-                    this.progress += this.progress < 60 ? 11 : 6;
+                const elapsed = Date.now() - startedAt;
+                const targetProgress = Math.min(99, Math.round((elapsed / 9000) * 100));
+
+                if (targetProgress > this.progress) {
+                    this.progress = targetProgress;
                 }
 
                 if (this.step < this.steps.length - 1 && this.progress >= ((this.step + 1) * 20)) {
                     this.step++;
                 }
-            }, 700);
+
+                if (elapsed >= 9000) {
+                    clearInterval(this.timer);
+                    this.progress = 100;
+                    this.step = this.steps.length - 1;
+                    this.finalizing = true;
+                    this.canSubmitForm = true;
+                    setTimeout(() => {
+                        this.$refs.planForm.submit();
+                    }, 50);
+                }
+            }, 150);
         },
         stopPlanProgress() {
             clearInterval(this.timer);
@@ -50,7 +78,7 @@
         </div>
     @else
 
-    <form action="{{ $studyPlan ? route('study-plans.update', $studyPlan) : route('study-plans.store') }}" method="POST" x-on:submit="startPlanProgress()" class="grid gap-6 lg:grid-cols-2">
+    <form x-ref="planForm" action="{{ $studyPlan ? route('study-plans.update', $studyPlan) : route('study-plans.store') }}" method="POST" x-on:submit.prevent="queueSubmit()" class="grid gap-6 lg:grid-cols-2">
         @csrf
         @if ($studyPlan)
             @method('PUT')
@@ -206,16 +234,16 @@
                 <div>
                     <p class="text-sm uppercase tracking-[0.3em] text-amber-300">Montando seu plano</p>
                     <h3 class="mt-3 text-2xl font-semibold text-white">Estamos organizando seu ciclo de estudos.</h3>
-                <p class="mt-3 max-w-xl text-sm text-slate-300">A ideia aqui é transformar sua rotina em um plano viável, equilibrado e claro até a prova. Quando a montagem terminar, a plataforma segura a transição por um instante para a experiência ficar suave.</p>
+                <p class="mt-3 max-w-xl text-sm text-slate-300">A ideia aqui é transformar sua rotina em um plano viável, equilibrado e claro até a prova. Vamos manter a criação visível por alguns segundos para você acompanhar cada etapa.</p>
                 </div>
                 <div class="flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-400/20 bg-amber-400/10 text-lg font-semibold text-amber-200">
-                    <span x-text="`${Math.min(progress, 99)}%`"></span>
+                    <span x-text="`${Math.min(progress, 100)}%`"></span>
                 </div>
             </div>
 
             <div class="mt-8">
                 <div class="h-4 overflow-hidden rounded-full bg-slate-800/90">
-                    <div class="progress-glow h-full rounded-full bg-gradient-to-r from-amber-300 via-yellow-300 to-sky-400 transition-all duration-700" :style="`width: ${Math.min(progress, 99)}%`"></div>
+                    <div class="progress-glow h-full rounded-full bg-gradient-to-r from-amber-300 via-yellow-300 to-sky-400 transition-all duration-300" :style="`width: ${Math.min(progress, 100)}%`"></div>
                 </div>
             </div>
 
@@ -234,8 +262,8 @@
 
             <div class="mt-6 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
                 <p class="text-xs uppercase tracking-[0.25em] text-slate-500">Etapa atual</p>
-                <p class="mt-2 text-sm text-slate-200" x-text="steps[step]"></p>
-                <p class="mt-3 text-xs text-slate-500">Ao finalizar a criação, a plataforma aguarda alguns segundos antes de abrir o plano pronto.</p>
+                <p class="mt-2 text-sm text-slate-200" x-text="finalizing ? 'Plano pronto. Estamos abrindo sua tela final...' : steps[step]"></p>
+                <p class="mt-3 text-xs text-slate-500">A montagem fica visível por 9 segundos e, ao terminar, seguramos a transição por mais 1 segundo antes de abrir o plano.</p>
             </div>
         </div>
     </div>
