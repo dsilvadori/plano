@@ -15,12 +15,7 @@
                 <a href="{{ route('study-plans.create') }}" class="rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">Criar plano</a>
                 @if ($activePlan)
                     <a href="{{ route('study-plans.show', $activePlan) }}" class="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-slate-100">Continuar plano</a>
-                    <form method="POST" action="{{ route('study-plans.rebalance', $activePlan) }}" onsubmit="return confirm('Deseja reajustar o plano mantendo o progresso já concluído e recalculando o restante a partir de hoje?');">
-                        @csrf
-                        <button type="submit" class="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-5 py-3 text-sm font-semibold text-amber-100">
-                            Reajustar mantendo progresso
-                        </button>
-                    </form>
+                    <a href="{{ route('study-plans.edit', $activePlan) }}" class="rounded-2xl border border-sky-400/20 bg-sky-400/10 px-5 py-3 text-sm font-semibold text-sky-100">Editar plano</a>
                     <form method="POST" action="{{ route('study-plans.destroy', $activePlan) }}" onsubmit="return confirm('Deseja apagar o plano atual? Esta ação não pode ser desfeita.');">
                         @csrf
                         @method('DELETE')
@@ -198,14 +193,7 @@
                                 </div>
                                 <div class="mt-4 flex gap-3">
                                     <a href="{{ route('study-plans.show', $plan) }}" class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-100">Abrir plano</a>
-                                    <form method="POST" action="{{ route('study-plans.rebalance', $plan) }}" onsubmit="return confirm('Deseja reajustar este plano mantendo o progresso já concluído e recalculando o restante a partir de hoje?');">
-                                        @csrf
-                                        <button type="submit" class="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-100">Reajustar</button>
-                                    </form>
-                                    <form method="POST" action="{{ route('study-plans.rebalance', $plan) }}" onsubmit="return confirm('Deseja editar este plano por meio de um reajuste automático, mantendo o progresso já concluído?');">
-                                        @csrf
-                                        <button type="submit" class="rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">Editar plano</button>
-                                    </form>
+                                    <a href="{{ route('study-plans.edit', $plan) }}" class="rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">Editar plano</a>
                                     <form method="POST" action="{{ route('study-plans.destroy', $plan) }}" onsubmit="return confirm('Deseja apagar este plano?');">
                                         @csrf
                                         @method('DELETE')

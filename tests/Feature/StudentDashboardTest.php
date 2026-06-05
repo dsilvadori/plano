@@ -193,6 +193,79 @@ class StudentDashboardTest extends TestCase
         $this->assertGreaterThan(0, $plan->items()->count());
     }
 
+    public function test_student_can_update_plan_without_losing_completed_progress(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'type' => 'basic',
+            'workload_minutes' => 180,
+            'sort_order' => 1,
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+            'available_days' => ['monday', 'wednesday'],
+            'available_minutes_by_day' => [
+                'monday' => 120,
+                'wednesday' => 120,
+            ],
+            'intensity' => 'balanced',
+        ]);
+
+        $completedItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->subDay()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->subDay()->englishDayOfWeek),
+            'type' => 'basic',
+            'estimated_minutes' => 60,
+            'completed_at' => now(),
+            'sort_order' => 1,
+        ]);
+
+        $pendingItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->addDay()->englishDayOfWeek),
+            'type' => 'basic',
+            'estimated_minutes' => 60,
+            'completed_at' => null,
+            'sort_order' => 2,
+        ]);
+
+        $response = $this->actingAs($student)->put(route('study-plans.update', $plan), [
+            'course_id' => $course->id,
+            'exam_date' => now()->addWeeks(10)->toDateString(),
+            'start_date' => now()->toDateString(),
+            'available_days' => ['monday', 'tuesday', 'thursday'],
+            'available_minutes_by_day' => [
+                'monday' => '2:00',
+                'tuesday' => '1:30',
+                'thursday' => '2:15',
+            ],
+            'intensity' => 'intense',
+        ]);
+
+        $response->assertRedirect(route('study-plans.show', $plan));
+
+        $this->assertDatabaseHas('study_plan_items', [
+            'id' => $completedItem->id,
+            'study_plan_id' => $plan->id,
+        ]);
+        $this->assertDatabaseMissing('study_plan_items', [
+            'id' => $pendingItem->id,
+        ]);
+        $this->assertTrue($plan->fresh()->items()->whereNotNull('completed_at')->exists());
+        $this->assertTrue($plan->fresh()->items()->whereDate('scheduled_date', '>=', now()->toDateString())->exists());
+    }
+
     public function test_student_can_rebalance_plan_automatically(): void
     {
         ['student' => $student, 'course' => $course, 'track' => $track] = $this->makeStudentWithCourse();

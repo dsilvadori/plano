@@ -118,7 +118,7 @@
             <select name="course_id" wire:model.live="course_id" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100">
                 <option value="">Selecione</option>
                 @foreach ($courses as $course)
-                    <option value="{{ $course->id }}">{{ $course->name }}</option>
+                    <option value="{{ $course->id }}" @selected((string) $course_id === (string) $course->id)>{{ $course->name }}</option>
                 @endforeach
             </select>
             @error('course_id') <p class="mt-2 text-sm text-rose-300">{{ $message }}</p> @enderror

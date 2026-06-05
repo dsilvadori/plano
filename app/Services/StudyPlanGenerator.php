@@ -62,6 +62,21 @@ class StudyPlanGenerator
         string $intensity,
     ): StudyPlan {
         return DB::transaction(function () use ($studyPlan, $course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity) {
+            $studyPlan->loadMissing(['course', 'studyTrack', 'user', 'items.courseModule']);
+
+            if ($studyPlan->items->whereNotNull('completed_at')->isNotEmpty()) {
+                return $this->regeneratePreservingProgress(
+                    $studyPlan,
+                    $course,
+                    $studyTrack,
+                    $examDate,
+                    $startDate,
+                    $availableDays,
+                    $availableMinutesByDay,
+                    $intensity,
+                );
+            }
+
             $payload = $this->buildPlanPayload($course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity);
 
             $studyPlan->user
@@ -87,6 +102,70 @@ class StudyPlanGenerator
 
             return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
         });
+    }
+
+    protected function regeneratePreservingProgress(
+        StudyPlan $studyPlan,
+        Course $course,
+        ?StudyTrack $studyTrack,
+        ?string $examDate,
+        string $startDate,
+        array $availableDays,
+        array $availableMinutesByDay,
+        string $intensity,
+    ): StudyPlan {
+        $payload = $this->buildPlanPayload($course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity);
+        $modules = $payload['modules'];
+        $completedItems = $studyPlan->items->whereNotNull('completed_at')->values();
+        $completedMinutesByModule = $completedItems
+            ->filter(fn ($item) => filled($item->course_module_id))
+            ->groupBy('course_module_id')
+            ->map(fn (Collection $items) => (int) $items->sum('estimated_minutes'))
+            ->all();
+
+        $remainingByModule = $modules
+            ->mapWithKeys(fn (CourseModule $module) => [
+                $module->id => max(0, (int) $module->workload_minutes - (int) ($completedMinutesByModule[$module->id] ?? 0)),
+            ])
+            ->all();
+
+        $studyPlan->user
+            ->studyPlans()
+            ->where('status', 'active')
+            ->where('course_id', $course->id)
+            ->whereKeyNot($studyPlan->id)
+            ->update(['status' => 'archived']);
+
+        $studyPlan->items()->whereNull('completed_at')->delete();
+        $studyPlan->fill($payload['attributes']);
+        $studyPlan->save();
+
+        $completedModules = $completedItems
+            ->map(fn ($item) => $item->courseModule?->name)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if (array_sum($remainingByModule) > 0) {
+            $generationStart = Carbon::parse($startDate)->startOfDay()->max(now()->startOfDay());
+
+            $this->generateItems(
+                $studyPlan,
+                $modules,
+                $generationStart,
+                $payload['exam'],
+                $availableDays,
+                $availableMinutesByDay,
+                $intensity,
+                $payload['start'],
+                $remainingByModule,
+                $completedModules,
+                ((int) $studyPlan->items()->max('sort_order')) + 1,
+            );
+        }
+
+        return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
     }
 
     public function smartRebalance(StudyPlan $studyPlan): StudyPlan

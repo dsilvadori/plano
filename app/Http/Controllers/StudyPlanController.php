@@ -85,7 +85,7 @@ class StudyPlanController extends Controller
 
         return redirect()
             ->route('study-plans.show', $plan)
-            ->with('status', 'Plano atualizado com sucesso. Reorganizamos seu ciclo com a nova configuração.');
+            ->with('status', 'Plano atualizado com sucesso. Reorganizamos o restante do ciclo sem perder o progresso já concluído.');
     }
 
     public function rebalance(StudyPlan $studyPlan, StudyPlanGenerator $generator): RedirectResponse
