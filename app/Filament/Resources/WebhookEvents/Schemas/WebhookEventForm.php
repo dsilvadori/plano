@@ -14,10 +14,27 @@ class WebhookEventForm
     {
         return $schema
             ->components([
-                TextInput::make('provider')->disabled(),
-                TextInput::make('event_id')->disabled(),
-                TextInput::make('event_type')->disabled(),
-                TextInput::make('status')->disabled(),
+                TextInput::make('provider')
+                    ->label('Provedor')
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
+                        'tutory' => 'Tutory',
+                        null => '',
+                        default => str($state)->headline()->toString(),
+                    })
+                    ->disabled(),
+                TextInput::make('event_id')->label('ID do evento')->disabled(),
+                TextInput::make('event_type')->label('Tipo do evento')->disabled(),
+                TextInput::make('status')
+                    ->label('Status')
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
+                        'received' => 'Recebido',
+                        'processed' => 'Processado',
+                        'ignored' => 'Ignorado',
+                        'failed' => 'Falhou',
+                        null => '',
+                        default => $state,
+                    })
+                    ->disabled(),
                 KeyValue::make('payload')->label('Payload')->disabled()->columnSpanFull(),
                 Textarea::make('error_message')->label('Erro')->disabled()->columnSpanFull(),
                 DateTimePicker::make('processed_at')->label('Processado em')->disabled(),

@@ -15,10 +15,25 @@ class WebhookEventsTable
     {
         return $table
             ->columns([
-                TextColumn::make('provider')->label('Provider')->badge(),
-                TextColumn::make('event_id')->label('Event ID')->searchable(),
+                TextColumn::make('provider')
+                    ->label('Provedor')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state): string => match ($state) {
+                        'tutory' => 'Tutory',
+                        default => str($state)->headline()->toString(),
+                    }),
+                TextColumn::make('event_id')->label('ID do evento')->searchable(),
                 TextColumn::make('event_type')->label('Tipo')->searchable(),
-                TextColumn::make('status')->label('Status')->badge(),
+                TextColumn::make('status')
+                    ->label('Status')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state): string => match ($state) {
+                        'received' => 'Recebido',
+                        'processed' => 'Processado',
+                        'ignored' => 'Ignorado',
+                        'failed' => 'Falhou',
+                        default => $state,
+                    }),
                 TextColumn::make('processed_at')->label('Processado em')->dateTime('d/m/Y H:i'),
                 TextColumn::make('created_at')->label('Recebido em')->dateTime('d/m/Y H:i'),
             ])

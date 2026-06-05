@@ -18,11 +18,11 @@ class UserForm
                 Select::make('role')
                     ->label('Perfil')
                     ->options([
-                        'admin' => 'Admin',
+                        'admin' => 'Administrador',
                         'student' => 'Aluno',
                     ])
                     ->required(),
-                TextInput::make('tutory_customer_id')->label('Tutory Customer ID'),
+                TextInput::make('tutory_customer_id')->label('ID do cliente na Tutory'),
                 TextInput::make('password')
                     ->label('Senha')
                     ->password()

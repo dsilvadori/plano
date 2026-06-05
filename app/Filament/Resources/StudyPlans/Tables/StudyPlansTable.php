@@ -18,8 +18,25 @@ class StudyPlansTable
                 TextColumn::make('name')->label('Plano')->searchable(),
                 TextColumn::make('user.name')->label('Aluno')->searchable()->sortable(),
                 TextColumn::make('course.name')->label('Curso')->searchable(),
-                TextColumn::make('status')->label('Status')->badge(),
-                TextColumn::make('viability_status')->label('Viabilidade')->badge(),
+                TextColumn::make('status')
+                    ->label('Status')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state): string => match ($state) {
+                        'draft' => 'Rascunho',
+                        'active' => 'Ativo',
+                        'completed' => 'Concluído',
+                        'archived' => 'Arquivado',
+                        default => $state,
+                    }),
+                TextColumn::make('viability_status')
+                    ->label('Viabilidade')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state): string => match ($state) {
+                        'good' => 'Boa',
+                        'warning' => 'Atenção',
+                        'critical' => 'Crítica',
+                        default => $state,
+                    }),
                 TextColumn::make('generated_at')->label('Gerado em')->dateTime('d/m/Y H:i'),
             ])
             ->filters([

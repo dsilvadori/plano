@@ -17,7 +17,8 @@ class AdminAccessTest extends TestCase
 
         $this->actingAs($admin)
             ->get('/admin')
-            ->assertOk();
+            ->assertOk()
+            ->assertSee('Visualizar área do aluno');
     }
 
     public function test_student_cannot_access_admin_panel(): void
@@ -82,5 +83,34 @@ class AdminAccessTest extends TestCase
     public function test_guest_is_redirected_to_login(): void
     {
         $this->get('/dashboard')->assertRedirect(route('login'));
+    }
+
+    public function test_admin_login_page_is_translated_to_portuguese(): void
+    {
+        $this->get('/admin/login')
+            ->assertOk()
+            ->assertSee('Faça login')
+            ->assertSee('E-mail')
+            ->assertSee('Senha');
+    }
+
+    public function test_admin_users_page_shows_portuguese_labels(): void
+    {
+        $admin = User::factory()->admin()->create([
+            'name' => 'Administrador Master',
+        ]);
+
+        User::factory()->create([
+            'name' => 'Aluno Teste',
+            'role' => 'student',
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/users')
+            ->assertOk()
+            ->assertSee('Usuários')
+            ->assertSee('Visualizar área do aluno')
+            ->assertSee('Administrador')
+            ->assertSee('Aluno');
     }
 }

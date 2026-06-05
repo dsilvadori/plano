@@ -1,16 +1,11 @@
 <?php
 
-namespace App\Filament\Resources\Users\Pages;
+namespace App\Filament\Pages;
 
-use App\Filament\Resources\Users\UserResource;
 use Filament\Actions\Action;
-use Filament\Actions\CreateAction;
-use Filament\Resources\Pages\ListRecords;
 
-class ListUsers extends ListRecords
+class Dashboard extends \Filament\Pages\Dashboard
 {
-    protected static string $resource = UserResource::class;
-
     protected function getHeaderActions(): array
     {
         return [
@@ -21,7 +16,6 @@ class ListUsers extends ListRecords
                 ->button()
                 ->openUrlInNewTab()
                 ->url(route('dashboard')),
-            CreateAction::make(),
         ];
     }
 }

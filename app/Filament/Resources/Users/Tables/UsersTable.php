@@ -23,7 +23,14 @@ class UsersTable
             ->columns([
                 TextColumn::make('name')->label('Nome')->searchable()->sortable(),
                 TextColumn::make('email')->label('E-mail')->searchable(),
-                TextColumn::make('role')->label('Perfil')->badge(),
+                TextColumn::make('role')
+                    ->label('Perfil')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state): string => match ($state) {
+                        'admin' => 'Administrador',
+                        'student' => 'Aluno',
+                        default => $state,
+                    }),
                 TextColumn::make('phone')->label('Telefone')->toggleable(),
                 TextColumn::make('courses.name')->label('Curso')->badge()->separator(', '),
                 TextColumn::make('last_login_at')->label('Último login')->since()->toggleable(),
