@@ -15,10 +15,10 @@ class ListUsers extends ListRecords
     {
         return [
             CreateAction::make(),
-            Action::make('previewTestStudent')
-                ->label('Visualizar aluno teste')
+            Action::make('openStudentArea')
+                ->label('Abrir área de estudos')
                 ->icon('heroicon-o-eye')
-                ->url(route('admin.preview-test-student.enter')),
+                ->url(route('dashboard')),
         ];
     }
 }

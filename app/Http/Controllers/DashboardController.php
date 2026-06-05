@@ -12,11 +12,7 @@ class DashboardController extends Controller
     {
         $user = request()->user();
 
-        if ($user->isAdmin()) {
-            return redirect('/admin');
-        }
-
-        abort_unless($user->isStudent(), 403);
+        abort_unless($user->canAccessStudentArea(), 403);
 
         $activePlans = $user->studyPlans()
             ->with(['course', 'items'])
@@ -30,7 +26,8 @@ class DashboardController extends Controller
         $nextTasks = $activePlan?->items()->whereDate('scheduled_date', '>=', $today)->whereNull('completed_at')->limit(5)->get() ?? collect();
 
         return view('dashboard.index', [
-            'user' => $user->load('courses'),
+            'user' => $user,
+            'availableCourses' => $user->availableCoursesQuery()->orderBy('name')->get(),
             'activePlan' => $activePlan,
             'activePlans' => $activePlans,
             'nextTasks' => $nextTasks,

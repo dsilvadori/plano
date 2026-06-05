@@ -2,7 +2,7 @@
     <x-slot name="header">
         <div class="hero-panel flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div>
-                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Página inicial do aluno</p>
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">{{ $user->isAdmin() ? 'Área de estudos do admin' : 'Página inicial do aluno' }}</p>
                 @if ($activePlan)
                     <h1 class="mt-2 text-3xl font-semibold text-white">Seu plano está pronto. Agora é execução.</h1>
                     <p class="mt-3 max-w-2xl text-sm text-slate-300">Hoje é dia de avançar mais um bloco. Você não precisa estudar tudo hoje. Precisa cumprir o ciclo.</p>
@@ -166,10 +166,10 @@
 
                 <div class="card-subtle">
                     <p class="text-sm uppercase tracking-[0.25em] text-slate-400">Cursos liberados</p>
-                    <h2 class="mt-3 text-xl font-semibold text-white">{{ $user->courses->count() }} curso(s) disponível(is)</h2>
+                    <h2 class="mt-3 text-xl font-semibold text-white">{{ $availableCourses->count() }} curso(s) disponível(is)</h2>
                     <p class="mt-2 text-sm text-slate-300">Você pode montar um plano separado para cada curso em que estiver matriculado.</p>
                     <div class="mt-4 space-y-3">
-                        @forelse ($user->courses as $course)
+                        @forelse ($availableCourses as $course)
                             <div class="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
                                 <p class="text-sm font-semibold text-white">{{ $course->name }}</p>
                             </div>

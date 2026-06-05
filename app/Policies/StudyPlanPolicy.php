@@ -19,12 +19,12 @@ class StudyPlanPolicy
 
     public function create(User $user): bool
     {
-        return $user->isStudent();
+        return $user->canAccessStudentArea();
     }
 
     public function update(User $user, StudyPlan $studyPlan): bool
     {
-        return $studyPlan->user_id === $user->id;
+        return $user->isAdmin() || $studyPlan->user_id === $user->id;
     }
 
     public function delete(User $user, StudyPlan $studyPlan): bool

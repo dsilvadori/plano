@@ -99,10 +99,8 @@ class StudyPlanBuilder extends Component
     public function render(): View
     {
         $courses = Auth::user()
-            ->courses()
-            ->where('courses.is_active', true)
+            ->availableCoursesQuery()
             ->select('courses.id', 'courses.name')
-            ->distinct()
             ->orderBy('name')
             ->get();
 

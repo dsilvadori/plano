@@ -1,6 +1,5 @@
 <?php
 
-use App\Http\Controllers\Admin\TestStudentPreviewController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\StudyPlanController;
@@ -20,11 +19,6 @@ Route::get('/', function () {
 Route::post('/webhooks/tutory', TutoryWebhookController::class)->name('webhooks.tutory');
 
 Route::middleware('auth')->group(function () {
-    Route::get('/admin/test-student-preview', [TestStudentPreviewController::class, 'enter'])
-        ->name('admin.preview-test-student.enter');
-    Route::get('/admin/test-student-preview/exit', [TestStudentPreviewController::class, 'exit'])
-        ->name('admin.preview-test-student.exit');
-
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
     Route::get('/dashboard/plano/novo', [StudyPlanController::class, 'create'])->name('study-plans.create');
     Route::post('/dashboard/plano', [StudyPlanController::class, 'store'])->name('study-plans.store');

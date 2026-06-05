@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Notifications\SetPasswordNotification;
+use Illuminate\Database\Eloquent\Builder;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
@@ -51,9 +52,26 @@ class User extends Authenticatable implements FilamentUser
         return $this->role === 'student';
     }
 
+    public function canAccessStudentArea(): bool
+    {
+        return $this->isAdmin() || $this->isStudent();
+    }
+
     public function isTestStudent(): bool
     {
         return $this->email === 'aluno@teste.com';
+    }
+
+    public function availableCoursesQuery(): Builder
+    {
+        if ($this->isAdmin()) {
+            return Course::query()
+                ->where('is_active', true);
+        }
+
+        return Course::query()
+            ->where('is_active', true)
+            ->whereHas('students', fn (Builder $query) => $query->whereKey($this->getKey()));
     }
 
     public function studentCourses(): HasMany

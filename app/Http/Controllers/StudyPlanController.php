@@ -16,7 +16,7 @@ class StudyPlanController extends Controller
 {
     public function create(): View
     {
-        abort_unless(request()->user()?->isStudent(), 403);
+        abort_unless(request()->user()?->canAccessStudentArea(), 403);
 
         $this->resetBuilderSession();
 
@@ -28,11 +28,11 @@ class StudyPlanController extends Controller
 
     public function store(Request $request, StudyPlanGenerator $generator): RedirectResponse
     {
-        abort_unless($request->user()?->isStudent(), 403);
+        abort_unless($request->user()?->canAccessStudentArea(), 403);
 
         [$data, $parsedAvailability] = $this->validatePlanRequest($request);
 
-        $course = Course::findOrFail($data['course_id']);
+        $course = $request->user()->availableCoursesQuery()->findOrFail($data['course_id']);
         $plan = $generator->generate(
             $request->user(),
             $course,
@@ -52,7 +52,7 @@ class StudyPlanController extends Controller
     public function edit(StudyPlan $studyPlan): View
     {
         $this->authorize('update', $studyPlan);
-        abort_unless(request()->user()?->isStudent(), 403);
+        abort_unless(request()->user()?->canAccessStudentArea(), 403);
 
         $this->resetBuilderSession();
 
@@ -65,11 +65,11 @@ class StudyPlanController extends Controller
     public function update(Request $request, StudyPlan $studyPlan, StudyPlanGenerator $generator): RedirectResponse
     {
         $this->authorize('update', $studyPlan);
-        abort_unless($request->user()?->isStudent(), 403);
+        abort_unless($request->user()?->canAccessStudentArea(), 403);
 
         [$data, $parsedAvailability] = $this->validatePlanRequest($request);
 
-        $course = Course::findOrFail($data['course_id']);
+        $course = $request->user()->availableCoursesQuery()->findOrFail($data['course_id']);
         $plan = $generator->regenerate(
             $studyPlan,
             $course,
@@ -91,7 +91,7 @@ class StudyPlanController extends Controller
     public function rebalance(StudyPlan $studyPlan, StudyPlanGenerator $generator): RedirectResponse
     {
         $this->authorize('update', $studyPlan);
-        abort_unless(request()->user()?->isStudent(), 403);
+        abort_unless(request()->user()?->canAccessStudentArea(), 403);
 
         $plan = $generator->smartRebalance($studyPlan);
 
@@ -138,7 +138,7 @@ class StudyPlanController extends Controller
             'course_id' => ['required', 'exists:courses,id'],
         ]);
 
-        $course = Course::findOrFail($baseData['course_id']);
+        $course = $request->user()->availableCoursesQuery()->findOrFail($baseData['course_id']);
 
         $data = $request->validate([
             'course_id' => ['required', 'exists:courses,id'],
