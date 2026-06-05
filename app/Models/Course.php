@@ -6,11 +6,32 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 
 class Course extends Model
 {
     /** @use HasFactory<\Database\Factories\CourseFactory> */
     use HasFactory;
+
+    protected static function booted(): void
+    {
+        static::created(function (Course $course): void {
+            $testStudent = User::query()
+                ->where('email', 'aluno@teste.com')
+                ->first();
+
+            if (! $testStudent) {
+                return;
+            }
+
+            $testStudent->courses()->syncWithoutDetaching([
+                $course->id => [
+                    'source' => 'manual',
+                    'external_purchase_id' => null,
+                ],
+            ]);
+        });
+    }
 
     protected $fillable = [
         'name',

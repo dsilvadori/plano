@@ -51,6 +51,11 @@ class User extends Authenticatable implements FilamentUser
         return $this->role === 'student';
     }
 
+    public function isTestStudent(): bool
+    {
+        return $this->email === 'aluno@teste.com';
+    }
+
     public function studentCourses(): HasMany
     {
         return $this->hasMany(StudentCourse::class);

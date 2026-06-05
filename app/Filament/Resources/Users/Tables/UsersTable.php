@@ -2,10 +2,13 @@
 
 namespace App\Filament\Resources\Users\Tables;
 
+use App\Models\Course;
+use App\Services\ManualStudentCourseLinker;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\Select;
 use Filament\Notifications\Notification;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
@@ -34,6 +37,29 @@ class UsersTable
             ])
             ->recordActions([
                 EditAction::make(),
+                Action::make('linkCourses')
+                    ->label('Vincular curso')
+                    ->icon('heroicon-o-link')
+                    ->visible(fn ($record) => $record->isStudent())
+                    ->modalHeading('Vincular curso ao aluno')
+                    ->modalDescription('Use esta ação quando o webhook falhar e você precisar liberar manualmente um ou mais cursos para o aluno.')
+                    ->form([
+                        Select::make('course_ids')
+                            ->label('Cursos')
+                            ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
+                            ->multiple()
+                            ->searchable()
+                            ->preload()
+                            ->required(),
+                    ])
+                    ->action(function ($record, array $data, ManualStudentCourseLinker $linker) {
+                        $linker->link($record, $data['course_ids'] ?? []);
+
+                        Notification::make()
+                            ->title('Cursos vinculados com sucesso.')
+                            ->success()
+                            ->send();
+                    }),
                 Action::make('sendReset')
                     ->label('Reenviar acesso')
                     ->action(function ($record) {

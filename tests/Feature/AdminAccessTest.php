@@ -28,6 +28,16 @@ class AdminAccessTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_admin_can_access_courses_page_and_see_import_action(): void
+    {
+        $admin = User::factory()->admin()->create();
+
+        $this->actingAs($admin)
+            ->get('/admin/courses')
+            ->assertOk()
+            ->assertSee('Importar planilha');
+    }
+
     public function test_guest_is_redirected_to_login(): void
     {
         $this->get('/dashboard')->assertRedirect(route('login'));

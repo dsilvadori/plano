@@ -2,6 +2,8 @@
 
 namespace App\Filament\Resources\Courses;
 
+use App\Filament\Resources\Courses\RelationManagers\CourseModulesRelationManager;
+use App\Filament\Resources\Courses\RelationManagers\StudyTracksRelationManager;
 use App\Filament\Resources\Courses\Pages\CreateCourse;
 use App\Filament\Resources\Courses\Pages\EditCourse;
 use App\Filament\Resources\Courses\Pages\ListCourses;
@@ -39,7 +41,8 @@ class CourseResource extends Resource
     public static function getRelations(): array
     {
         return [
-            //
+            CourseModulesRelationManager::class,
+            StudyTracksRelationManager::class,
         ];
     }
 

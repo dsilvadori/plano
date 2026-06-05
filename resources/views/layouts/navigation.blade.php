@@ -47,6 +47,9 @@
         <div class="mt-8 flex-1 space-y-2 px-4">
             <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->isStudent())
+                @if (session()->has('admin_preview_user_id'))
+                    <a href="{{ route('admin.preview-test-student.exit') }}" class="nav-pill">Voltar ao admin</a>
+                @endif
                 <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
                 @if ($navigationPlans->isNotEmpty())
                     <div class="pt-4">
@@ -85,10 +88,13 @@
         </form>
     </aside>
 
-    <div :class="{'block': open, 'hidden': ! open}" class="hidden border-b border-white/10 bg-slate-950/95 px-4 pb-4 lg:hidden">
+        <div :class="{'block': open, 'hidden': ! open}" class="hidden border-b border-white/10 bg-slate-950/95 px-4 pb-4 lg:hidden">
         <div class="space-y-2">
             <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->isStudent())
+                @if (session()->has('admin_preview_user_id'))
+                    <a href="{{ route('admin.preview-test-student.exit') }}" class="nav-pill">Voltar ao admin</a>
+                @endif
                 <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
                 @foreach ($navigationPlans as $plan)
                     <a href="{{ route('study-plans.show', $plan) }}"
