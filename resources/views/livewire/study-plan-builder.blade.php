@@ -151,10 +151,35 @@
                     <label class="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
                         <div class="flex items-center justify-between">
                             <span class="text-sm font-medium text-slate-100">{{ $label }}</span>
-                            <input name="available_days[]" wire:model.live="available_days" value="{{ $day }}" type="checkbox" class="rounded border-white/20 bg-slate-950 text-amber-300">
+                            <input
+                                name="available_days[]"
+                                wire:model.live="available_days"
+                                value="{{ $day }}"
+                                type="checkbox"
+                                x-on:change="
+                                    const input = $refs['minutes_{{ $day }}'];
+
+                                    if (! input) {
+                                        return;
+                                    }
+
+                                    if ($el.checked && (input.value === '' || input.value === '00:00')) {
+                                        input.value = '02:00';
+                                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                                        return;
+                                    }
+
+                                    if (! $el.checked && input.value === '02:00') {
+                                        input.value = '00:00';
+                                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                                    }
+                                "
+                                class="rounded border-white/20 bg-slate-950 text-amber-300"
+                            >
                         </div>
                         <div class="mt-3">
                             <input
+                                x-ref="minutes_{{ $day }}"
                                 name="available_minutes_by_day[{{ $day }}]"
                                 wire:model="available_minutes_by_day.{{ $day }}"
                                 type="text"
@@ -169,13 +194,26 @@
                                         return;
                                     }
                                     if (/^\d{1,2}$/.test(raw)) {
-                                        $el.value = `${raw.padStart(2, '0')}:00`;
+                                        let hours = Math.min(8, parseInt(raw, 10));
+                                        $el.value = `${String(hours).padStart(2, '0')}:00`;
                                         $el.dispatchEvent(new Event('input', { bubbles: true }));
                                         return;
                                     }
                                     if (/^\d{1,2}:\d{2}$/.test(raw)) {
-                                        const [hours, minutes] = raw.split(':');
-                                        $el.value = `${hours.padStart(2, '0')}:${minutes}`;
+                                        let [hours, minutes] = raw.split(':');
+                                        hours = parseInt(hours, 10);
+                                        minutes = parseInt(minutes, 10);
+                                        if (Number.isNaN(hours) || Number.isNaN(minutes) || minutes >= 60) {
+                                            $el.value = '00:00';
+                                            $el.dispatchEvent(new Event('input', { bubbles: true }));
+                                            return;
+                                        }
+                                        if (hours > 8 || (hours === 8 && minutes > 0)) {
+                                            $el.value = '08:00';
+                                            $el.dispatchEvent(new Event('input', { bubbles: true }));
+                                            return;
+                                        }
+                                        $el.value = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
                                         $el.dispatchEvent(new Event('input', { bubbles: true }));
                                         return;
                                     }
@@ -184,7 +222,7 @@
                                 "
                                 class="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100"
                             >
-                            <p class="mt-2 text-xs text-slate-500">Ao marcar o dia, sugerimos `02:00` automaticamente. Você pode alterar livremente para a sua realidade — até digitando só `2` para virar `02:00` ao sair do campo.</p>
+                            <p class="mt-2 text-xs text-slate-500">Ao marcar o dia, sugerimos `02:00` automaticamente. Você pode alterar para a sua realidade, mas limitamos cada dia a no máximo `08:00`.</p>
                             @error("available_minutes_by_day.$day") <p class="mt-2 text-sm text-rose-300">{{ $message }}</p> @enderror
                         </div>
                     </label>

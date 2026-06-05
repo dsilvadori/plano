@@ -157,9 +157,11 @@ class StudyPlanController extends Controller
         foreach ($data['available_days'] as $day) {
             $minutes = StudyTime::parseToMinutes($data['available_minutes_by_day'][$day] ?? null);
 
+            $data['available_minutes_by_day'][$day] = StudyTime::formatMinutes($minutes);
+
             if ($minutes < 30) {
                 return throw \Illuminate\Validation\ValidationException::withMessages([
-                    "available_minutes_by_day.$day" => 'Informe o tempo no formato 1:20 e com pelo menos 30 minutos por dia selecionado.',
+                    "available_minutes_by_day.$day" => 'Informe o tempo no formato 1:20, com pelo menos 30 minutos e no máximo 8 horas por dia.',
                 ]);
             }
 

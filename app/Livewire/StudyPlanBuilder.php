@@ -96,6 +96,11 @@ class StudyPlanBuilder extends Component
         }
     }
 
+    public function updatedAvailableMinutesByDay(mixed $value, string $day): void
+    {
+        $this->available_minutes_by_day[$day] = StudyTime::normalizeForInput($value);
+    }
+
     public function render(): View
     {
         $courses = Auth::user()

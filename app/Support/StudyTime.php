@@ -4,10 +4,12 @@ namespace App\Support;
 
 class StudyTime
 {
+    public const MAX_DAILY_MINUTES = 480;
+
     public static function parseToMinutes(int|string|null $value): int
     {
         if (is_int($value)) {
-            return max(0, $value);
+            return min(self::MAX_DAILY_MINUTES, max(0, $value));
         }
 
         $value = trim((string) $value);
@@ -17,7 +19,7 @@ class StudyTime
         }
 
         if (preg_match('/^\d{1,2}$/', $value) === 1) {
-            return ((int) $value) * 60;
+            return min(self::MAX_DAILY_MINUTES, ((int) $value) * 60);
         }
 
         if (! preg_match('/^(?<hours>\d{1,2}):(?<minutes>\d{2})$/', $value, $matches)) {
@@ -31,7 +33,7 @@ class StudyTime
             return 0;
         }
 
-        return ($hours * 60) + $minutes;
+        return min(self::MAX_DAILY_MINUTES, ($hours * 60) + $minutes);
     }
 
     public static function formatMinutes(int $minutes): string
@@ -41,5 +43,10 @@ class StudyTime
         $remainingMinutes = $minutes % 60;
 
         return sprintf('%d:%02d', $hours, $remainingMinutes);
+    }
+
+    public static function normalizeForInput(int|string|null $value): string
+    {
+        return self::formatMinutes(self::parseToMinutes($value));
     }
 }

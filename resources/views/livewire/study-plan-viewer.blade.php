@@ -121,7 +121,7 @@
                 </div>
                 <div class="grid gap-2 md:grid-cols-3">
                     @foreach ($availableWeeks as $weekNumber)
-                        <label class="rounded-2xl border px-4 py-3 text-sm font-semibold transition {{ $selectedWeek === $weekNumber ? 'border-amber-300/40 bg-amber-300 text-slate-950' : 'border-white/10 bg-white/5 text-slate-200' }}">
+                        <label class="cursor-pointer select-none rounded-2xl border px-4 py-3 text-sm font-semibold transition {{ $selectedWeek === $weekNumber ? 'border-amber-300/40 bg-amber-300 text-slate-950' : 'border-white/10 bg-white/5 text-slate-200' }}">
                             <input wire:click="selectWeek({{ $weekNumber }})" type="radio" name="week_selector" class="sr-only" {{ $selectedWeek === $weekNumber ? 'checked' : '' }}>
                             Semana {{ $weekNumber }}
                         </label>

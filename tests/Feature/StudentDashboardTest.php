@@ -68,6 +68,28 @@ class StudentDashboardTest extends TestCase
         $this->assertGreaterThan(0, $plan->items()->count());
     }
 
+    public function test_daily_availability_is_capped_at_eight_hours(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+
+        $this->actingAs($student)->post('/dashboard/plano', [
+            'course_id' => $course->id,
+            'exam_date' => now()->addWeeks(8)->toDateString(),
+            'start_date' => now()->toDateString(),
+            'available_days' => ['monday', 'wednesday'],
+            'available_minutes_by_day' => [
+                'monday' => '9',
+                'wednesday' => '08:30',
+            ],
+            'intensity' => 'balanced',
+        ])->assertRedirect();
+
+        $plan = StudyPlan::query()->latest('id')->first();
+
+        $this->assertSame(480, $plan->available_minutes_by_day['monday']);
+        $this->assertSame(480, $plan->available_minutes_by_day['wednesday']);
+    }
+
     public function test_student_cannot_access_another_students_plan(): void
     {
         ['student' => $owner, 'course' => $course] = $this->makeStudentWithCourse();
