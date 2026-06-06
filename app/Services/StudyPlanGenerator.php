@@ -473,6 +473,7 @@ class StudyPlanGenerator
         $lessonStates = $this->buildLessonStates($theoryModules, $remainingByModule);
         $typeQueues = $this->buildTheoryQueues($theoryModules);
         $typePointers = collect($typeQueues)->mapWithKeys(fn (Collection $queue, string $type) => [$type => 0])->all();
+        $lastSubjectsByType = [];
         $typeRotationIndex = 0;
         $sortOrder = $initialSortOrder;
         $weeklyTheoryScheduled = [];
@@ -512,6 +513,7 @@ class StudyPlanGenerator
                     $typeQueues,
                     $typePointers,
                     $typeRotationIndex,
+                    $lastSubjectsByType,
                     $lessonStates,
                     $remainingByModule,
                     $completedModules,
@@ -588,11 +590,12 @@ class StudyPlanGenerator
         array $typeQueues,
         array &$typePointers,
         int &$typeRotationIndex,
+        array &$lastSubjectsByType,
         array &$lessonStates,
         array &$remainingByModule,
         array &$completedModules,
     ): int {
-        [$type, $module] = $this->resolveCurrentTheoryModule($typeQueues, $typePointers, $typeRotationIndex, $lessonStates);
+        [$type, $module] = $this->resolveCurrentTheoryModule($typeQueues, $typePointers, $typeRotationIndex, $lastSubjectsByType, $lessonStates);
 
         if (! $module || ! $type) {
             return 0;
@@ -607,6 +610,7 @@ class StudyPlanGenerator
 
         $type = $this->normalizeModuleType($module->type);
         $lessonNames = $lessonBlock['lesson_names'] ?? [];
+        $lastSubjectsByType[$type] = $this->moduleSubject($module);
 
         $plan->items()->create([
             'course_module_id' => $module->id,
@@ -625,8 +629,9 @@ class StudyPlanGenerator
 
         if (($lessonBlock['completed_module'] ?? false) || ($remainingByModule[$module->id] ?? 0) <= 0) {
             $completedModules[] = $module->name;
-            $typePointers[$type]++;
         }
+
+        $typePointers[$type] = $this->nextTheoryPointer($typeQueues[$type] ?? collect(), $module);
 
         return $estimatedMinutes;
     }
@@ -685,16 +690,8 @@ class StudyPlanGenerator
             $queue = $typeQueues[$type] ?? collect();
             $pointer = $typePointers[$type] ?? 0;
 
-            while ($pointer < $queue->count()) {
-                $module = $queue[$pointer];
-
-                $state = $lessonStates[$module->id] ?? null;
-
-                if ($state && ($state['index'] ?? 0) < count($state['lessons'] ?? [])) {
-                    return true;
-                }
-
-                $pointer++;
+            if ($this->remainingTheoryModules($queue, $pointer, $lessonStates)->isNotEmpty()) {
+                return true;
             }
         }
 
@@ -707,7 +704,7 @@ class StudyPlanGenerator
             ->contains(fn (CourseModule $module) => ($remainingByModule[$module->id] ?? 0) > 0);
     }
 
-    protected function resolveCurrentTheoryModule(array $typeQueues, array &$typePointers, int &$typeRotationIndex, array $lessonStates): array
+    protected function resolveCurrentTheoryModule(array $typeQueues, array &$typePointers, int &$typeRotationIndex, array $lastSubjectsByType, array $lessonStates): array
     {
         $types = ['basic', 'specific', 'complementary'];
         $count = count($types);
@@ -717,26 +714,58 @@ class StudyPlanGenerator
             $type = $types[$typeIndex];
             $queue = $typeQueues[$type] ?? collect();
             $pointer = $typePointers[$type] ?? 0;
+            $module = $this->resolveNextModuleForType($queue, $pointer, $lastSubjectsByType[$type] ?? null, $lessonStates);
 
-            while ($pointer < $queue->count()) {
-                $module = $queue[$pointer];
+            if ($module) {
+                $typeRotationIndex = ($typeIndex + 1) % $count;
 
-                $state = $lessonStates[$module->id] ?? null;
-
-                if ($state && ($state['index'] ?? 0) < count($state['lessons'] ?? [])) {
-                    $typePointers[$type] = $pointer;
-                    $typeRotationIndex = ($typeIndex + 1) % $count;
-
-                    return [$type, $module];
-                }
-
-                $pointer++;
+                return [$type, $module];
             }
-
-            $typePointers[$type] = $pointer;
         }
 
         return [null, null];
+    }
+
+    protected function resolveNextModuleForType(Collection $queue, int $pointer, ?string $lastSubject, array $lessonStates): ?CourseModule
+    {
+        $availableModules = $this->remainingTheoryModules($queue, $pointer, $lessonStates);
+
+        if ($availableModules->isEmpty()) {
+            return null;
+        }
+
+        return $availableModules
+            ->first(fn (CourseModule $module) => $this->moduleSubject($module) !== $lastSubject)
+            ?? $availableModules->first();
+    }
+
+    protected function remainingTheoryModules(Collection $queue, int $pointer, array $lessonStates): Collection
+    {
+        $count = $queue->count();
+
+        if ($count === 0) {
+            return collect();
+        }
+
+        return collect(range(0, $count - 1))
+            ->map(fn (int $offset) => $queue[($pointer + $offset) % $count])
+            ->filter(function (CourseModule $module) use ($lessonStates) {
+                $state = $lessonStates[$module->id] ?? null;
+
+                return $state && ($state['index'] ?? 0) < count($state['lessons'] ?? []);
+            })
+            ->values();
+    }
+
+    protected function nextTheoryPointer(Collection $queue, CourseModule $currentModule): int
+    {
+        $index = $queue->search(fn (CourseModule $module) => $module->id === $currentModule->id);
+
+        if ($index === false || $queue->isEmpty()) {
+            return 0;
+        }
+
+        return (((int) $index) + 1) % $queue->count();
     }
 
     protected function buildLessonStates(Collection $modules, array $remainingByModule): array
@@ -899,5 +928,17 @@ class StudyPlanGenerator
             'other' => 'complementary',
             default => $type ?: 'complementary',
         };
+    }
+
+    protected function moduleSubject(CourseModule $module): string
+    {
+        $name = trim($module->name);
+        $subject = Str::before($name, ' - ');
+
+        return Str::of($subject !== '' ? $subject : $name)
+            ->lower()
+            ->ascii()
+            ->squish()
+            ->value();
     }
 }

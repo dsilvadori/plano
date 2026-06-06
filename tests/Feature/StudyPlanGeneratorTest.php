@@ -228,6 +228,101 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertSame($basicModule->id, $items[3]->course_module_id);
     }
 
+    public function test_generator_alternates_subjects_inside_each_theory_type_between_days(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Interpretação',
+            'type' => 'basic',
+            'workload_minutes' => 180,
+            'sort_order' => 1,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Matemática - Porcentagem',
+            'type' => 'basic',
+            'workload_minutes' => 180,
+            'sort_order' => 2,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Direito Administrativo - Atos',
+            'type' => 'specific',
+            'workload_minutes' => 180,
+            'sort_order' => 3,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Legislação - Lei Orgânica',
+            'type' => 'specific',
+            'workload_minutes' => 180,
+            'sort_order' => 4,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática - Excel',
+            'type' => 'complementary',
+            'workload_minutes' => 180,
+            'sort_order' => 5,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Inglês - Interpretação',
+            'type' => 'complementary',
+            'workload_minutes' => 180,
+            'sort_order' => 6,
+        ]);
+
+        $startDate = now()->next('monday');
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            $startDate->copy()->addDay()->toDateString(),
+            $startDate->toDateString(),
+            ['monday', 'tuesday'],
+            ['monday' => 210, 'tuesday' => 210],
+            'balanced',
+        );
+
+        $theoryItemsByDay = $plan->items()
+            ->with('courseModule')
+            ->orderBy('sort_order')
+            ->get()
+            ->filter(fn ($item) => in_array($item->type, ['basic', 'specific', 'complementary'], true))
+            ->groupBy('day_of_week');
+
+        $mondaySubjects = $theoryItemsByDay['monday']
+            ->mapWithKeys(fn ($item) => [$item->type => str($item->courseModule->name)->before(' - ')->toString()])
+            ->all();
+
+        $tuesdaySubjects = $theoryItemsByDay['tuesday']
+            ->mapWithKeys(fn ($item) => [$item->type => str($item->courseModule->name)->before(' - ')->toString()])
+            ->all();
+
+        $this->assertSame([
+            'basic' => 'Português',
+            'specific' => 'Direito Administrativo',
+            'complementary' => 'Informática',
+        ], $mondaySubjects);
+
+        $this->assertSame([
+            'basic' => 'Matemática',
+            'specific' => 'Legislação',
+            'complementary' => 'Inglês',
+        ], $tuesdaySubjects);
+    }
+
     public function test_generator_uses_extra_time_for_questions_and_reviews_at_the_end_of_the_day(): void
     {
         $course = Course::factory()->create();
