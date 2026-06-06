@@ -140,6 +140,46 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertStringContainsString('até 30 minutos', $items[2]->description);
     }
 
+    public function test_generator_does_not_split_a_lesson_when_next_one_does_not_fit_in_remaining_time(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Classe de Palavras',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Classe de Palavras - Aula 1', 'minutes' => 50],
+                ['name' => 'Classe de Palavras - Aula 2', 'minutes' => 15],
+            ],
+            'workload_minutes' => 65,
+            'sort_order' => 1,
+        ]);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->addDay()->toDateString(),
+            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->toDateString(),
+            ['monday', 'tuesday'],
+            ['monday' => 60, 'tuesday' => 60],
+            'balanced',
+        );
+
+        $mondayItems = $plan->items()->where('day_of_week', 'monday')->orderBy('sort_order')->get()->values();
+        $tuesdayItems = $plan->items()->where('day_of_week', 'tuesday')->orderBy('sort_order')->get()->values();
+
+        $this->assertSame($module->id, $mondayItems[0]->course_module_id);
+        $this->assertSame(50, $mondayItems[0]->estimated_minutes);
+        $this->assertStringContainsString('Classe de Palavras - Aula 1', $mondayItems[0]->description);
+        $this->assertSame($module->id, $tuesdayItems[0]->course_module_id);
+        $this->assertSame(15, $tuesdayItems[0]->estimated_minutes);
+        $this->assertStringContainsString('Classe de Palavras - Aula 2', $tuesdayItems[0]->description);
+    }
+
     public function test_generator_interleaves_theory_types_without_breaking_each_module_sequence(): void
     {
         $course = Course::factory()->create();
@@ -217,6 +257,37 @@ class StudyPlanGeneratorTest extends TestCase
 
         $this->assertSame(['basic', 'questions', 'review'], $items->pluck('type')->all());
         $this->assertSame([60, 15, 15], $items->pluck('estimated_minutes')->all());
+    }
+
+    public function test_generator_distributes_remaining_day_time_between_questions_and_review(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Interpretação',
+            'type' => 'basic',
+            'workload_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->addDays(5)->toDateString(),
+            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->toDateString(),
+            ['monday', 'saturday'],
+            ['monday' => 60, 'saturday' => 90],
+            'balanced',
+        );
+
+        $saturdayItems = $plan->items()->where('day_of_week', 'saturday')->orderBy('sort_order')->get()->values();
+
+        $this->assertSame(['questions', 'review'], $saturdayItems->pluck('type')->all());
+        $this->assertSame([45, 45], $saturdayItems->pluck('estimated_minutes')->all());
     }
 
     public function test_generator_keeps_theory_on_saturday_while_there_is_pending_theory(): void
@@ -390,5 +461,113 @@ class StudyPlanGeneratorTest extends TestCase
 
         $this->assertStringNotContainsString('Apresentação e Boas-Vindas', $titles);
         $this->assertStringContainsString('Bloco 3 · Revisão', $titles);
+    }
+
+    public function test_generator_informs_minimum_daily_study_time_when_schedule_is_tight(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Interpretação',
+            'type' => 'basic',
+            'workload_minutes' => 600,
+            'sort_order' => 1,
+        ]);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            now()->addDays(9)->toDateString(),
+            now()->next('monday')->toDateString(),
+            ['monday', 'wednesday', 'friday'],
+            ['monday' => 60, 'wednesday' => 60, 'friday' => 60],
+            'balanced',
+        );
+
+        $this->assertContains($plan->viability_status, ['warning', 'critical']);
+        $this->assertStringContainsString('Para cumprir 100% da carga até a prova', $plan->viability_message);
+        $this->assertStringContainsString('por dia', $plan->viability_message);
+    }
+
+    public function test_generator_informs_minimum_daily_study_time_when_exam_is_close_even_if_viable(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática - Excel',
+            'type' => 'complementary',
+            'workload_minutes' => 180,
+            'sort_order' => 1,
+        ]);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            now()->addDays(10)->toDateString(),
+            now()->next('monday')->toDateString(),
+            ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+            ['monday' => 60, 'tuesday' => 60, 'wednesday' => 60, 'thursday' => 60, 'friday' => 60],
+            'balanced',
+        );
+
+        $this->assertSame('good', $plan->viability_status);
+        $this->assertStringContainsString('Para cumprir 100% da carga até a prova', $plan->viability_message);
+    }
+
+    public function test_plan_progress_percentage_does_not_exceed_one_hundred_percent(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $plan = $student->studyPlans()->create([
+            'course_id' => $course->id,
+            'name' => 'Plano teste',
+            'exam_date' => now()->addWeek(),
+            'exam_date_confirmed' => true,
+            'start_date' => now(),
+            'available_days' => ['monday'],
+            'available_minutes_by_day' => ['monday' => 120],
+            'total_available_minutes' => 120,
+            'total_required_minutes' => 60,
+            'intensity' => 'balanced',
+            'status' => 'active',
+            'viability_status' => 'good',
+            'viability_message' => 'ok',
+            'generated_at' => now(),
+        ]);
+
+        $plan->items()->createMany([
+            [
+                'scheduled_date' => now()->toDateString(),
+                'week_number' => 1,
+                'day_of_week' => 'monday',
+                'title' => 'Teoria',
+                'description' => 'Teoria',
+                'type' => 'basic',
+                'estimated_minutes' => 60,
+                'completed_at' => now(),
+                'sort_order' => 1,
+            ],
+            [
+                'scheduled_date' => now()->toDateString(),
+                'week_number' => 1,
+                'day_of_week' => 'monday',
+                'title' => 'Questões',
+                'description' => 'Questões',
+                'type' => 'questions',
+                'estimated_minutes' => 30,
+                'completed_at' => now(),
+                'sort_order' => 2,
+            ],
+        ]);
+
+        $this->assertSame(100, $plan->fresh()->progress_percentage);
     }
 }

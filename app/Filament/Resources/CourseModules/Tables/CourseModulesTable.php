@@ -30,6 +30,9 @@ class CourseModulesTable
                         'other' => 'Outro/Legado',
                         default => 'Outro',
                     }),
+                TextColumn::make('lessons_count')
+                    ->label('Aulas')
+                    ->sortable(query: fn ($query, $direction) => $query->orderBy('workload_minutes', $direction)),
                 TextColumn::make('workload_minutes')->label('Minutos')->sortable(),
                 TextColumn::make('sort_order')->label('Ordem')->sortable(),
                 IconColumn::make('is_active')->label('Ativo')->boolean(),

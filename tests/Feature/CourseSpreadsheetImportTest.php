@@ -71,5 +71,9 @@ class CourseSpreadsheetImportTest extends TestCase
             'workload_minutes' => 207,
             'type' => 'specific',
         ]);
+        $module = $course->modules()->where('name', 'Português - Classe de palavras')->first();
+        $this->assertNotNull($module);
+        $this->assertIsArray($module->lessons);
+        $this->assertNotEmpty($module->lessons);
     }
 }

@@ -37,6 +37,7 @@ class CourseSpreadsheetImporter
                     ],
                     [
                         'type' => $moduleData['type'],
+                        'lessons' => $moduleData['lessons'] ?? [],
                         'workload_minutes' => $moduleData['workload_minutes'],
                         'sort_order' => $moduleData['sort_order'],
                         'is_active' => true,

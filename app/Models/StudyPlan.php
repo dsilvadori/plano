@@ -73,7 +73,7 @@ class StudyPlan extends Model
             return 0;
         }
 
-        return (int) round(($this->completed_minutes / $this->total_required_minutes) * 100);
+        return min(100, (int) round(($this->completed_minutes / $this->total_required_minutes) * 100));
     }
 
     public function getDaysUntilExamAttribute(): int

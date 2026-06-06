@@ -154,6 +154,12 @@
                                 <p class="mt-2 text-xs text-slate-400">Prática para transformar estudo em resultado.</p>
                             </div>
                         </div>
+                        @if ($activePlan->viability_message)
+                            <div class="mt-5 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
+                                <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Orientação do plano</p>
+                                <p class="mt-2 text-sm text-amber-100">{{ $activePlan->viability_message }}</p>
+                            </div>
+                        @endif
                     @else
                         <h2 class="mt-3 text-2xl font-semibold text-white">Nenhum plano ativo</h2>
                         <p class="mt-2 text-sm text-slate-300">Crie seu primeiro ciclo e transforme sua disponibilidade em execução consistente.</p>
