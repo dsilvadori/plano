@@ -381,14 +381,18 @@ class StudyPlanGenerator
         array $completedModules = [],
         int $initialSortOrder = 1,
     ): void {
-        $queues = $modules
+        $orderedModules = $modules
             ->sortBy('sort_order')
-            ->groupBy('type')
-            ->map(fn (Collection $group) => $group->values());
-
+            ->values();
+        $theoryModules = $orderedModules
+            ->filter(fn (CourseModule $module) => in_array($this->normalizeModuleType($module->type), ['basic', 'specific', 'complementary'], true))
+            ->values();
         $remainingByModule = $remainingByModule ?? $modules->mapWithKeys(fn (CourseModule $module) => [$module->id => (int) $module->workload_minutes])->all();
-        $queuePointers = [];
+        $typeQueues = $this->buildTheoryQueues($theoryModules);
+        $typePointers = collect($typeQueues)->mapWithKeys(fn (Collection $queue, string $type) => [$type => 0])->all();
+        $typeRotationIndex = 0;
         $sortOrder = $initialSortOrder;
+        $weeklyTheoryScheduled = [];
         $weekReferenceStart = $weekReferenceStart?->copy()->startOfWeek(CarbonInterface::MONDAY) ?? $start->copy()->startOfWeek(CarbonInterface::MONDAY);
 
         for ($date = $start->copy(); $date->lte($exam); $date->addDay()) {
@@ -399,139 +403,163 @@ class StudyPlanGenerator
             }
 
             $remainingToday = (int) ($availableMinutesByDay[$dayKey] ?? 0);
+            if ($remainingToday < 15) {
+                continue;
+            }
+
             $weekNumber = $weekReferenceStart
                 ->diffInWeeks($date->copy()->startOfWeek(CarbonInterface::MONDAY)) + 1;
             $blockNumber = 1;
+            $reserveMinutes = $this->resolveReserveMinutes(
+                $dayKey,
+                $remainingToday,
+                (bool) ($weeklyTheoryScheduled[$weekNumber] ?? false),
+            );
+            $theoryBudget = max(0, $remainingToday - $reserveMinutes);
 
-            foreach ($this->dailyBlueprint($dayKey, $remainingToday, $intensity) as $slot) {
-                if ($remainingToday < 15) {
-                    break;
-                }
-
-                $allocated = $this->createPlannedItem(
+            while ($theoryBudget >= 15 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $remainingByModule)) {
+                $allocated = $this->createInterleavedStudyItem(
                     $plan,
                     $date,
                     $weekNumber,
                     $dayKey,
-                    $slot['type'],
-                    min($remainingToday, $slot['minutes']),
+                    $theoryBudget,
                     $blockNumber,
                     $sortOrder,
-                    $queues,
-                    $queuePointers,
+                    $typeQueues,
+                    $typePointers,
+                    $typeRotationIndex,
                     $remainingByModule,
                     $completedModules,
                 );
 
                 if ($allocated === 0) {
-                    continue;
+                    break;
                 }
 
+                $theoryBudget -= $allocated;
                 $remainingToday -= $allocated;
+                $weeklyTheoryScheduled[$weekNumber] = true;
+                $blockNumber++;
+            }
+
+            foreach ($this->buildReserveBlueprint($dayKey, $remainingToday) as $reserveBlock) {
+                $this->createReserveItem(
+                    $plan,
+                    $date,
+                    $weekNumber,
+                    $dayKey,
+                    $reserveBlock['type'],
+                    $reserveBlock['minutes'],
+                    $blockNumber,
+                    $sortOrder,
+                    $completedModules,
+                    $orderedModules,
+                    $remainingByModule,
+                );
+
                 $blockNumber++;
             }
         }
     }
 
-    protected function dailyBlueprint(string $dayKey, int $remainingToday, string $intensity): array
+    protected function resolveReserveMinutes(string $dayKey, int $remainingToday, bool $weekHasTheory): int
     {
-        if ($dayKey === 'saturday') {
-            return $this->buildSaturdayBlueprint($remainingToday);
+        if ($dayKey === 'saturday' && $weekHasTheory) {
+            return $remainingToday;
         }
 
-        if ($dayKey === 'sunday') {
-            return $this->buildSundayBlueprint($remainingToday);
-        }
-
-        return $this->buildWeekdayBlueprint($dayKey, $remainingToday, $intensity);
+        return max(0, min(30, $remainingToday - 60));
     }
 
-    protected function buildWeekdayBlueprint(string $dayKey, int $remainingToday, string $intensity): array
-    {
-        return $this->buildInterleavedStudyBlueprint($remainingToday);
-    }
-
-    protected function buildSaturdayBlueprint(int $remainingToday): array
+    protected function buildReserveBlueprint(string $dayKey, int $remainingToday): array
     {
         $slots = [];
 
         while ($remainingToday >= 15) {
-            $minutes = min(30, $remainingToday);
-            $slots[] = ['type' => count($slots) % 2 === 0 ? 'review' : 'questions', 'minutes' => $minutes];
-            $remainingToday -= $minutes;
-        }
-
-        return $slots;
-    }
-
-    protected function buildSundayBlueprint(int $remainingToday): array
-    {
-        return $this->buildInterleavedStudyBlueprint($remainingToday);
-    }
-
-    protected function buildInterleavedStudyBlueprint(int $remainingToday): array
-    {
-        $slots = [];
-
-        while ($remainingToday >= 90) {
-            $slots[] = ['type' => 'basic', 'minutes' => 30];
-            $slots[] = ['type' => 'specific', 'minutes' => 30];
-            $slots[] = ['type' => 'questions', 'minutes' => 15];
-            $slots[] = ['type' => 'review', 'minutes' => 15];
-            $remainingToday -= 90;
-        }
-
-        if ($remainingToday >= 60) {
-            $slots[] = ['type' => 'basic', 'minutes' => 30];
-            $slots[] = ['type' => 'specific', 'minutes' => 30];
-            $remainingToday -= 60;
-        }
-
-        if ($remainingToday >= 30) {
-            $slots[] = ['type' => 'basic', 'minutes' => 30];
-            $remainingToday -= 30;
-        }
-
-        if ($remainingToday >= 15) {
-            $slots[] = ['type' => 'questions', 'minutes' => 15];
+            $slots[] = [
+                'type' => count($slots) % 2 === 0 ? 'questions' : 'review',
+                'minutes' => min(15, $remainingToday),
+            ];
             $remainingToday -= 15;
         }
 
-        if ($remainingToday >= 15) {
-            $slots[] = ['type' => 'review', 'minutes' => 15];
-        }
-
         return $slots;
     }
 
-    protected function createPlannedItem(
+    protected function createInterleavedStudyItem(
         StudyPlan $plan,
         Carbon $date,
         int $weekNumber,
         string $dayKey,
-        string $preferredType,
-        int $plannedMinutes,
+        int $availableMinutes,
         int $blockNumber,
         int &$sortOrder,
-        Collection $queues,
-        array &$queuePointers,
+        array $typeQueues,
+        array &$typePointers,
+        int &$typeRotationIndex,
         array &$remainingByModule,
         array &$completedModules,
     ): int {
-        $type = $this->resolveTypeForSlot($preferredType, $queues, $remainingByModule);
+        [$type, $module] = $this->resolveCurrentTheoryModule($typeQueues, $typePointers, $typeRotationIndex, $remainingByModule);
 
-        if (in_array($type, ['basic', 'specific'], true) && ! $this->hasRemainingModulesForType($type, $queues, $remainingByModule)) {
+        if (! $module || ! $type) {
             return 0;
         }
 
-        [$module, $title, $description] = $this->pickModule($type, $queues, $queuePointers, $remainingByModule, $completedModules, $blockNumber, $dayKey);
-
-        $moduleRemaining = $module ? max(15, (int) ($remainingByModule[$module->id] ?? 15)) : $plannedMinutes;
-        $estimatedMinutes = min(60, $plannedMinutes, $moduleRemaining);
+        $moduleRemaining = max(15, (int) ($remainingByModule[$module->id] ?? 15));
+        $estimatedMinutes = min(60, $availableMinutes, $moduleRemaining);
 
         if ($estimatedMinutes < 15) {
             return 0;
         }
+
+        $type = $module->type;
+
+        $plan->items()->create([
+            'course_module_id' => $module->id,
+            'scheduled_date' => $date->toDateString(),
+            'week_number' => $weekNumber,
+            'day_of_week' => $dayKey,
+            'title' => $this->makeItemTitle($type, $module->name, $blockNumber),
+            'description' => $this->makeItemDescription($type, $module->name, $dayKey, $estimatedMinutes),
+            'type' => $type,
+            'estimated_minutes' => $estimatedMinutes,
+            'sort_order' => $sortOrder++,
+        ]);
+
+        $remainingByModule[$module->id] -= $estimatedMinutes;
+
+        if ($remainingByModule[$module->id] <= 0) {
+            $completedModules[] = $module->name;
+            $typePointers[$type]++;
+        }
+
+        return $estimatedMinutes;
+    }
+
+    protected function createReserveItem(
+        StudyPlan $plan,
+        Carbon $date,
+        int $weekNumber,
+        string $dayKey,
+        string $type,
+        int $plannedMinutes,
+        int $blockNumber,
+        int &$sortOrder,
+        array $completedModules,
+        Collection $orderedModules,
+        array $remainingByModule,
+    ): void {
+        [$module, $title, $description] = $this->pickReserveContext(
+            $type,
+            $orderedModules,
+            $remainingByModule,
+            $completedModules,
+            $blockNumber,
+            $dayKey,
+            $plannedMinutes,
+        );
 
         $plan->items()->create([
             'course_module_id' => $module?->id,
@@ -541,97 +569,117 @@ class StudyPlanGenerator
             'title' => $title,
             'description' => $description,
             'type' => $type,
-            'estimated_minutes' => $estimatedMinutes,
+            'estimated_minutes' => $plannedMinutes,
             'sort_order' => $sortOrder++,
         ]);
+    }
 
-        if ($module) {
-            $remainingByModule[$module->id] -= $estimatedMinutes;
+    protected function buildTheoryQueues(Collection $modules): array
+    {
+        return collect(['basic', 'specific', 'complementary'])
+            ->mapWithKeys(fn (string $type) => [
+                $type => $modules
+                    ->filter(fn (CourseModule $module) => $this->normalizeModuleType($module->type) === $type)
+                    ->sortBy('sort_order')
+                    ->values(),
+            ])
+            ->all();
+    }
 
-            if ($remainingByModule[$module->id] <= 0) {
-                $completedModules[] = $module->name;
+    protected function hasRemainingTheoryModules(array $typeQueues, array $typePointers, array $remainingByModule): bool
+    {
+        foreach (['basic', 'specific', 'complementary'] as $type) {
+            $queue = $typeQueues[$type] ?? collect();
+            $pointer = $typePointers[$type] ?? 0;
+
+            while ($pointer < $queue->count()) {
+                $module = $queue[$pointer];
+
+                if (($remainingByModule[$module->id] ?? 0) > 0) {
+                    return true;
+                }
+
+                $pointer++;
             }
         }
 
-        return $estimatedMinutes;
+        return false;
     }
 
-    protected function hasRemainingModulesForType(string $type, Collection $queues, array $remainingByModule): bool
+    protected function hasRemainingModules(Collection $orderedModules, array $remainingByModule): bool
     {
-        return ($queues[$type] ?? collect())
+        return $orderedModules
             ->contains(fn (CourseModule $module) => ($remainingByModule[$module->id] ?? 0) > 0);
     }
 
-    protected function resolveTypeForSlot(string $preferredType, Collection $queues, array $remainingByModule): string
+    protected function resolveCurrentTheoryModule(array $typeQueues, array &$typePointers, int &$typeRotationIndex, array $remainingByModule): array
     {
-        $fallbacks = match ($preferredType) {
-            'basic' => ['basic', 'specific', 'questions', 'review'],
-            'specific' => ['specific', 'basic', 'questions', 'review'],
-            'review' => ['review', 'questions', 'specific', 'basic'],
-            'questions' => ['questions', 'review', 'specific', 'basic'],
-            default => ['specific', 'basic', 'questions', 'review'],
-        };
+        $types = ['basic', 'specific', 'complementary'];
+        $count = count($types);
 
-        foreach ($fallbacks as $type) {
-            $hasActiveModule = ($queues[$type] ?? collect())
-                ->contains(fn (CourseModule $module) => ($remainingByModule[$module->id] ?? 0) > 0);
+        for ($offset = 0; $offset < $count; $offset++) {
+            $typeIndex = ($typeRotationIndex + $offset) % $count;
+            $type = $types[$typeIndex];
+            $queue = $typeQueues[$type] ?? collect();
+            $pointer = $typePointers[$type] ?? 0;
 
-            if ($hasActiveModule || in_array($type, ['review', 'questions'], true)) {
-                return $type;
+            while ($pointer < $queue->count()) {
+                $module = $queue[$pointer];
+
+                if (($remainingByModule[$module->id] ?? 0) > 0) {
+                    $typePointers[$type] = $pointer;
+                    $typeRotationIndex = ($typeIndex + 1) % $count;
+
+                    return [$type, $module];
+                }
+
+                $pointer++;
             }
+
+            $typePointers[$type] = $pointer;
         }
 
-        return 'other';
+        return [null, null];
     }
 
-    protected function pickModule(
+    protected function pickReserveContext(
         string $type,
-        Collection $queues,
-        array &$queuePointers,
+        Collection $orderedModules,
         array $remainingByModule,
         array $completedModules,
         int $blockNumber,
         string $dayKey,
+        int $plannedMinutes,
     ): array {
-        $queue = ($queues[$type] ?? collect())->filter(function (CourseModule $module) use ($remainingByModule) {
-            return ($remainingByModule[$module->id] ?? 0) > 0;
-        })->values();
-
-        if ($queue->isNotEmpty()) {
-            $pointer = $queuePointers[$type] ?? 0;
-            $module = $queue[$pointer % $queue->count()];
-            $queuePointers[$type] = $pointer + 1;
-
-            return [
-                $module,
-                $this->makeItemTitle($type, $module->name, $blockNumber),
-                $this->makeItemDescription($type, $module->name, $dayKey),
-            ];
-        }
+        $currentModule = $orderedModules->first(fn (CourseModule $module) => ($remainingByModule[$module->id] ?? 0) > 0);
+        $referenceModuleName = $currentModule?->name ?? collect($completedModules)->last();
 
         if ($type === 'review') {
             $topic = collect($completedModules)->take(-2)->implode(' e ');
+
             return [
-                null,
+                $currentModule,
                 'Bloco ' . $blockNumber . ' · Revisão',
                 $topic !== ''
-                    ? 'Retome resumos, mapas mentais e pontos críticos de ' . $topic . '.'
-                    : 'Retome resumos, mapas mentais e os principais pontos estudados para consolidar a memória.',
+                    ? 'Reserva de até ' . $plannedMinutes . ' minutos para retomar resumos, mapas mentais e pontos críticos de ' . $topic . '.'
+                    : 'Reserva de até ' . $plannedMinutes . ' minutos para retomar resumos, mapas mentais e os principais pontos estudados para consolidar a memória.',
             ];
         }
 
         if ($type === 'questions') {
             return [
-                null,
+                $currentModule,
                 'Bloco ' . $blockNumber . ' · Questões',
-                'Resolva questões para consolidar o conteúdo estudado e medir retenção.',
+                $referenceModuleName
+                    ? 'Reserva de até ' . $plannedMinutes . ' minutos para resolver questões e consolidar o conteúdo de ' . $referenceModuleName . '.'
+                    : 'Reserva de até ' . $plannedMinutes . ' minutos para resolver questões e medir retenção.',
             ];
         }
 
         return [
             null,
             'Bloco ' . $blockNumber . ' · Bloco complementar',
-            'Use este espaço para reforçar o conteúdo mais relevante da sua trilha.',
+            'Reserva de até ' . $plannedMinutes . ' minutos para reforçar o conteúdo mais relevante da sua trilha.',
         ];
     }
 
@@ -640,22 +688,34 @@ class StudyPlanGenerator
         return match ($type) {
             'basic' => 'Bloco ' . $blockNumber . ' · Matéria Básica: ' . $moduleName,
             'specific' => 'Bloco ' . $blockNumber . ' · Conhecimentos Específicos: ' . $moduleName,
+            'complementary' => 'Bloco ' . $blockNumber . ' · Conhecimentos Complementares: ' . $moduleName,
             'review' => 'Bloco ' . $blockNumber . ' · Revisão: ' . $moduleName,
             'questions' => 'Bloco ' . $blockNumber . ' · Resolução de Questões: ' . $moduleName,
             default => 'Bloco ' . $blockNumber . ' · ' . $moduleName,
         };
     }
 
-    protected function makeItemDescription(string $type, string $moduleName, string $dayKey): string
+    protected function makeItemDescription(string $type, string $moduleName, string $dayKey, int $estimatedMinutes): string
+    {
+        $durationLabel = $estimatedMinutes . ' minutos';
+
+        return match ($type) {
+            'basic' => 'Bloco de até ' . $durationLabel . ' para fortalecer sua matéria básica em ' . $moduleName . ' antes de avançar para o próximo assunto.',
+            'specific' => 'Bloco de até ' . $durationLabel . ' para avançar em conhecimentos específicos com foco em ' . $moduleName . ' sem pular para o próximo assunto antes da conclusão.',
+            'complementary' => 'Bloco de até ' . $durationLabel . ' para avançar em conhecimentos complementares com foco em ' . $moduleName . ' sem quebrar a ordem da trilha.',
+            'review' => $dayKey === 'saturday'
+                ? 'Sábado de revisão com reserva de até ' . $durationLabel . ' para retomar pontos-chave de ' . $moduleName . ' com foco em fixação.'
+                : 'Bloco de revisão com reserva de até ' . $durationLabel . ' para reforçar a retenção em ' . $moduleName . '.',
+            'questions' => 'Bloco de resolução de questões com reserva de até ' . $durationLabel . ' para aplicar na prática o conteúdo de ' . $moduleName . '.',
+            default => 'Bloco de estudo planejado para manter consistência até a prova.',
+        };
+    }
+
+    protected function normalizeModuleType(?string $type): string
     {
         return match ($type) {
-            'basic' => 'Bloco de até 60 minutos para fortalecer sua matéria básica em ' . $moduleName . '.',
-            'specific' => 'Bloco de até 60 minutos para avançar em conhecimentos específicos com foco em ' . $moduleName . '.',
-            'review' => $dayKey === 'saturday'
-                ? 'Sábado de revisão: retome pontos-chave de ' . $moduleName . ' com foco em fixação.'
-                : 'Bloco de revisão para reforçar a retenção em ' . $moduleName . '.',
-            'questions' => 'Bloco de resolução de questões para aplicar na prática o conteúdo de ' . $moduleName . '.',
-            default => 'Bloco de estudo planejado para manter consistência até a prova.',
+            'other' => 'complementary',
+            default => $type ?: 'complementary',
         };
     }
 }

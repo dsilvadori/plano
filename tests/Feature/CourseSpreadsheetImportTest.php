@@ -34,6 +34,18 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('Trilha Oficial - Oficial de Administração', $payload['study_track_name']);
     }
 
+    public function test_parser_detects_complementary_module_type(): void
+    {
+        $parser = app(CourseSpreadsheetParser::class);
+        $reflection = new \ReflectionClass($parser);
+        $method = $reflection->getMethod('inferModuleType');
+        $method->setAccessible(true);
+
+        $type = $method->invoke($parser, 'Conhecimentos Complementares', 'Módulo - Apoio', 'Trilha - Informática complementar');
+
+        $this->assertSame('complementary', $type);
+    }
+
     public function test_importer_creates_course_modules_and_official_study_track(): void
     {
         $course = app(CourseSpreadsheetImporter::class)->import(

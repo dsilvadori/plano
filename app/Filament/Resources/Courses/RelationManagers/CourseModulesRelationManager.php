@@ -33,9 +33,10 @@ class CourseModulesRelationManager extends RelationManager
                 ->options([
                     'basic' => 'Matéria Básica',
                     'specific' => 'Conhecimentos Específicos',
+                    'complementary' => 'Conhecimentos Complementares',
                     'review' => 'Revisão',
                     'questions' => 'Questões',
-                    'other' => 'Outro',
+                    'other' => 'Outro/Legado',
                 ])
                 ->required(),
             TextInput::make('workload_minutes')
@@ -65,8 +66,10 @@ class CourseModulesRelationManager extends RelationManager
                     ->formatStateUsing(fn (string $state): string => match ($state) {
                         'basic' => 'Matéria Básica',
                         'specific' => 'Conhecimentos Específicos',
+                        'complementary' => 'Conhecimentos Complementares',
                         'review' => 'Revisão',
                         'questions' => 'Questões',
+                        'other' => 'Outro/Legado',
                         default => 'Outro',
                     }),
                 TextColumn::make('workload_minutes')->label('Minutos')->sortable(),
@@ -78,9 +81,10 @@ class CourseModulesRelationManager extends RelationManager
                     ->options([
                         'basic' => 'Básica',
                         'specific' => 'Específica',
+                        'complementary' => 'Complementar',
                         'review' => 'Revisão',
                         'questions' => 'Questões',
-                        'other' => 'Outro',
+                        'other' => 'Outro/Legado',
                     ]),
             ])
             ->headerActions([

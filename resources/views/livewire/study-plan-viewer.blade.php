@@ -12,6 +12,7 @@
     $typeLabels = [
         'basic' => 'Matéria Básica',
         'specific' => 'Conhecimentos Específicos',
+        'complementary' => 'Conhecimentos Complementares',
         'review' => 'Revisão',
         'questions' => 'Resolução de Questões',
         'other' => 'Complementar',
@@ -20,6 +21,7 @@
     $typeBadgeClasses = [
         'basic' => 'badge-basic',
         'specific' => 'badge-specific',
+        'complementary' => 'badge-other',
         'review' => 'badge-review',
         'questions' => 'badge-questions',
         'other' => 'badge-other',

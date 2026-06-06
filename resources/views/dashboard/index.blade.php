@@ -68,6 +68,7 @@
                             $activeTypeMinutes = [
                                 'Matérias Básicas' => (int) $activePlan->items->where('type', 'basic')->sum('estimated_minutes'),
                                 'Conhecimentos Específicos' => (int) $activePlan->items->where('type', 'specific')->sum('estimated_minutes'),
+                                'Conhecimentos Complementares' => (int) $activePlan->items->where('type', 'complementary')->sum('estimated_minutes'),
                                 'Revisões' => (int) $activePlan->items->where('type', 'review')->sum('estimated_minutes'),
                                 'Questões' => (int) $activePlan->items->where('type', 'questions')->sum('estimated_minutes'),
                             ];
@@ -161,7 +162,7 @@
 
                 <div class="card-subtle">
                     <p class="text-sm uppercase tracking-[0.25em] text-slate-400">Cursos liberados</p>
-                    <h2 class="mt-3 text-xl font-semibold text-white">{{ $availableCourses->count() }} curso(s) disponível(is)</h2>
+                    <h2 class="mt-3 text-xl font-semibold text-white">{{ $availableCourses->count() }} {{ \Illuminate\Support\Str::plural('curso disponível', $availableCourses->count()) }}</h2>
                     <p class="mt-2 text-sm text-slate-300">Você pode montar um plano separado para cada curso em que estiver matriculado.</p>
                     <div class="mt-4 space-y-3">
                         @forelse ($availableCourses as $course)

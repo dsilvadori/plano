@@ -54,6 +54,7 @@ class StudyPlanItem extends Model
             ->replace('Matéria de Conhecimento Específico', 'Conhecimentos Específicos')
             ->replace('Matérias Básicas', 'Matéria Básica')
             ->replace('Conhecimento Específico', 'Conhecimentos Específicos')
+            ->replace('Conhecimentos Complementares', 'Conhecimentos Complementares')
             ->replace('Revisões gerais', 'Revisão')
             ->replace('Revisões', 'Revisão')
             ->replace('Bloco complementar', 'Bloco de apoio')
@@ -66,6 +67,7 @@ class StudyPlanItem extends Model
             ->replace('matéria de conhecimento específico', 'conhecimentos específicos')
             ->replace('matérias básicas', 'matéria básica')
             ->replace('conhecimento específico', 'conhecimentos específicos')
+            ->replace('conhecimento complementar', 'conhecimentos complementares')
             ->replace('Sábado de revisões', 'Sábado de revisão')
             ->value();
     }

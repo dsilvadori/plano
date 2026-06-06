@@ -59,6 +59,7 @@ class StudyPlanViewer extends Component
         $typeLabels = [
             'basic' => 'Matérias Básicas',
             'specific' => 'Conhecimentos Específicos',
+            'complementary' => 'Conhecimentos Complementares',
             'review' => 'Revisões',
             'questions' => 'Resolução de Questões',
             'other' => 'Complementar',

@@ -173,6 +173,10 @@ class CourseSpreadsheetParser
             return 'questions';
         }
 
+        if (Str::contains($context, ['complementar', 'complementares'])) {
+            return 'complementary';
+        }
+
         if (Str::contains($context, ['redacao oficial', 'arquivologia', 'atendimento', 'licitacao', 'direito adm', 'legislacao', 'estatuto', 'lei organica'])) {
             return 'specific';
         }

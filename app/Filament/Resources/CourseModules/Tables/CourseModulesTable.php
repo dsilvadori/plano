@@ -24,8 +24,10 @@ class CourseModulesTable
                     ->formatStateUsing(fn (string $state): string => match ($state) {
                         'basic' => 'Matéria Básica',
                         'specific' => 'Conhecimentos Específicos',
+                        'complementary' => 'Conhecimentos Complementares',
                         'review' => 'Revisão',
                         'questions' => 'Questões',
+                        'other' => 'Outro/Legado',
                         default => 'Outro',
                     }),
                 TextColumn::make('workload_minutes')->label('Minutos')->sortable(),
@@ -37,9 +39,10 @@ class CourseModulesTable
                     ->options([
                         'basic' => 'Básica',
                         'specific' => 'Específica',
+                        'complementary' => 'Complementar',
                         'review' => 'Revisão',
                         'questions' => 'Questões',
-                        'other' => 'Outro',
+                        'other' => 'Outro/Legado',
                     ]),
             ])
             ->recordActions([

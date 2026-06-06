@@ -27,9 +27,10 @@ class CourseModuleForm
                     ->options([
                         'basic' => 'Matéria Básica',
                         'specific' => 'Conhecimentos Específicos',
+                        'complementary' => 'Conhecimentos Complementares',
                         'review' => 'Revisão',
                         'questions' => 'Questões',
-                        'other' => 'Outro',
+                        'other' => 'Outro/Legado',
                     ])
                     ->required(),
                 TextInput::make('workload_minutes')
