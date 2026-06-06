@@ -3,6 +3,7 @@
 namespace App\Livewire;
 
 use App\Models\StudyPlan;
+use App\Models\StudyPlanItem;
 use App\Support\StudyTime;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\View\View;
@@ -78,7 +79,7 @@ class StudyPlanViewer extends Component
                     'completed_tasks' => $completedItems->count(),
                     'total_minutes' => $totalMinutes,
                     'completed_minutes' => $completedMinutes,
-                    'progress' => $totalMinutes > 0 ? (int) round(($completedMinutes / $totalMinutes) * 100) : 0,
+                    'progress' => $totalMinutes > 0 ? min(100, (int) round(($completedMinutes / $totalMinutes) * 100)) : 0,
                     'minutes_label' => StudyTime::formatMinutes($completedMinutes) . ' / ' . StudyTime::formatMinutes($totalMinutes),
                 ];
             })
@@ -104,6 +105,7 @@ class StudyPlanViewer extends Component
             : 'Assim que o plano tiver blocos nesta semana, mostramos a distribuição aqui.';
 
         $selectedWeekRange = null;
+        $itemDescriptions = $this->buildItemDescriptions();
 
         if ($selectedWeekItems->isNotEmpty()) {
             $firstItem = $selectedWeekItems->first();
@@ -122,6 +124,69 @@ class StudyPlanViewer extends Component
             'weeklyFocusMessage' => $weeklyFocusMessage,
             'weeklyBreakdownMessage' => $weeklyBreakdownMessage,
             'selectedWeekRange' => $selectedWeekRange,
+            'itemDescriptions' => $itemDescriptions,
         ]);
+    }
+
+    protected function buildItemDescriptions(): array
+    {
+        $lessonIndexes = [];
+        $descriptionsByItem = [];
+
+        $this->studyPlan->items
+            ->sortBy([
+                ['scheduled_date', 'asc'],
+                ['sort_order', 'asc'],
+                ['id', 'asc'],
+            ])
+            ->each(function (StudyPlanItem $item) use (&$lessonIndexes, &$descriptionsByItem) {
+                if (! in_array($item->type, ['basic', 'specific', 'complementary'], true) || ! $item->courseModule) {
+                    return;
+                }
+
+                $moduleId = $item->courseModule->id;
+                $lessons = $item->courseModule->planning_lessons;
+                $index = $lessonIndexes[$moduleId] ?? 0;
+                $minutes = 0;
+                $names = [];
+
+                while ($index < count($lessons)) {
+                    $lessonMinutes = (int) ($lessons[$index]['minutes'] ?? 0);
+
+                    if ($lessonMinutes <= 0) {
+                        $index++;
+                        continue;
+                    }
+
+                    if (($minutes + $lessonMinutes) > $item->estimated_minutes) {
+                        break;
+                    }
+
+                    $names[] = (string) ($lessons[$index]['name'] ?? $item->courseModule->name);
+                    $minutes += $lessonMinutes;
+                    $index++;
+                }
+
+                $lessonIndexes[$moduleId] = $index;
+
+                if ($names !== []) {
+                    $descriptionsByItem[$item->id] = 'Bloco de ' . StudyTime::formatMinutes((int) $item->estimated_minutes)
+                        . '. Aulas do bloco: ' . $this->formatLessonNames($names) . '.';
+                }
+            });
+
+        return $descriptionsByItem;
+    }
+
+    protected function formatLessonNames(array $lessonNames): string
+    {
+        $lessonNames = array_values(array_filter(array_map(fn ($name) => trim((string) $name), $lessonNames)));
+
+        return match (count($lessonNames)) {
+            0 => '',
+            1 => $lessonNames[0],
+            2 => $lessonNames[0] . ' e ' . $lessonNames[1],
+            default => implode(', ', array_slice($lessonNames, 0, -1)) . ' e ' . $lessonNames[array_key_last($lessonNames)],
+        };
     }
 }

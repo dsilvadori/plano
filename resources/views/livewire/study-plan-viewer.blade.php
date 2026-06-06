@@ -151,6 +151,13 @@
                     <p class="mt-2 text-xs text-slate-400">Momento de colocar a memória para trabalhar e ganhar ritmo.</p>
                 </div>
             </div>
+
+            @if ($studyPlan->viability_message)
+                <div class="mt-5 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
+                    <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Orientação do plano</p>
+                    <p class="mt-2 text-sm text-amber-100">{{ $studyPlan->viability_message }}</p>
+                </div>
+            @endif
         </div>
 
         <div class="card-panel">
@@ -183,7 +190,7 @@
                                                 <span class="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-200">{{ $item->estimated_minutes }} min</span>
                                             </div>
                                             <p class="mt-3 text-sm font-semibold text-white">{{ $item->display_title }}</p>
-                                            <p class="mt-2 text-sm text-slate-400">{{ $item->display_description }}</p>
+                                            <p class="mt-2 text-sm text-slate-400">{{ $itemDescriptions[$item->id] ?? $item->display_description }}</p>
                                         </div>
                                         <div class="mt-auto flex justify-end pt-2">
                                             <livewire:toggle-study-plan-item :item="$item" :key="$item->id" />
