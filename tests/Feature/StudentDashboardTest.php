@@ -125,6 +125,52 @@ class StudentDashboardTest extends TestCase
         $this->assertNotNull($item->fresh()->completed_at);
     }
 
+    public function test_study_plan_viewer_shows_each_lesson_with_its_own_duration(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Classes de Palavras',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Substantivo e Adjetivo', 'minutes' => 25],
+                ['name' => 'Advérbio e Conjunção', 'minutes' => 35],
+            ],
+            'workload_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'total_required_minutes' => 60,
+            'status' => 'active',
+        ]);
+
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Português - Classes de Palavras',
+            'description' => 'Descrição antiga com aulas em texto corrido.',
+            'type' => 'basic',
+            'estimated_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee('Substantivo e Adjetivo')
+            ->assertSee('25 min')
+            ->assertSee('Advérbio e Conjunção')
+            ->assertSee('35 min')
+            ->assertDontSee('Descrição antiga com aulas em texto corrido.');
+    }
+
     public function test_student_can_delete_own_plan(): void
     {
         ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();

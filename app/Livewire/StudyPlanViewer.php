@@ -2,6 +2,7 @@
 
 namespace App\Livewire;
 
+use App\Models\CourseModule;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Support\StudyTime;
@@ -105,7 +106,7 @@ class StudyPlanViewer extends Component
             : 'Assim que o plano tiver blocos nesta semana, mostramos a distribuição aqui.';
 
         $selectedWeekRange = null;
-        $itemDescriptions = $this->buildItemDescriptions();
+        $itemLessons = $this->buildItemLessons();
 
         if ($selectedWeekItems->isNotEmpty()) {
             $firstItem = $selectedWeekItems->first();
@@ -124,14 +125,18 @@ class StudyPlanViewer extends Component
             'weeklyFocusMessage' => $weeklyFocusMessage,
             'weeklyBreakdownMessage' => $weeklyBreakdownMessage,
             'selectedWeekRange' => $selectedWeekRange,
-            'itemDescriptions' => $itemDescriptions,
+            'itemLessons' => $itemLessons,
         ]);
     }
 
-    protected function buildItemDescriptions(): array
+    protected function buildItemLessons(): array
     {
         $lessonIndexes = [];
-        $descriptionsByItem = [];
+        $lessonsByItem = [];
+        $modulesById = CourseModule::query()
+            ->whereIn('id', $this->studyPlan->items->pluck('course_module_id')->filter()->unique())
+            ->get()
+            ->keyBy('id');
 
         $this->studyPlan->items
             ->sortBy([
@@ -139,16 +144,18 @@ class StudyPlanViewer extends Component
                 ['sort_order', 'asc'],
                 ['id', 'asc'],
             ])
-            ->each(function (StudyPlanItem $item) use (&$lessonIndexes, &$descriptionsByItem) {
-                if (! in_array($item->type, ['basic', 'specific', 'complementary'], true) || ! $item->courseModule) {
+            ->each(function (StudyPlanItem $item) use (&$lessonIndexes, &$lessonsByItem, $modulesById) {
+                $module = $modulesById->get($item->course_module_id);
+
+                if (! in_array($item->type, ['basic', 'specific', 'complementary'], true) || ! $module) {
                     return;
                 }
 
-                $moduleId = $item->courseModule->id;
-                $lessons = $item->courseModule->planning_lessons;
+                $moduleId = $module->id;
+                $lessons = $module->planning_lessons;
                 $index = $lessonIndexes[$moduleId] ?? 0;
                 $minutes = 0;
-                $names = [];
+                $itemLessons = [];
 
                 while ($index < count($lessons)) {
                     $lessonMinutes = (int) ($lessons[$index]['minutes'] ?? 0);
@@ -162,31 +169,38 @@ class StudyPlanViewer extends Component
                         break;
                     }
 
-                    $names[] = (string) ($lessons[$index]['name'] ?? $item->courseModule->name);
+                    $itemLessons[] = [
+                        'name' => (string) ($lessons[$index]['name'] ?? $module->name),
+                        'minutes' => $lessonMinutes,
+                        'minutes_label' => $this->formatLessonMinutes($lessonMinutes),
+                    ];
                     $minutes += $lessonMinutes;
                     $index++;
                 }
 
                 $lessonIndexes[$moduleId] = $index;
 
-                if ($names !== []) {
-                    $descriptionsByItem[$item->id] = 'Bloco de ' . StudyTime::formatMinutes((int) $item->estimated_minutes)
-                        . '. Aulas do bloco: ' . $this->formatLessonNames($names) . '.';
+                if ($itemLessons !== []) {
+                    $lessonsByItem[$item->id] = $itemLessons;
                 }
             });
 
-        return $descriptionsByItem;
+        return $lessonsByItem;
     }
 
-    protected function formatLessonNames(array $lessonNames): string
+    protected function formatLessonMinutes(int $minutes): string
     {
-        $lessonNames = array_values(array_filter(array_map(fn ($name) => trim((string) $name), $lessonNames)));
+        if ($minutes < 60) {
+            return $minutes . ' min';
+        }
 
-        return match (count($lessonNames)) {
-            0 => '',
-            1 => $lessonNames[0],
-            2 => $lessonNames[0] . ' e ' . $lessonNames[1],
-            default => implode(', ', array_slice($lessonNames, 0, -1)) . ' e ' . $lessonNames[array_key_last($lessonNames)],
-        };
+        $hours = intdiv($minutes, 60);
+        $remainingMinutes = $minutes % 60;
+
+        if ($remainingMinutes === 0) {
+            return $hours . 'h';
+        }
+
+        return $hours . 'h ' . $remainingMinutes . 'min';
     }
 }

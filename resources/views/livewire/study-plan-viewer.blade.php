@@ -190,7 +190,18 @@
                                                 <span class="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-200">{{ $item->estimated_minutes }} min</span>
                                             </div>
                                             <p class="mt-3 text-sm font-semibold text-white">{{ $item->display_title }}</p>
-                                            <p class="mt-2 text-sm text-slate-400">{{ $itemDescriptions[$item->id] ?? $item->display_description }}</p>
+                                            @if (! empty($itemLessons[$item->id]))
+                                                <div class="mt-3 space-y-2">
+                                                    @foreach ($itemLessons[$item->id] as $lesson)
+                                                        <div class="flex items-start justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+                                                            <p class="text-sm leading-5 text-slate-300">{{ $lesson['name'] }}</p>
+                                                            <span class="shrink-0 rounded-full border border-white/10 bg-slate-900/80 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-200">{{ $lesson['minutes_label'] }}</span>
+                                                        </div>
+                                                    @endforeach
+                                                </div>
+                                            @else
+                                                <p class="mt-2 text-sm text-slate-400">{{ $item->display_description }}</p>
+                                            @endif
                                         </div>
                                         <div class="mt-auto flex justify-end pt-2">
                                             <livewire:toggle-study-plan-item :item="$item" :key="$item->id" />
