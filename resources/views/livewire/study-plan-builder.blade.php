@@ -31,9 +31,10 @@
             clearInterval(this.timer);
 
             const startedAt = Date.now();
+            const animationDuration = 10000;
             this.timer = setInterval(() => {
                 const elapsed = Date.now() - startedAt;
-                const targetProgress = Math.min(99, Math.round((elapsed / 9000) * 100));
+                const targetProgress = Math.min(99, Math.round((elapsed / animationDuration) * 100));
 
                 if (targetProgress > this.progress) {
                     this.progress = targetProgress;
@@ -43,7 +44,7 @@
                     this.step++;
                 }
 
-                if (elapsed >= 9000) {
+                if (elapsed >= animationDuration) {
                     clearInterval(this.timer);
                     this.progress = 100;
                     this.step = this.steps.length - 1;
@@ -54,13 +55,6 @@
                     }, 50);
                 }
             }, 150);
-        },
-        stopPlanProgress() {
-            clearInterval(this.timer);
-            this.progress = 100;
-            setTimeout(() => {
-                this.isBuilding = false;
-            }, 500);
         }
     }"
 >
@@ -263,7 +257,7 @@
     <div
         x-show="isBuilding"
         x-transition.opacity
-        x-init="$watch('progress', value => { if (value >= 100) { stopPlanProgress() } }); $watch('isBuilding', value => { if (!value) { clearInterval(timer) } })"
+        x-init="$watch('isBuilding', value => { if (!value) { clearInterval(timer) } })"
         class="fixed inset-0 z-50 items-center justify-center bg-slate-950/85 p-6 backdrop-blur"
         style="display: none;"
     >
@@ -301,7 +295,7 @@
             <div class="mt-6 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
                 <p class="text-xs uppercase tracking-[0.25em] text-slate-500">Etapa atual</p>
                 <p class="mt-2 text-sm text-slate-200" x-text="finalizing ? 'Plano pronto. Estamos abrindo sua tela final...' : steps[step]"></p>
-                <p class="mt-3 text-xs text-slate-500">A montagem fica visível por 9 segundos e, ao terminar, seguramos a transição por mais 1 segundo antes de abrir o plano.</p>
+                <p class="mt-3 text-xs text-slate-500">A montagem fica visível por 10 segundos e, ao terminar, abrimos o plano assim que a criação for concluída.</p>
             </div>
         </div>
     </div>
