@@ -34,8 +34,8 @@ class WebhookEventsTable
                         'failed' => 'Falhou',
                         default => $state,
                     }),
-                TextColumn::make('processed_at')->label('Processado em')->dateTime('d/m/Y H:i'),
-                TextColumn::make('created_at')->label('Recebido em')->dateTime('d/m/Y H:i'),
+                TextColumn::make('processed_at')->label('Processado em')->dateTime('d/m/Y H:i', 'America/Sao_Paulo'),
+                TextColumn::make('created_at')->label('Recebido em')->dateTime('d/m/Y H:i', 'America/Sao_Paulo'),
             ])
             ->filters([
                 SelectFilter::make('status')

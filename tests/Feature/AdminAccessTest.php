@@ -7,6 +7,7 @@ use App\Models\Course;
 use App\Models\User;
 use App\Models\WebhookEvent;
 use App\Notifications\SetPasswordNotification;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
 use Livewire\Livewire;
@@ -175,6 +176,8 @@ class AdminAccessTest extends TestCase
             'event_id' => 'evt_read_only',
             'event_type' => 'pagamento_aprovado',
             'status' => 'processed',
+            'processed_at' => CarbonImmutable::parse('2026-06-07 21:00:00', 'UTC'),
+            'created_at' => CarbonImmutable::parse('2026-06-07 21:00:00', 'UTC'),
         ]);
 
         $this->actingAs($admin)
@@ -182,6 +185,7 @@ class AdminAccessTest extends TestCase
             ->assertOk()
             ->assertSee('Webhooks')
             ->assertSee('evt_read_only')
+            ->assertSee('07/06/2026 18:00')
             ->assertDontSee('Criar webhook')
             ->assertDontSee('Novo webhook');
     }

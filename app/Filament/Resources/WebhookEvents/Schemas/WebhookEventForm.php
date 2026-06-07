@@ -37,7 +37,7 @@ class WebhookEventForm
                     ->disabled(),
                 KeyValue::make('payload')->label('Payload')->disabled()->columnSpanFull(),
                 Textarea::make('error_message')->label('Erro')->disabled()->columnSpanFull(),
-                DateTimePicker::make('processed_at')->label('Processado em')->disabled(),
+                DateTimePicker::make('processed_at')->label('Processado em')->timezone('America/Sao_Paulo')->disabled(),
             ]);
     }
 }
