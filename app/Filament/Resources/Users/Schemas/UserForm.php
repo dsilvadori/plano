@@ -20,6 +20,7 @@ class UserForm
                     ->options([
                         'admin' => 'Administrador',
                         'student' => 'Aluno',
+                        'subscriber' => 'Assinante',
                     ])
                     ->required(),
                 TextInput::make('tutory_customer_id')->label('ID do cliente na Tutory'),
@@ -27,7 +28,7 @@ class UserForm
                     ->label('Senha')
                     ->password()
                     ->dehydrated(fn ($state) => filled($state))
-                    ->helperText('Opcional. Para alunos, o sistema envia um e-mail de primeiro acesso para criarem a própria senha.'),
+                    ->helperText('Opcional. Para alunos e assinantes, o sistema envia um e-mail de primeiro acesso para criarem a própria senha.'),
             ]);
     }
 }

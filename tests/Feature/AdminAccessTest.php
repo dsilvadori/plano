@@ -68,6 +68,47 @@ class AdminAccessTest extends TestCase
             ->assertDontSee('Curso Inativo');
     }
 
+    public function test_subscriber_can_access_student_dashboard_and_see_all_active_courses(): void
+    {
+        $subscriber = User::factory()->create([
+            'role' => 'subscriber',
+        ]);
+
+        $activeCourse = Course::factory()->create([
+            'name' => 'Curso Liberado Para Assinante',
+            'is_active' => true,
+        ]);
+
+        Course::factory()->create([
+            'name' => 'Curso Inativo',
+            'is_active' => false,
+        ]);
+
+        $this->actingAs($subscriber)
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee($activeCourse->name)
+            ->assertDontSee('Curso Inativo');
+    }
+
+    public function test_subscriber_can_access_study_plan_builder_with_all_active_courses(): void
+    {
+        $subscriber = User::factory()->create([
+            'role' => 'subscriber',
+        ]);
+
+        Course::factory()->create([
+            'name' => 'Curso Assinante',
+            'is_active' => true,
+        ]);
+
+        $this->actingAs($subscriber)
+            ->get(route('study-plans.create'))
+            ->assertOk()
+            ->assertSee('Criador de plano')
+            ->assertSee('Curso Assinante');
+    }
+
     public function test_admin_can_access_study_plan_builder(): void
     {
         $admin = User::factory()->admin()->create();
@@ -109,13 +150,19 @@ class AdminAccessTest extends TestCase
             'role' => 'student',
         ]);
 
+        User::factory()->create([
+            'name' => 'Assinante Teste',
+            'role' => 'subscriber',
+        ]);
+
         $this->actingAs($admin)
             ->get('/admin/users')
             ->assertOk()
             ->assertSee('Usuários')
             ->assertSee('Visualizar área do aluno')
             ->assertSee('Administrador')
-            ->assertSee('Aluno');
+            ->assertSee('Aluno')
+            ->assertSee('Assinante');
     }
 
     public function test_admin_can_create_student_without_password_and_send_first_access_email(): void
@@ -140,6 +187,30 @@ class AdminAccessTest extends TestCase
         $this->assertNotNull($student);
         $this->assertSame('student', $student->role);
         Notification::assertSentTo($student, SetPasswordNotification::class);
+    }
+
+    public function test_admin_can_create_subscriber_without_password_and_send_first_access_email(): void
+    {
+        Notification::fake();
+
+        $admin = User::factory()->admin()->create();
+
+        $this->actingAs($admin);
+
+        Livewire::test(CreateUser::class)
+            ->fillForm([
+                'name' => 'Assinante Primeiro Acesso',
+                'email' => 'assinante-acesso@example.com',
+                'role' => 'subscriber',
+            ])
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $subscriber = User::where('email', 'assinante-acesso@example.com')->first();
+
+        $this->assertNotNull($subscriber);
+        $this->assertSame('subscriber', $subscriber->role);
+        Notification::assertSentTo($subscriber, SetPasswordNotification::class);
     }
 
     public function test_first_access_email_uses_no_reply_sender_and_reset_password_link(): void

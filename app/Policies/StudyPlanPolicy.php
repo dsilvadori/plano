@@ -9,7 +9,7 @@ class StudyPlanPolicy
 {
     public function viewAny(User $user): bool
     {
-        return $user->isAdmin() || $user->isStudent();
+        return $user->canAccessStudentArea();
     }
 
     public function view(User $user, StudyPlan $studyPlan): bool

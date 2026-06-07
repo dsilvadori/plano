@@ -33,6 +33,26 @@ class TutoryWebhookTest extends TestCase
         ], $overrides);
     }
 
+    protected function subscriptionPayload(array $overrides = []): array
+    {
+        return array_replace_recursive([
+            'evento' => 'pagamento_aprovado',
+            'id' => 'pedido_assinatura_123',
+            'sessao' => 'sessao_assinatura_123',
+            'nome' => 'Maria Assinante',
+            'email' => 'maria@example.com',
+            'telefone' => '5511999999999',
+            'produto' => [
+                'id' => 'assinatura-anual',
+                'nome' => 'Assinatura Anual',
+            ],
+            'status' => 'paid',
+            'metadados' => [
+                'assinatura_id' => 'sub_123',
+            ],
+        ], $overrides);
+    }
+
     public function test_webhook_with_invalid_secret_returns_401(): void
     {
         $this->postJson('/webhooks/tutory', $this->payload(), [
@@ -85,5 +105,81 @@ class TutoryWebhookTest extends TestCase
         $user = User::where('email', 'joao@email.com')->firstOrFail();
 
         $this->assertTrue($user->courses()->exists());
+    }
+
+    public function test_approved_webhook_creates_inactive_course_when_product_does_not_exist(): void
+    {
+        Notification::fake();
+
+        $this->postJson('/webhooks/tutory', $this->payload([
+            'event_id' => 'evt_unknown_product',
+            'purchase' => [
+                'id' => 'purchase_unknown_product',
+                'product_id' => 'curso-novo-tutory',
+                'product_name' => 'Curso Novo Tutory',
+            ],
+        ]), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'joao@email.com')->firstOrFail();
+        $course = Course::where('tutory_product_id', 'curso-novo-tutory')->firstOrFail();
+
+        $this->assertSame('Curso Novo Tutory', $course->name);
+        $this->assertSame('curso-novo-tutory', $course->slug);
+        $this->assertFalse($course->is_active);
+        $this->assertTrue($user->courses()->whereKey($course)->exists());
+        $this->assertFalse($user->availableCoursesQuery()->whereKey($course)->exists());
+    }
+
+    public function test_subscription_webhook_creates_subscriber_with_access_to_all_active_courses(): void
+    {
+        Notification::fake();
+
+        $firstCourse = Course::factory()->create([
+            'name' => 'Curso Ativo 1',
+            'is_active' => true,
+        ]);
+
+        $secondCourse = Course::factory()->create([
+            'name' => 'Curso Ativo 2',
+            'is_active' => true,
+        ]);
+
+        Course::factory()->create([
+            'name' => 'Curso Inativo',
+            'is_active' => false,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->subscriptionPayload(), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'maria@example.com')->firstOrFail();
+
+        $this->assertSame('subscriber', $user->role);
+        $this->assertSame('sub_123', $user->tutory_customer_id);
+        $this->assertTrue($user->canAccessStudentArea());
+        $this->assertEqualsCanonicalizing(
+            [$firstCourse->id, $secondCourse->id],
+            $user->availableCoursesQuery()->pluck('id')->all(),
+        );
+        Notification::assertSentTo($user, SetPasswordNotification::class);
+    }
+
+    public function test_subscription_webhook_upgrades_existing_student_to_subscriber(): void
+    {
+        Notification::fake();
+
+        $student = User::factory()->create([
+            'email' => 'maria@example.com',
+            'role' => 'student',
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->subscriptionPayload(), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $this->assertSame('subscriber', $student->fresh()->role);
     }
 }

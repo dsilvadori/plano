@@ -52,9 +52,14 @@ class User extends Authenticatable implements FilamentUser
         return $this->role === 'student';
     }
 
+    public function isSubscriber(): bool
+    {
+        return $this->role === 'subscriber';
+    }
+
     public function canAccessStudentArea(): bool
     {
-        return $this->isAdmin() || $this->isStudent();
+        return $this->isAdmin() || $this->isStudent() || $this->isSubscriber();
     }
 
     public function isTestStudent(): bool
@@ -64,7 +69,7 @@ class User extends Authenticatable implements FilamentUser
 
     public function availableCoursesQuery(): Builder
     {
-        if ($this->isAdmin()) {
+        if ($this->isAdmin() || $this->isSubscriber()) {
             return Course::query()
                 ->where('is_active', true);
         }

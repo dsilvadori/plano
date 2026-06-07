@@ -29,6 +29,7 @@ class UsersTable
                     ->formatStateUsing(fn (string $state): string => match ($state) {
                         'admin' => 'Administrador',
                         'student' => 'Aluno',
+                        'subscriber' => 'Assinante',
                         default => $state,
                     }),
                 TextColumn::make('phone')->label('Telefone')->toggleable(),
@@ -40,6 +41,7 @@ class UsersTable
                     ->options([
                         'admin' => 'Admin',
                         'student' => 'Aluno',
+                        'subscriber' => 'Assinante',
                     ]),
             ])
             ->recordActions([

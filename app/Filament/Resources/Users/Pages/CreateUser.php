@@ -23,7 +23,7 @@ class CreateUser extends CreateRecord
 
     protected function afterCreate(): void
     {
-        if (! $this->record->isStudent()) {
+        if (! ($this->record->isStudent() || $this->record->isSubscriber())) {
             return;
         }
 
