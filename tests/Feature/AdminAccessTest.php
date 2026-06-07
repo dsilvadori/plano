@@ -2,9 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\Users\Pages\CreateUser;
 use App\Models\Course;
 use App\Models\User;
+use App\Notifications\SetPasswordNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Notification;
+use Livewire\Livewire;
 use Tests\TestCase;
 
 class AdminAccessTest extends TestCase
@@ -112,5 +116,46 @@ class AdminAccessTest extends TestCase
             ->assertSee('Visualizar área do aluno')
             ->assertSee('Administrador')
             ->assertSee('Aluno');
+    }
+
+    public function test_admin_can_create_student_without_password_and_send_first_access_email(): void
+    {
+        Notification::fake();
+
+        $admin = User::factory()->admin()->create();
+
+        $this->actingAs($admin);
+
+        Livewire::test(CreateUser::class)
+            ->fillForm([
+                'name' => 'Aluno Primeiro Acesso',
+                'email' => 'primeiro-acesso@example.com',
+                'role' => 'student',
+            ])
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $student = User::where('email', 'primeiro-acesso@example.com')->first();
+
+        $this->assertNotNull($student);
+        $this->assertSame('student', $student->role);
+        Notification::assertSentTo($student, SetPasswordNotification::class);
+    }
+
+    public function test_first_access_email_uses_no_reply_sender_and_reset_password_link(): void
+    {
+        $student = User::factory()->create([
+            'name' => 'Aluno Teste',
+            'email' => 'aluno@example.com',
+            'role' => 'student',
+        ]);
+
+        $mail = (new SetPasswordNotification('token-teste'))->toMail($student);
+
+        $this->assertSame(['nao-responda@vencendoconcursos.com.br', 'Vencendo Concursos'], $mail->from);
+        $this->assertSame('Primeiro acesso ao Plano de Estudos | Vencendo Concursos', $mail->subject);
+        $this->assertSame('Criar senha de primeiro acesso', $mail->actionText);
+        $this->assertStringContainsString(route('password.reset', ['token' => 'token-teste'], false), $mail->actionUrl);
+        $this->assertStringContainsString('email=aluno%40example.com', $mail->actionUrl);
     }
 }

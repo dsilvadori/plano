@@ -1,8 +1,8 @@
 <x-guest-layout>
     <div class="mb-6">
-        <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Nova senha</p>
-        <h1 class="mt-3 text-2xl font-semibold text-white">Defina uma senha para continuar seu plano.</h1>
-        <p class="mt-2 text-sm text-slate-300">Escolha uma senha segura para acessar seu dashboard com tranquilidade.</p>
+        <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Primeiro acesso</p>
+        <h1 class="mt-3 text-2xl font-semibold text-white">Crie sua senha para entrar na área do aluno.</h1>
+        <p class="mt-2 text-sm text-slate-300">Use o e-mail que recebeu o convite e defina uma senha segura para acessar seu Plano de Estudos.</p>
     </div>
 
     <form method="POST" action="{{ route('password.store') }}">
@@ -34,7 +34,7 @@
 
         <div class="flex items-center justify-end mt-4">
             <x-primary-button>
-                Salvar nova senha
+                Criar senha e acessar
             </x-primary-button>
         </div>
     </form>

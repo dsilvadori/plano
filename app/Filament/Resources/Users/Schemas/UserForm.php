@@ -27,7 +27,7 @@ class UserForm
                     ->label('Senha')
                     ->password()
                     ->dehydrated(fn ($state) => filled($state))
-                    ->required(fn (string $operation) => $operation === 'create'),
+                    ->helperText('Opcional. Para alunos, o sistema envia um e-mail de primeiro acesso para criarem a própria senha.'),
             ]);
     }
 }

@@ -27,11 +27,13 @@ class SetPasswordNotification extends Notification
         ]);
 
         return (new MailMessage)
-            ->subject('Acesse seu Plano de Estudos | Vencendo Concursos')
+            ->from('nao-responda@vencendoconcursos.com.br', 'Vencendo Concursos')
+            ->subject('Primeiro acesso ao Plano de Estudos | Vencendo Concursos')
             ->greeting('Olá, ' . $notifiable->name . '!')
-            ->line('Seu acesso ao Plano de Estudos da Vencendo Concursos foi criado.')
-            ->line('Agora falta só criar sua senha para começar a organizar sua preparação.')
-            ->action('Criar minha senha', $url)
+            ->line('Seu acesso à área do aluno da Vencendo Concursos foi criado.')
+            ->line('Para entrar no Plano de Estudos, crie sua senha de primeiro acesso no link abaixo.')
+            ->action('Criar senha de primeiro acesso', $url)
+            ->line('Se você não solicitou este acesso, ignore este e-mail.')
             ->line('Bons estudos,')
             ->line('Equipe Vencendo Concursos');
     }
