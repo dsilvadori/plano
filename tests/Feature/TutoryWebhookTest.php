@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\WebhookEvent;
 use App\Notifications\SetPasswordNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Notification;
 use Tests\TestCase;
 
@@ -105,6 +106,99 @@ class TutoryWebhookTest extends TestCase
         $user = User::where('email', 'joao@email.com')->firstOrFail();
 
         $this->assertTrue($user->courses()->exists());
+    }
+
+    public function test_generic_santos_combo_product_links_student_to_all_active_santos_courses(): void
+    {
+        Notification::fake();
+
+        $genericCombo = Course::factory()->create([
+            'name' => 'Gabaritando Prefeitura de Santos',
+            'slug' => 'gabaritando-prefeitura-de-santos',
+            'tutory_product_id' => 'gabaritando-prefeitura-de-santos',
+            'is_active' => true,
+        ]);
+
+        $firstCourse = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Oficial de Administração',
+            'slug' => 'gabaritando-santos-oficial-de-administracao',
+            'is_active' => true,
+        ]);
+
+        $secondCourse = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'slug' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
+
+        $inactiveCourse = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Curso Inativo',
+            'slug' => 'gabaritando-santos-curso-inativo',
+            'is_active' => false,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload([
+            'event_id' => 'evt_combo_santos',
+            'purchase' => [
+                'id' => 'purchase_combo_santos',
+                'product_id' => 'gabaritando-prefeitura-de-santos',
+                'product_name' => 'Gabaritando Prefeitura de Santos',
+            ],
+        ]), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'joao@email.com')->firstOrFail();
+
+        $this->assertEqualsCanonicalizing(
+            [$firstCourse->id, $secondCourse->id],
+            $user->courses()->pluck('courses.id')->all(),
+        );
+        $this->assertFalse($user->courses()->whereKey($genericCombo)->exists());
+        $this->assertFalse($user->courses()->whereKey($inactiveCourse)->exists());
+    }
+
+    public function test_command_expands_existing_santos_combo_links(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+
+        $genericCombo = Course::factory()->create([
+            'name' => 'Gabaritando Prefeitura de Santos',
+            'slug' => 'gabaritando-prefeitura-de-santos',
+            'is_active' => true,
+        ]);
+
+        $firstCourse = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Oficial de Administração',
+            'slug' => 'gabaritando-santos-oficial-de-administracao',
+            'is_active' => true,
+        ]);
+
+        $secondCourse = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'slug' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
+
+        Course::factory()->create([
+            'name' => 'Gabaritando Santos - Curso Inativo',
+            'slug' => 'gabaritando-santos-curso-inativo',
+            'is_active' => false,
+        ]);
+
+        $student->courses()->syncWithoutDetaching([
+            $genericCombo->id => [
+                'source' => 'tutory',
+                'external_purchase_id' => 'purchase_combo_santos',
+            ],
+        ]);
+
+        $this->assertSame(0, Artisan::call('courses:expand-santos-combo'));
+
+        $this->assertEqualsCanonicalizing(
+            [$genericCombo->id, $firstCourse->id, $secondCourse->id],
+            $student->fresh()->courses()->pluck('courses.id')->all(),
+        );
     }
 
     public function test_approved_webhook_creates_inactive_course_when_product_does_not_exist(): void

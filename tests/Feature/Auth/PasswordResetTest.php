@@ -16,7 +16,11 @@ class PasswordResetTest extends TestCase
     {
         $response = $this->get('/forgot-password');
 
-        $response->assertStatus(200);
+        $response
+            ->assertStatus(200)
+            ->assertSee('Primeiro acesso')
+            ->assertSee('Receba o link para criar sua senha.')
+            ->assertSee('Enviar link de acesso');
     }
 
     public function test_reset_password_link_can_be_requested(): void

@@ -55,9 +55,7 @@ class TutoryWebhookProcessor
             );
 
             if ($user->isStudent()) {
-                $course = $this->courseForPurchase($payload, $productId);
-
-                if ($course) {
+                foreach ($this->coursesForPurchase($payload, $productId) as $course) {
                     StudentCourse::firstOrCreate(
                         ['user_id' => $user->id, 'course_id' => $course->id],
                         ['source' => 'tutory', 'external_purchase_id' => $purchaseId],
@@ -122,6 +120,35 @@ class TutoryWebhookProcessor
         return Str::contains($productName, 'assinatura');
     }
 
+    protected function coursesForPurchase(array $payload, ?string $productId)
+    {
+        if ($this->isSantosComboPayload($payload)) {
+            $comboCourses = Course::query()
+                ->where('is_active', true)
+                ->where(function ($query): void {
+                    $query
+                        ->where('name', 'like', '%Santos%')
+                        ->orWhere('slug', 'like', '%santos%');
+                })
+                ->get()
+                ->reject(fn (Course $course): bool => $this->normalizedName($course->name) === 'gabaritando prefeitura de santos')
+                ->values();
+
+            if ($comboCourses->isNotEmpty()) {
+                return $comboCourses;
+            }
+        }
+
+        $course = $this->courseForPurchase($payload, $productId);
+
+        return $course ? collect([$course]) : collect();
+    }
+
+    protected function isSantosComboPayload(array $payload): bool
+    {
+        return $this->normalizedName($this->productName($payload)) === 'gabaritando prefeitura de santos';
+    }
+
     protected function courseForPurchase(array $payload, ?string $productId): ?Course
     {
         if (! $productId) {
@@ -134,10 +161,7 @@ class TutoryWebhookProcessor
             return $course;
         }
 
-        $productName = data_get($payload, 'purchase.product_name')
-            ?? data_get($payload, 'product.name')
-            ?? data_get($payload, 'produto.nome')
-            ?? 'Curso aguardando importação';
+        $productName = $this->productName($payload) ?: 'Curso aguardando importação';
 
         return Course::create([
             'name' => $productName,
@@ -146,6 +170,26 @@ class TutoryWebhookProcessor
             'tutory_product_id' => $productId,
             'is_active' => false,
         ]);
+    }
+
+    protected function productName(array $payload): string
+    {
+        return (string) (
+            data_get($payload, 'purchase.product_name')
+            ?? data_get($payload, 'product.name')
+            ?? data_get($payload, 'produto.nome')
+            ?? ''
+        );
+    }
+
+    protected function normalizedName(string $name): string
+    {
+        return Str::of($name)
+            ->ascii()
+            ->lower()
+            ->replaceMatches('/\s+/', ' ')
+            ->trim()
+            ->toString();
     }
 
     protected function uniqueCourseSlug(string $name): string

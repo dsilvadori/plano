@@ -1,8 +1,8 @@
 <x-guest-layout>
     <div class="mb-6">
-        <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Recuperar acesso</p>
-        <h1 class="mt-3 text-2xl font-semibold text-white">Vamos enviar um link para redefinir sua senha.</h1>
-        <p class="mt-2 text-sm text-slate-300">Informe o e-mail usado no seu acesso ao plano. Você receberá um link para criar uma nova senha.</p>
+        <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Primeiro acesso</p>
+        <h1 class="mt-3 text-2xl font-semibold text-white">Receba o link para criar sua senha.</h1>
+        <p class="mt-2 text-sm text-slate-300">Informe o e-mail cadastrado na plataforma. Você receberá um link para criar ou redefinir sua senha.</p>
     </div>
 
     <x-auth-session-status class="mb-4" :status="session('status')" />
@@ -18,7 +18,7 @@
 
         <div class="flex items-center justify-end mt-4">
             <x-primary-button>
-                Enviar link de redefinição
+                Enviar link de acesso
             </x-primary-button>
         </div>
     </form>
