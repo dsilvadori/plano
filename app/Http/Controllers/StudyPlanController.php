@@ -148,9 +148,12 @@ class StudyPlanController extends Controller
 
     protected function validatePlanRequest(Request $request): array
     {
+        $messages = $this->validationMessages();
+        $attributes = $this->validationAttributes();
+
         $baseData = $request->validate([
             'course_id' => ['required', 'exists:courses,id'],
-        ]);
+        ], $messages, $attributes);
 
         $course = $request->user()->availableCoursesQuery()->findOrFail($baseData['course_id']);
 
@@ -162,7 +165,7 @@ class StudyPlanController extends Controller
             'available_days.*' => ['required', Rule::in(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'])],
             'available_minutes_by_day' => ['required', 'array'],
             'intensity' => ['required', Rule::in(['light', 'balanced', 'intense'])],
-        ]);
+        ], $messages, $attributes);
 
         $data['exam_date'] = $course->exam_date?->toDateString() ?? ($data['exam_date'] ?: null);
 
@@ -183,6 +186,34 @@ class StudyPlanController extends Controller
         }
 
         return [$data, $parsedAvailability];
+    }
+
+    protected function validationMessages(): array
+    {
+        return [
+            'required' => 'O campo :attribute é obrigatório.',
+            'exists' => 'O :attribute selecionado não está disponível.',
+            'date' => 'Informe uma data válida para :attribute.',
+            'after_or_equal' => 'O campo :attribute deve ser uma data igual ou posterior a :date.',
+            'exam_date.after_or_equal' => 'A data da prova deve ser igual ou posterior à data de início.',
+            'start_date.after_or_equal' => 'A data de início deve ser hoje ou uma data futura.',
+            'array' => 'O campo :attribute deve ser preenchido corretamente.',
+            'min' => 'Selecione pelo menos :min opção em :attribute.',
+            'in' => 'O valor selecionado para :attribute é inválido.',
+        ];
+    }
+
+    protected function validationAttributes(): array
+    {
+        return [
+            'course_id' => 'curso',
+            'exam_date' => 'data da prova',
+            'start_date' => 'data de início',
+            'available_days' => 'dias disponíveis',
+            'available_days.*' => 'dia disponível',
+            'available_minutes_by_day' => 'tempo disponível',
+            'intensity' => 'intensidade',
+        ];
     }
 
     protected function activePlanForCourse(Request $request, int $courseId, ?StudyPlan $except = null): ?StudyPlan

@@ -68,6 +68,31 @@ class StudentDashboardTest extends TestCase
         $this->assertGreaterThan(0, $plan->items()->count());
     }
 
+    public function test_study_plan_creation_validation_messages_are_translated(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+
+        $this->actingAs($student)->post('/dashboard/plano', [
+            'course_id' => $course->id,
+        ])->assertSessionHasErrors([
+            'start_date' => 'O campo data de início é obrigatório.',
+            'available_days' => 'O campo dias disponíveis é obrigatório.',
+            'available_minutes_by_day' => 'O campo tempo disponível é obrigatório.',
+            'intensity' => 'O campo intensidade é obrigatório.',
+        ]);
+    }
+
+    public function test_study_plan_creation_requires_course_with_translated_message(): void
+    {
+        ['student' => $student] = $this->makeStudentWithCourse();
+
+        $this->actingAs($student)
+            ->post('/dashboard/plano')
+            ->assertSessionHasErrors([
+                'course_id' => 'O campo curso é obrigatório.',
+            ]);
+    }
+
     public function test_student_cannot_create_more_than_one_active_plan_for_the_same_course(): void
     {
         ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();

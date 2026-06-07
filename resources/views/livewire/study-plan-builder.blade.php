@@ -18,8 +18,61 @@
                 return true;
             }
 
+            if (! this.validatePlanForm()) {
+                return false;
+            }
+
             this.startPlanProgress();
             return false;
+        },
+        parseMinutes(raw) {
+            raw = String(raw || '').trim();
+
+            if (/^\d{1,2}$/.test(raw)) {
+                return parseInt(raw, 10) * 60;
+            }
+
+            if (/^\d{1,2}:\d{2}$/.test(raw)) {
+                const [hours, minutes] = raw.split(':').map((part) => parseInt(part, 10));
+
+                if (Number.isNaN(hours) || Number.isNaN(minutes) || minutes >= 60) {
+                    return 0;
+                }
+
+                return (hours * 60) + minutes;
+            }
+
+            return 0;
+        },
+        validatePlanForm() {
+            const form = this.$refs.planForm;
+            const dayInputs = [...form.querySelectorAll('input[name=\'available_days[]\']')];
+
+            form.querySelectorAll('[data-plan-validation]').forEach((input) => input.setCustomValidity(''));
+
+            if (! form.reportValidity()) {
+                return false;
+            }
+
+            const checkedDays = dayInputs.filter((input) => input.checked);
+            if (checkedDays.length === 0) {
+                dayInputs[0]?.setCustomValidity('Selecione pelo menos um dia disponível.');
+                dayInputs[0]?.reportValidity();
+                return false;
+            }
+
+            for (const dayInput of checkedDays) {
+                const minutesInput = form.querySelector(`[name='available_minutes_by_day[${dayInput.value}]']`);
+                const minutes = this.parseMinutes(minutesInput?.value);
+
+                if (! minutesInput || minutes < 30 || minutes > 480) {
+                    minutesInput?.setCustomValidity('Informe um tempo entre 00:30 e 08:00 para cada dia selecionado.');
+                    minutesInput?.reportValidity();
+                    return false;
+                }
+            }
+
+            return true;
         },
         startPlanProgress() {
             window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -78,7 +131,21 @@
         </div>
     @else
 
-    <form x-ref="planForm" action="{{ $studyPlan ? route('study-plans.update', $studyPlan) : route('study-plans.store') }}" method="POST" x-on:submit.prevent="queueSubmit()" class="grid gap-6 lg:grid-cols-2">
+    <form
+        x-ref="planForm"
+        action="{{ $studyPlan ? route('study-plans.update', $studyPlan) : route('study-plans.store') }}"
+        method="POST"
+        x-on:submit.prevent="queueSubmit()"
+        x-on:input.capture="$event.target.setCustomValidity && $event.target.setCustomValidity('')"
+        x-on:change.capture="
+            if ($event.target.name === 'available_days[]') {
+                $refs.planForm.querySelectorAll('input[name=\'available_days[]\']').forEach((input) => input.setCustomValidity(''));
+            }
+
+            $event.target.setCustomValidity && $event.target.setCustomValidity('');
+        "
+        class="grid gap-6 lg:grid-cols-2"
+    >
         @csrf
         @if ($studyPlan)
             @method('PUT')
@@ -115,7 +182,7 @@
 
         <div class="card-subtle lg:col-span-2">
             <label class="stat-label">Curso</label>
-            <select name="course_id" wire:model.live="course_id" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100">
+            <select name="course_id" wire:model.live="course_id" required data-plan-validation class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100">
                 <option value="">Selecione</option>
                 @foreach ($courses as $course)
                     <option value="{{ $course->id }}" @selected((string) $course_id === (string) $course->id)>{{ $course->name }}</option>
@@ -126,7 +193,7 @@
 
         <div class="card-subtle">
             <label class="stat-label">Data de início</label>
-            <input name="start_date" wire:model="start_date" type="date" min="{{ now()->toDateString() }}" x-on:click="$el.showPicker && $el.showPicker()" x-on:focus="$el.showPicker && $el.showPicker()" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 color-scheme-dark">
+            <input name="start_date" wire:model="start_date" type="date" min="{{ now()->toDateString() }}" required data-plan-validation x-on:click="$el.showPicker && $el.showPicker()" x-on:focus="$el.showPicker && $el.showPicker()" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 color-scheme-dark">
             <p class="mt-2 text-xs text-slate-500">Escolha quando você realmente começa. Não permitimos datas passadas para o plano ficar fiel à sua rotina atual.</p>
             @error('start_date') <p class="mt-2 text-sm text-rose-300">{{ $message }}</p> @enderror
         </div>
@@ -156,6 +223,7 @@
                                 wire:model.live="available_days"
                                 value="{{ $day }}"
                                 type="checkbox"
+                                data-plan-validation
                                 x-on:change="
                                     const input = $refs['minutes_{{ $day }}'];
 
@@ -184,6 +252,7 @@
                                 wire:model="available_minutes_by_day.{{ $day }}"
                                 type="text"
                                 inputmode="numeric"
+                                data-plan-validation
                                 value="{{ $available_minutes_by_day[$day] ?? '00:00' }}"
                                 x-on:focus="if ($el.value === '00:00') { $el.select() }"
                                 x-on:keydown.arrow-up.prevent="
@@ -266,7 +335,7 @@
             <div class="mt-4 grid gap-4 md:grid-cols-3">
                 @foreach (['light' => 'Leve', 'balanced' => 'Equilibrado', 'intense' => 'Intenso'] as $value => $label)
                     <label class="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
-                        <input name="intensity" wire:model="intensity" type="radio" value="{{ $value }}" class="mr-2 text-amber-300">
+                        <input name="intensity" wire:model="intensity" type="radio" value="{{ $value }}" required data-plan-validation class="mr-2 text-amber-300">
                         <span class="font-medium text-slate-100">{{ $label }}</span>
                         <p class="mt-2 text-sm text-slate-400">
                             @if ($value === 'light')
