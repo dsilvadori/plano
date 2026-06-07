@@ -68,6 +68,69 @@ class StudentDashboardTest extends TestCase
         $this->assertGreaterThan(0, $plan->items()->count());
     }
 
+    public function test_student_cannot_create_more_than_one_active_plan_for_the_same_course(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+        $existingPlan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+
+        $response = $this->actingAs($student)->post('/dashboard/plano', [
+            'course_id' => $course->id,
+            'exam_date' => now()->addWeeks(8)->toDateString(),
+            'start_date' => now()->toDateString(),
+            'available_days' => ['monday', 'wednesday', 'friday'],
+            'available_minutes_by_day' => [
+                'monday' => '2:00',
+                'wednesday' => '1:30',
+                'friday' => '2:00',
+            ],
+            'intensity' => 'balanced',
+        ]);
+
+        $response
+            ->assertRedirect(route('study-plans.show', $existingPlan))
+            ->assertSessionHas('status', 'Este curso já tem um plano ativo. Você pode continuar ou editar o plano existente.');
+
+        $this->assertSame(1, $student->studyPlans()->where('course_id', $course->id)->where('status', 'active')->count());
+    }
+
+    public function test_student_can_create_one_active_plan_for_each_enrolled_course(): void
+    {
+        ['student' => $student, 'course' => $firstCourse] = $this->makeStudentWithCourse();
+        $secondCourse = Course::factory()->create();
+        CourseModule::factory()->count(3)->create(['course_id' => $secondCourse->id]);
+        $student->courses()->attach($secondCourse, ['source' => 'manual']);
+
+        StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $firstCourse->id,
+            'status' => 'active',
+        ]);
+
+        $response = $this->actingAs($student)->post('/dashboard/plano', [
+            'course_id' => $secondCourse->id,
+            'exam_date' => now()->addWeeks(8)->toDateString(),
+            'start_date' => now()->toDateString(),
+            'available_days' => ['monday', 'wednesday', 'friday'],
+            'available_minutes_by_day' => [
+                'monday' => '2:00',
+                'wednesday' => '1:30',
+                'friday' => '2:00',
+            ],
+            'intensity' => 'balanced',
+        ]);
+
+        $newPlan = $student->studyPlans()->where('course_id', $secondCourse->id)->first();
+
+        $response->assertRedirect(route('study-plans.show', $newPlan));
+        $this->assertSame(2, $student->studyPlans()->where('status', 'active')->count());
+        $this->assertTrue($student->studyPlans()->where('course_id', $firstCourse->id)->where('status', 'active')->exists());
+        $this->assertTrue($student->studyPlans()->where('course_id', $secondCourse->id)->where('status', 'active')->exists());
+    }
+
     public function test_daily_availability_is_capped_at_eight_hours(): void
     {
         ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
@@ -237,6 +300,45 @@ class StudentDashboardTest extends TestCase
         $this->assertSame('intense', $plan->intensity);
         $this->assertTrue($plan->exam_date_confirmed);
         $this->assertGreaterThan(0, $plan->items()->count());
+    }
+
+    public function test_student_cannot_update_plan_to_a_course_that_already_has_an_active_plan(): void
+    {
+        ['student' => $student, 'course' => $firstCourse] = $this->makeStudentWithCourse();
+        $secondCourse = Course::factory()->create();
+        CourseModule::factory()->count(3)->create(['course_id' => $secondCourse->id]);
+        $student->courses()->attach($secondCourse, ['source' => 'manual']);
+
+        $firstPlan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $firstCourse->id,
+            'status' => 'active',
+        ]);
+
+        StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $secondCourse->id,
+            'status' => 'active',
+        ]);
+
+        $response = $this->actingAs($student)->from(route('study-plans.edit', $firstPlan))->put(route('study-plans.update', $firstPlan), [
+            'course_id' => $secondCourse->id,
+            'exam_date' => now()->addWeeks(10)->toDateString(),
+            'start_date' => now()->addDay()->toDateString(),
+            'available_days' => ['monday', 'tuesday', 'thursday'],
+            'available_minutes_by_day' => [
+                'monday' => '2',
+                'tuesday' => '1:30',
+                'thursday' => '2:15',
+            ],
+            'intensity' => 'intense',
+        ]);
+
+        $response
+            ->assertRedirect(route('study-plans.edit', $firstPlan))
+            ->assertSessionHasErrors('course_id');
+
+        $this->assertSame($firstCourse->id, $firstPlan->fresh()->course_id);
     }
 
     public function test_student_can_update_plan_without_losing_completed_progress(): void

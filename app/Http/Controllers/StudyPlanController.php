@@ -33,6 +33,13 @@ class StudyPlanController extends Controller
         [$data, $parsedAvailability] = $this->validatePlanRequest($request);
 
         $course = $request->user()->availableCoursesQuery()->findOrFail($data['course_id']);
+
+        if ($existingPlan = $this->activePlanForCourse($request, (int) $course->id)) {
+            return redirect()
+                ->route('study-plans.show', $existingPlan)
+                ->with('status', 'Este curso já tem um plano ativo. Você pode continuar ou editar o plano existente.');
+        }
+
         $plan = $generator->generate(
             $request->user(),
             $course,
@@ -70,6 +77,13 @@ class StudyPlanController extends Controller
         [$data, $parsedAvailability] = $this->validatePlanRequest($request);
 
         $course = $request->user()->availableCoursesQuery()->findOrFail($data['course_id']);
+
+        if ($existingPlan = $this->activePlanForCourse($request, (int) $course->id, $studyPlan)) {
+            return back()
+                ->withErrors(['course_id' => 'Este curso já possui outro plano ativo. Edite o plano existente desse curso ou escolha outro curso.'])
+                ->withInput();
+        }
+
         $plan = $generator->regenerate(
             $studyPlan,
             $course,
@@ -169,6 +183,17 @@ class StudyPlanController extends Controller
         }
 
         return [$data, $parsedAvailability];
+    }
+
+    protected function activePlanForCourse(Request $request, int $courseId, ?StudyPlan $except = null): ?StudyPlan
+    {
+        return $request->user()
+            ->studyPlans()
+            ->where('course_id', $courseId)
+            ->where('status', 'active')
+            ->when($except, fn ($query) => $query->whereKeyNot($except->id))
+            ->latest('id')
+            ->first();
     }
 
     protected function resetBuilderSession(): void

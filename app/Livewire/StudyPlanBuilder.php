@@ -103,14 +103,29 @@ class StudyPlanBuilder extends Component
 
     public function render(): View
     {
-        $courses = Auth::user()
-            ->availableCoursesQuery()
+        $user = Auth::user();
+        $availableCoursesQuery = $user
+            ->availableCoursesQuery();
+        $hasAvailableCourses = (clone $availableCoursesQuery)->exists();
+        $courses = $availableCoursesQuery
             ->select('courses.id', 'courses.name')
+            ->where(function ($query) use ($user) {
+                $query->whereDoesntHave('studyPlans', function ($planQuery) use ($user) {
+                    $planQuery
+                        ->where('user_id', $user->id)
+                        ->where('status', 'active');
+                });
+
+                if ($this->studyPlan) {
+                    $query->orWhere('courses.id', $this->studyPlan->course_id);
+                }
+            })
             ->orderBy('name')
             ->get();
 
         return view('livewire.study-plan-builder', [
             'courses' => $courses,
+            'hasAvailableCourses' => $hasAvailableCourses,
         ]);
     }
 

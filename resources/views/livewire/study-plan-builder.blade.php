@@ -66,9 +66,15 @@
 
     @if ($courses->isEmpty())
         <div class="rounded-3xl border border-amber-400/20 bg-amber-400/10 p-6 text-amber-100">
-            <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Curso ainda não vinculado</p>
-            <h2 class="mt-3 text-xl font-semibold text-white">Seu acesso existe, mas ainda não encontramos um curso liberado para este aluno.</h2>
-            <p class="mt-3 text-sm text-amber-100/90">Se sua compra acabou de ser aprovada, aguarde o processamento do webhook. Se o problema continuar, peça ao suporte para confirmar o vínculo do seu e-mail com o curso correto.</p>
+            @if ($hasAvailableCourses)
+                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Planos já criados</p>
+                <h2 class="mt-3 text-xl font-semibold text-white">Você já tem um plano ativo para cada curso liberado.</h2>
+                <p class="mt-3 text-sm text-amber-100/90">Para ajustar sua rotina, entre no plano do curso desejado e use a opção de edição.</p>
+            @else
+                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Curso ainda não vinculado</p>
+                <h2 class="mt-3 text-xl font-semibold text-white">Seu acesso existe, mas ainda não encontramos um curso liberado para este aluno.</h2>
+                <p class="mt-3 text-sm text-amber-100/90">Se sua compra acabou de ser aprovada, aguarde o processamento do webhook. Se o problema continuar, peça ao suporte para confirmar o vínculo do seu e-mail com o curso correto.</p>
+            @endif
         </div>
     @else
 
