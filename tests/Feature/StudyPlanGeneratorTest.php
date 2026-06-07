@@ -796,4 +796,105 @@ class StudyPlanGeneratorTest extends TestCase
 
         $this->assertSame(100, $plan->fresh()->progress_percentage);
     }
+
+    public function test_plan_progress_percentage_uses_all_planned_items_not_only_course_workload(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $plan = $student->studyPlans()->create([
+            'course_id' => $course->id,
+            'name' => 'Plano teste',
+            'exam_date' => now()->addWeek(),
+            'exam_date_confirmed' => true,
+            'start_date' => now(),
+            'available_days' => ['monday'],
+            'available_minutes_by_day' => ['monday' => 120],
+            'total_available_minutes' => 120,
+            'total_required_minutes' => 60,
+            'intensity' => 'balanced',
+            'status' => 'active',
+            'viability_status' => 'good',
+            'viability_message' => 'ok',
+            'generated_at' => now(),
+        ]);
+
+        $plan->items()->createMany([
+            [
+                'scheduled_date' => now()->toDateString(),
+                'week_number' => 1,
+                'day_of_week' => 'monday',
+                'title' => 'Teoria',
+                'description' => 'Teoria',
+                'type' => 'basic',
+                'estimated_minutes' => 60,
+                'completed_at' => now(),
+                'sort_order' => 1,
+            ],
+            [
+                'scheduled_date' => now()->toDateString(),
+                'week_number' => 1,
+                'day_of_week' => 'monday',
+                'title' => 'Questões',
+                'description' => 'Questões',
+                'type' => 'questions',
+                'estimated_minutes' => 30,
+                'completed_at' => null,
+                'sort_order' => 2,
+            ],
+        ]);
+
+        $plan->refresh();
+
+        $this->assertSame(67, $plan->progress_percentage);
+        $this->assertSame(30, $plan->pending_minutes);
+    }
+
+    public function test_plan_progress_percentage_does_not_round_pending_plan_up_to_one_hundred_percent(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $plan = $student->studyPlans()->create([
+            'course_id' => $course->id,
+            'name' => 'Plano teste',
+            'exam_date' => now()->addWeek(),
+            'exam_date_confirmed' => true,
+            'start_date' => now(),
+            'available_days' => ['monday'],
+            'available_minutes_by_day' => ['monday' => 120],
+            'total_available_minutes' => 120,
+            'total_required_minutes' => 1000,
+            'intensity' => 'balanced',
+            'status' => 'active',
+            'viability_status' => 'good',
+            'viability_message' => 'ok',
+            'generated_at' => now(),
+        ]);
+
+        $plan->items()->createMany([
+            [
+                'scheduled_date' => now()->toDateString(),
+                'week_number' => 1,
+                'day_of_week' => 'monday',
+                'title' => 'Carga concluída',
+                'description' => 'Carga concluída',
+                'type' => 'basic',
+                'estimated_minutes' => 996,
+                'completed_at' => now(),
+                'sort_order' => 1,
+            ],
+            [
+                'scheduled_date' => now()->toDateString(),
+                'week_number' => 1,
+                'day_of_week' => 'monday',
+                'title' => 'Pendência final',
+                'description' => 'Pendência final',
+                'type' => 'review',
+                'estimated_minutes' => 4,
+                'completed_at' => null,
+                'sort_order' => 2,
+            ],
+        ]);
+
+        $this->assertSame(99, $plan->fresh()->progress_percentage);
+    }
 }

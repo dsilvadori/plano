@@ -50,7 +50,7 @@ class StudyPlanViewer extends Component
         ];
         $completedItems = $orderedItems->whereNotNull('completed_at');
         $completedMinutes = (int) $completedItems->sum('estimated_minutes');
-        $pendingMinutes = max(0, (int) $this->studyPlan->total_required_minutes - $completedMinutes);
+        $pendingMinutes = (int) $orderedItems->whereNull('completed_at')->sum('estimated_minutes');
         $overviewSummary = [
             'tasks_total' => $this->studyPlan->items->count(),
             'tasks_completed' => $completedItems->count(),
@@ -73,6 +73,12 @@ class StudyPlanViewer extends Component
                 $completedItems = $items->whereNotNull('completed_at');
                 $totalMinutes = (int) $items->sum('estimated_minutes');
                 $completedMinutes = (int) $completedItems->sum('estimated_minutes');
+                $pendingMinutes = max(0, $totalMinutes - $completedMinutes);
+                $progress = match (true) {
+                    $totalMinutes <= 0 => 0,
+                    $pendingMinutes <= 0 => 100,
+                    default => min(99, (int) round(($completedMinutes / $totalMinutes) * 100)),
+                };
 
                 return [
                     'key' => $type,
@@ -81,7 +87,7 @@ class StudyPlanViewer extends Component
                     'completed_tasks' => $completedItems->count(),
                     'total_minutes' => $totalMinutes,
                     'completed_minutes' => $completedMinutes,
-                    'progress' => $totalMinutes > 0 ? min(100, (int) round(($completedMinutes / $totalMinutes) * 100)) : 0,
+                    'progress' => $progress,
                     'minutes_label' => StudyTime::formatMinutes($completedMinutes) . ' / ' . StudyTime::formatMinutes($totalMinutes),
                 ];
             })

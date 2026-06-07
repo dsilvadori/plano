@@ -67,13 +67,27 @@ class StudyPlan extends Model
         return (int) $this->items()->whereNotNull('completed_at')->sum('estimated_minutes');
     }
 
+    public function getPlannedMinutesAttribute(): int
+    {
+        return (int) $this->items()->sum('estimated_minutes');
+    }
+
+    public function getPendingMinutesAttribute(): int
+    {
+        return (int) $this->items()->whereNull('completed_at')->sum('estimated_minutes');
+    }
+
     public function getProgressPercentageAttribute(): int
     {
-        if ($this->total_required_minutes === 0) {
+        if ($this->planned_minutes === 0) {
             return 0;
         }
 
-        return min(100, (int) round(($this->completed_minutes / $this->total_required_minutes) * 100));
+        if ($this->pending_minutes <= 0) {
+            return 100;
+        }
+
+        return min(99, (int) round(($this->completed_minutes / $this->planned_minutes) * 100));
     }
 
     public function getDaysUntilExamAttribute(): int
@@ -117,6 +131,16 @@ class StudyPlan extends Model
     public function getRequiredHoursMinutesAttribute(): string
     {
         return StudyTime::formatMinutes((int) $this->total_required_minutes);
+    }
+
+    public function getPlannedHoursMinutesAttribute(): string
+    {
+        return StudyTime::formatMinutes($this->planned_minutes);
+    }
+
+    public function getPendingHoursMinutesAttribute(): string
+    {
+        return StudyTime::formatMinutes($this->pending_minutes);
     }
 
     public function getWeeklyQuestionsHoursMinutesAttribute(): string

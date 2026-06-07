@@ -64,7 +64,7 @@
                         <p class="mt-1 text-sm text-slate-400">Plano ajustado à sua realidade até {{ $activePlan->exam_date_label }}, com blocos de até 60 minutos.</p>
                         @php
                             $activeCompletedMinutes = (int) $activePlan->items->whereNotNull('completed_at')->sum('estimated_minutes');
-                            $activePendingMinutes = max(0, (int) $activePlan->total_required_minutes - $activeCompletedMinutes);
+                            $activePendingMinutes = (int) $activePlan->items->whereNull('completed_at')->sum('estimated_minutes');
                             $activeTypeMinutes = [
                                 'Matérias Básicas' => (int) $activePlan->items->where('type', 'basic')->sum('estimated_minutes'),
                                 'Conhecimentos Específicos' => (int) $activePlan->items->where('type', 'specific')->sum('estimated_minutes'),
