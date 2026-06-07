@@ -64,6 +64,7 @@ MAIL_MAILER=log
 QUEUE_CONNECTION=sync
 
 TUTORY_WEBHOOK_SECRET=secret-local
+TUTORY_WEBHOOK_URL="${APP_URL}/webhooks/tutory"
 ```
 
 Para o banco SQLite local:
@@ -112,6 +113,12 @@ Endpoint local:
 
 ```text
 POST http://127.0.0.1:8000/webhooks/tutory
+```
+
+Endpoint de produção:
+
+```text
+POST https://plano.vencendoconcursos.com.br/webhooks/tutory
 ```
 
 Autenticação:
@@ -195,6 +202,7 @@ Exemplo de variáveis de produção:
 APP_ENV=production
 APP_DEBUG=false
 APP_URL=https://plano.vencendoconcursos.com.br
+TUTORY_WEBHOOK_URL=https://plano.vencendoconcursos.com.br/webhooks/tutory
 
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1

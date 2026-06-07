@@ -37,6 +37,7 @@ return [
 
     'tutory' => [
         'webhook_secret' => env('TUTORY_WEBHOOK_SECRET', ''),
+        'webhook_url' => env('TUTORY_WEBHOOK_URL', rtrim((string) env('APP_URL', 'http://localhost'), '/').'/webhooks/tutory'),
     ],
 
 ];
