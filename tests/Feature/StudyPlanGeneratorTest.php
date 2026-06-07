@@ -131,10 +131,10 @@ class StudyPlanGeneratorTest extends TestCase
 
         $this->assertSame([$firstModule->id, $secondModule->id], $items->take(2)->pluck('course_module_id')->all());
         $this->assertSame(['basic', 'specific', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame(60, $items[0]->estimated_minutes);
-        $this->assertSame(60, $items[1]->estimated_minutes);
-        $this->assertSame(15, $items[2]->estimated_minutes);
-        $this->assertSame(15, $items[3]->estimated_minutes);
+        $this->assertSame(67, $items[0]->estimated_minutes);
+        $this->assertSame(68, $items[1]->estimated_minutes);
+        $this->assertSame(23, $items[2]->estimated_minutes);
+        $this->assertSame(22, $items[3]->estimated_minutes);
     }
 
     public function test_generator_does_not_split_a_lesson_when_next_one_does_not_fit_in_remaining_time(): void
@@ -356,7 +356,7 @@ class StudyPlanGeneratorTest extends TestCase
 
         $this->assertSame([$basicModule->id, $specificModule->id], $items->take(2)->pluck('course_module_id')->all());
         $this->assertSame(['basic', 'specific', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame([60, 60, 15, 15], $items->pluck('estimated_minutes')->all());
+        $this->assertSame([90, 90, 30, 30], $items->pluck('estimated_minutes')->all());
     }
 
     public function test_generator_alternates_subjects_inside_each_theory_type_between_days(): void

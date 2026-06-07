@@ -560,7 +560,7 @@ class StudyPlanGenerator
                 $weeklyTheoryMinutes[$weekNumber] = ($weeklyTheoryMinutes[$weekNumber] ?? 0) + $balancedAllocated;
             }
 
-            while ($balancedTheoryBlocks < 2 && $theoryBudget > 0 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
+            while ($theoryBudget > 0 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
                 $allocated = $this->createInterleavedStudyItem(
                     $plan,
                     $date,
@@ -590,7 +590,7 @@ class StudyPlanGenerator
             }
 
             if ($dayKey !== 'saturday') {
-                $shouldExpandReserve = ! $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates);
+                $shouldExpandReserve = $theoryBudget > 0;
 
                 $this->createReserveItems(
                     $plan,
@@ -722,11 +722,7 @@ class StudyPlanGenerator
             return min(20, $remainingToday);
         }
 
-        if ($remainingToday >= 30) {
-            return 30;
-        }
-
-        return 0;
+        return max(30, (int) round($remainingToday * 0.25));
     }
 
     protected function buildReserveBlueprint(string $dayKey, int $remainingToday, bool $fillAvailable = false): array
@@ -769,9 +765,14 @@ class StudyPlanGenerator
             ];
         }
 
-        $targetMinutes = $remainingToday <= 20 ? 10 : 15;
-        $questionsMinutes = min($targetMinutes, (int) ceil($remainingToday / 2));
-        $reviewMinutes = min($targetMinutes, max(0, $remainingToday - $questionsMinutes));
+        if ($remainingToday <= 30) {
+            $targetMinutes = $remainingToday <= 20 ? 10 : 15;
+            $questionsMinutes = min($targetMinutes, (int) ceil($remainingToday / 2));
+            $reviewMinutes = min($targetMinutes, max(0, $remainingToday - $questionsMinutes));
+        } else {
+            $questionsMinutes = (int) ceil($remainingToday / 2);
+            $reviewMinutes = max(0, $remainingToday - $questionsMinutes);
+        }
 
         return array_values(array_filter([
             [
@@ -1079,7 +1080,7 @@ class StudyPlanGenerator
         $state ??= ['lessons' => $module->planning_lessons, 'index' => 0];
         $lessons = $state['lessons'] ?? [];
         $index = (int) ($state['index'] ?? 0);
-        $maxBlockMinutes = min(60, $availableMinutes);
+        $maxBlockMinutes = min(90, $availableMinutes);
         $lessonNames = [];
         $totalMinutes = 0;
         $consumedLessons = 0;
@@ -1094,10 +1095,16 @@ class StudyPlanGenerator
             }
 
             if (($totalMinutes + $lessonMinutes) > $maxBlockMinutes) {
-                if ($totalMinutes === 0 && blank($module->lessons)) {
+                if (blank($module->lessons)) {
+                    $remainingBlockMinutes = $maxBlockMinutes - $totalMinutes;
+
+                    if ($remainingBlockMinutes <= 0) {
+                        break;
+                    }
+
                     $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
-                    $totalMinutes = $maxBlockMinutes;
-                    $lessons[$index + $consumedLessons]['minutes'] = $lessonMinutes - $maxBlockMinutes;
+                    $totalMinutes += $remainingBlockMinutes;
+                    $lessons[$index + $consumedLessons]['minutes'] = $lessonMinutes - $remainingBlockMinutes;
                     $state['lessons'] = $lessons;
 
                     break;
