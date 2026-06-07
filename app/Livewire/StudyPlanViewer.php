@@ -35,19 +35,20 @@ class StudyPlanViewer extends Component
     public function render(): View
     {
         $this->studyPlan->load(['items.courseModule']);
+        $orderedItems = $this->orderedPlanItems();
 
-        $grouped = $this->studyPlan->items
+        $grouped = $orderedItems
             ->groupBy('week_number')
             ->map(fn ($items) => $items->groupBy(fn ($item) => $item->scheduled_date->format('d/m/Y')));
 
-        $selectedWeekItems = $this->studyPlan->items->where('week_number', $this->selectedWeek);
+        $selectedWeekItems = $orderedItems->where('week_number', $this->selectedWeek);
         $weeklySummary = [
             'total_minutes' => (int) $selectedWeekItems->sum('estimated_minutes'),
             'review_minutes' => (int) $selectedWeekItems->where('type', 'review')->sum('estimated_minutes'),
             'questions_minutes' => (int) $selectedWeekItems->where('type', 'questions')->sum('estimated_minutes'),
             'tasks' => $selectedWeekItems->count(),
         ];
-        $completedItems = $this->studyPlan->items->whereNotNull('completed_at');
+        $completedItems = $orderedItems->whereNotNull('completed_at');
         $completedMinutes = (int) $completedItems->sum('estimated_minutes');
         $pendingMinutes = max(0, (int) $this->studyPlan->total_required_minutes - $completedMinutes);
         $overviewSummary = [
@@ -67,8 +68,8 @@ class StudyPlanViewer extends Component
             'other' => 'Complementar',
         ];
         $typeOverview = collect($typeLabels)
-            ->map(function (string $label, string $type) {
-                $items = $this->studyPlan->items->where('type', $type);
+            ->map(function (string $label, string $type) use ($orderedItems) {
+                $items = $orderedItems->where('type', $type);
                 $completedItems = $items->whereNotNull('completed_at');
                 $totalMinutes = (int) $items->sum('estimated_minutes');
                 $completedMinutes = (int) $completedItems->sum('estimated_minutes');
@@ -186,6 +187,29 @@ class StudyPlanViewer extends Component
             });
 
         return $lessonsByItem;
+    }
+
+    protected function orderedPlanItems(): \Illuminate\Support\Collection
+    {
+        return $this->studyPlan->items
+            ->sortBy(function (StudyPlanItem $item): string {
+                $saturdayTypePriority = match ($item->type) {
+                    'basic', 'specific', 'complementary' => 0,
+                    'questions' => 1,
+                    'review' => 2,
+                    default => 3,
+                };
+
+                $typePriority = $item->day_of_week === 'saturday' ? $saturdayTypePriority : 0;
+
+                return implode('|', [
+                    $item->scheduled_date?->format('Y-m-d') ?? '',
+                    str_pad((string) $typePriority, 2, '0', STR_PAD_LEFT),
+                    str_pad((string) $item->sort_order, 8, '0', STR_PAD_LEFT),
+                    str_pad((string) $item->id, 8, '0', STR_PAD_LEFT),
+                ]);
+            })
+            ->values();
     }
 
     protected function formatLessonMinutes(int $minutes): string

@@ -180,6 +180,36 @@
                                 inputmode="numeric"
                                 value="{{ $available_minutes_by_day[$day] ?? '00:00' }}"
                                 x-on:focus="if ($el.value === '00:00') { $el.select() }"
+                                x-on:keydown.arrow-up.prevent="
+                                    let raw = $el.value.trim();
+                                    let minutes = 0;
+
+                                    if (/^\d{1,2}$/.test(raw)) {
+                                        minutes = parseInt(raw, 10) * 60;
+                                    } else if (/^\d{1,2}:\d{2}$/.test(raw)) {
+                                        let [hours, mins] = raw.split(':').map((part) => parseInt(part, 10));
+                                        minutes = (Number.isNaN(hours) || Number.isNaN(mins) || mins >= 60) ? 0 : (hours * 60) + mins;
+                                    }
+
+                                    minutes = Math.min(480, Math.ceil(minutes / 15) * 15 + (minutes % 15 === 0 ? 15 : 0));
+                                    $el.value = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+                                    $el.dispatchEvent(new Event('input', { bubbles: true }));
+                                "
+                                x-on:keydown.arrow-down.prevent="
+                                    let raw = $el.value.trim();
+                                    let minutes = 0;
+
+                                    if (/^\d{1,2}$/.test(raw)) {
+                                        minutes = parseInt(raw, 10) * 60;
+                                    } else if (/^\d{1,2}:\d{2}$/.test(raw)) {
+                                        let [hours, mins] = raw.split(':').map((part) => parseInt(part, 10));
+                                        minutes = (Number.isNaN(hours) || Number.isNaN(mins) || mins >= 60) ? 0 : (hours * 60) + mins;
+                                    }
+
+                                    minutes = Math.max(0, Math.floor(minutes / 15) * 15 - (minutes % 15 === 0 ? 15 : 0));
+                                    $el.value = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+                                    $el.dispatchEvent(new Event('input', { bubbles: true }));
+                                "
                                 x-on:blur="
                                     let raw = $el.value.trim();
                                     if (raw === '') {
@@ -295,7 +325,6 @@
             <div class="mt-6 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
                 <p class="text-xs uppercase tracking-[0.25em] text-slate-500">Etapa atual</p>
                 <p class="mt-2 text-sm text-slate-200" x-text="finalizing ? 'Plano pronto. Estamos abrindo sua tela final...' : steps[step]"></p>
-                <p class="mt-3 text-xs text-slate-500">A montagem fica visível por 10 segundos e, ao terminar, abrimos o plano assim que a criação for concluída.</p>
             </div>
         </div>
     </div>

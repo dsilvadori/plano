@@ -477,6 +477,7 @@ class StudyPlanGenerator
         $typeRotationIndex = 0;
         $sortOrder = $initialSortOrder;
         $weeklyTheoryScheduled = [];
+        $weeklyTheoryMinutes = [];
         $weekReferenceStart = $weekReferenceStart?->copy()->startOfWeek(CarbonInterface::MONDAY) ?? $start->copy()->startOfWeek(CarbonInterface::MONDAY);
 
         for ($date = $start->copy(); $date->lte($exam); $date->addDay()) {
@@ -497,11 +498,69 @@ class StudyPlanGenerator
             $reserveMinutes = $this->resolveReserveMinutes(
                 $dayKey,
                 $remainingToday,
-                (bool) ($weeklyTheoryScheduled[$weekNumber] ?? false),
+                (int) ($weeklyTheoryMinutes[$weekNumber] ?? 0),
             );
-            $theoryBudget = max(0, $remainingToday - $reserveMinutes);
 
-            while ($theoryBudget > 0 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
+            if ($dayKey === 'saturday') {
+                $weekTheoryTargetMinutes = 360;
+                $theoryBudget = (
+                    ($weeklyTheoryMinutes[$weekNumber] ?? 0) < $weekTheoryTargetMinutes
+                    && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)
+                )
+                    ? (int) floor($remainingToday / 2)
+                    : 0;
+                $reserveMinutes = max(0, $remainingToday - $theoryBudget);
+
+                if ($theoryBudget <= 0) {
+                    $this->createReserveItems(
+                        $plan,
+                        $date,
+                        $weekNumber,
+                        $dayKey,
+                        min($reserveMinutes, $remainingToday),
+                        $blockNumber,
+                        $sortOrder,
+                        $completedModules,
+                        $orderedModules,
+                        $remainingByModule,
+                        true,
+                    );
+
+                    continue;
+                }
+
+                $reserveMinutes = 0;
+            } else {
+                $theoryBudget = max(0, $remainingToday - $reserveMinutes);
+            }
+
+            $balancedTheoryBlocks = 0;
+            $balancedAllocated = $this->createBalancedDailyTheoryItems(
+                $plan,
+                $date,
+                $weekNumber,
+                $dayKey,
+                $theoryBudget,
+                $blockNumber,
+                $sortOrder,
+                $typeQueues,
+                $typePointers,
+                $typeRotationIndex,
+                $lastSubjectsByType,
+                $lessonStates,
+                $remainingByModule,
+                $completedModules,
+                $balancedTheoryBlocks,
+            );
+
+            if ($balancedAllocated > 0) {
+                $theoryBudget -= $balancedAllocated;
+                $remainingToday -= $balancedAllocated;
+                $weeklyTheoryScheduled[$weekNumber] = true;
+                $weeklyTheoryMinutes[$weekNumber] = ($weeklyTheoryMinutes[$weekNumber] ?? 0) + $balancedAllocated;
+            }
+
+            while ($balancedTheoryBlocks < 2 && $theoryBudget > 0 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
                 $allocated = $this->createInterleavedStudyItem(
                     $plan,
                     $date,
@@ -526,46 +585,193 @@ class StudyPlanGenerator
                 $theoryBudget -= $allocated;
                 $remainingToday -= $allocated;
                 $weeklyTheoryScheduled[$weekNumber] = true;
+                $weeklyTheoryMinutes[$weekNumber] = ($weeklyTheoryMinutes[$weekNumber] ?? 0) + $allocated;
                 $blockNumber++;
             }
 
-            foreach ($this->buildReserveBlueprint($dayKey, $remainingToday) as $reserveBlock) {
-                $this->createReserveItem(
+            if ($dayKey !== 'saturday') {
+                $shouldExpandReserve = ! $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates);
+
+                $this->createReserveItems(
                     $plan,
                     $date,
                     $weekNumber,
                     $dayKey,
-                    $reserveBlock['type'],
-                    $reserveBlock['minutes'],
+                    $remainingToday,
                     $blockNumber,
                     $sortOrder,
                     $completedModules,
                     $orderedModules,
                     $remainingByModule,
+                    $shouldExpandReserve,
                 );
-
-                $blockNumber++;
+            } else {
+                $this->createReserveItems(
+                    $plan,
+                    $date,
+                    $weekNumber,
+                    $dayKey,
+                    max(0, $remainingToday),
+                    $blockNumber,
+                    $sortOrder,
+                    $completedModules,
+                    $orderedModules,
+                    $remainingByModule,
+                    true,
+                );
             }
         }
     }
 
-    protected function resolveReserveMinutes(string $dayKey, int $remainingToday, bool $weekHasTheory): int
-    {
-        if ($dayKey === 'saturday' && $weekHasTheory) {
-            return $remainingToday;
+    protected function createBalancedDailyTheoryItems(
+        StudyPlan $plan,
+        Carbon $date,
+        int $weekNumber,
+        string $dayKey,
+        int $theoryBudget,
+        int &$blockNumber,
+        int &$sortOrder,
+        array $typeQueues,
+        array &$typePointers,
+        int &$typeRotationIndex,
+        array &$lastSubjectsByType,
+        array &$lessonStates,
+        array &$remainingByModule,
+        array &$completedModules,
+        int &$createdBlocks,
+    ): int {
+        if (
+            $theoryBudget < 30
+            || ! $this->hasRemainingTheoryTypes(['basic'], $typeQueues, $typePointers, $lessonStates)
+            || ! $this->hasRemainingTheoryTypes(['specific', 'complementary'], $typeQueues, $typePointers, $lessonStates)
+        ) {
+            return 0;
         }
 
-        return max(0, min(30, $remainingToday - 60));
+        $allocated = 0;
+        $dailyGroups = [
+            ['basic'],
+            ['specific', 'complementary'],
+        ];
+
+        foreach ($dailyGroups as $index => $preferredTypes) {
+            $remainingBudget = $theoryBudget - $allocated;
+
+            if ($remainingBudget <= 0 || ! $this->hasRemainingTheoryTypes($preferredTypes, $typeQueues, $typePointers, $lessonStates)) {
+                continue;
+            }
+
+            $availableForBlock = $index === 0
+                ? max(15, (int) floor($theoryBudget / 2))
+                : $remainingBudget;
+            $availableForBlock = min($remainingBudget, $availableForBlock);
+
+            $blockAllocated = $this->createInterleavedStudyItem(
+                $plan,
+                $date,
+                $weekNumber,
+                $dayKey,
+                $availableForBlock,
+                $blockNumber,
+                $sortOrder,
+                $typeQueues,
+                $typePointers,
+                $typeRotationIndex,
+                $lastSubjectsByType,
+                $lessonStates,
+                $remainingByModule,
+                $completedModules,
+                $preferredTypes,
+            );
+
+            if ($blockAllocated <= 0 && $index === 0 && $availableForBlock < $remainingBudget) {
+                $blockAllocated = $this->createInterleavedStudyItem(
+                    $plan,
+                    $date,
+                    $weekNumber,
+                    $dayKey,
+                    $remainingBudget,
+                    $blockNumber,
+                    $sortOrder,
+                    $typeQueues,
+                    $typePointers,
+                    $typeRotationIndex,
+                    $lastSubjectsByType,
+                    $lessonStates,
+                    $remainingByModule,
+                    $completedModules,
+                    $preferredTypes,
+                );
+            }
+
+            if ($blockAllocated <= 0) {
+                continue;
+            }
+
+            $allocated += $blockAllocated;
+            $createdBlocks++;
+            $blockNumber++;
+        }
+
+        return $allocated;
     }
 
-    protected function buildReserveBlueprint(string $dayKey, int $remainingToday): array
+    protected function resolveReserveMinutes(string $dayKey, int $remainingToday, int $weeklyTheoryMinutes): int
+    {
+        if ($remainingToday <= 60) {
+            return min(20, $remainingToday);
+        }
+
+        if ($remainingToday >= 30) {
+            return 30;
+        }
+
+        return 0;
+    }
+
+    protected function buildReserveBlueprint(string $dayKey, int $remainingToday, bool $fillAvailable = false): array
     {
         if ($remainingToday <= 0) {
             return [];
         }
 
-        $questionsMinutes = (int) ceil($remainingToday / 2);
-        $reviewMinutes = max(0, $remainingToday - $questionsMinutes);
+        if ($fillAvailable) {
+            if ($remainingToday < 20) {
+                return [
+                    [
+                        'type' => 'questions',
+                        'minutes' => $remainingToday,
+                    ],
+                ];
+            }
+
+            $questionsMinutes = (int) ceil($remainingToday / 2);
+            $reviewMinutes = max(0, $remainingToday - $questionsMinutes);
+
+            return array_values(array_filter([
+                [
+                    'type' => 'questions',
+                    'minutes' => $questionsMinutes,
+                ],
+                $reviewMinutes > 0 ? [
+                    'type' => 'review',
+                    'minutes' => $reviewMinutes,
+                ] : null,
+            ]));
+        }
+
+        if ($remainingToday < 20) {
+            return [
+                [
+                    'type' => 'questions',
+                    'minutes' => $remainingToday,
+                ],
+            ];
+        }
+
+        $targetMinutes = $remainingToday <= 20 ? 10 : 15;
+        $questionsMinutes = min($targetMinutes, (int) ceil($remainingToday / 2));
+        $reviewMinutes = min($targetMinutes, max(0, $remainingToday - $questionsMinutes));
 
         return array_values(array_filter([
             [
@@ -577,6 +783,43 @@ class StudyPlanGenerator
                 'minutes' => $reviewMinutes,
             ] : null,
         ]));
+    }
+
+    protected function createReserveItems(
+        StudyPlan $plan,
+        Carbon $date,
+        int $weekNumber,
+        string $dayKey,
+        int $availableMinutes,
+        int &$blockNumber,
+        int &$sortOrder,
+        array $completedModules,
+        Collection $orderedModules,
+        array $remainingByModule,
+        bool $fillAvailable = false,
+    ): int {
+        $allocated = 0;
+
+        foreach ($this->buildReserveBlueprint($dayKey, $availableMinutes, $fillAvailable) as $reserveBlock) {
+            $this->createReserveItem(
+                $plan,
+                $date,
+                $weekNumber,
+                $dayKey,
+                $reserveBlock['type'],
+                $reserveBlock['minutes'],
+                $blockNumber,
+                $sortOrder,
+                $completedModules,
+                $orderedModules,
+                $remainingByModule,
+            );
+
+            $allocated += $reserveBlock['minutes'];
+            $blockNumber++;
+        }
+
+        return $allocated;
     }
 
     protected function createInterleavedStudyItem(
@@ -594,8 +837,11 @@ class StudyPlanGenerator
         array &$lessonStates,
         array &$remainingByModule,
         array &$completedModules,
+        ?array $preferredTypes = null,
     ): int {
-        [$type, $module] = $this->resolveCurrentTheoryModule($typeQueues, $typePointers, $typeRotationIndex, $lastSubjectsByType, $lessonStates);
+        [$type, $module] = $preferredTypes
+            ? $this->resolveCurrentTheoryModuleFromTypes($preferredTypes, $typeQueues, $typePointers, $typeRotationIndex, $lastSubjectsByType, $lessonStates)
+            : $this->resolveCurrentTheoryModule($typeQueues, $typePointers, $typeRotationIndex, $lastSubjectsByType, $lessonStates);
 
         if (! $module || ! $type) {
             return 0;
@@ -698,6 +944,20 @@ class StudyPlanGenerator
         return false;
     }
 
+    protected function hasRemainingTheoryTypes(array $types, array $typeQueues, array $typePointers, array $lessonStates): bool
+    {
+        foreach ($types as $type) {
+            $queue = $typeQueues[$type] ?? collect();
+            $pointer = $typePointers[$type] ?? 0;
+
+            if ($this->remainingTheoryModules($queue, $pointer, $lessonStates)->isNotEmpty()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     protected function hasRemainingModules(Collection $orderedModules, array $remainingByModule): bool
     {
         return $orderedModules
@@ -718,6 +978,28 @@ class StudyPlanGenerator
 
             if ($module) {
                 $typeRotationIndex = ($typeIndex + 1) % $count;
+
+                return [$type, $module];
+            }
+        }
+
+        return [null, null];
+    }
+
+    protected function resolveCurrentTheoryModuleFromTypes(array $types, array $typeQueues, array &$typePointers, int &$typeRotationIndex, array $lastSubjectsByType, array $lessonStates): array
+    {
+        foreach ($types as $type) {
+            $queue = $typeQueues[$type] ?? collect();
+            $pointer = $typePointers[$type] ?? 0;
+            $module = $this->resolveNextModuleForType($queue, $pointer, $lastSubjectsByType[$type] ?? null, $lessonStates);
+
+            if ($module) {
+                $allTypes = ['basic', 'specific', 'complementary'];
+                $typeIndex = array_search($type, $allTypes, true);
+
+                if ($typeIndex !== false) {
+                    $typeRotationIndex = (((int) $typeIndex) + 1) % count($allTypes);
+                }
 
                 return [$type, $module];
             }
@@ -812,6 +1094,15 @@ class StudyPlanGenerator
             }
 
             if (($totalMinutes + $lessonMinutes) > $maxBlockMinutes) {
+                if ($totalMinutes === 0 && blank($module->lessons)) {
+                    $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
+                    $totalMinutes = $maxBlockMinutes;
+                    $lessons[$index + $consumedLessons]['minutes'] = $lessonMinutes - $maxBlockMinutes;
+                    $state['lessons'] = $lessons;
+
+                    break;
+                }
+
                 break;
             }
 
