@@ -2,7 +2,6 @@
 
 namespace App\Filament\Resources\WebhookEvents;
 
-use App\Filament\Resources\WebhookEvents\Pages\CreateWebhookEvent;
 use App\Filament\Resources\WebhookEvents\Pages\EditWebhookEvent;
 use App\Filament\Resources\WebhookEvents\Pages\ListWebhookEvents;
 use App\Filament\Resources\WebhookEvents\Schemas\WebhookEventForm;
@@ -52,7 +51,6 @@ class WebhookEventResource extends Resource
     {
         return [
             'index' => ListWebhookEvents::route('/'),
-            'create' => CreateWebhookEvent::route('/create'),
             'edit' => EditWebhookEvent::route('/{record}/edit'),
         ];
     }

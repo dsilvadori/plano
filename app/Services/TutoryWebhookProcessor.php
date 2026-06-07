@@ -113,18 +113,13 @@ class TutoryWebhookProcessor
 
     protected function isSubscriptionPayload(array $payload): bool
     {
-        if (filled(data_get($payload, 'metadados.assinatura_id'))) {
-            return true;
-        }
-
-        $text = Str::lower(implode(' ', array_filter([
+        $productName = Str::lower(implode(' ', array_filter([
             data_get($payload, 'produto.nome'),
             data_get($payload, 'product.name'),
             data_get($payload, 'purchase.product_name'),
-            data_get($payload, 'oferta.nome'),
         ])));
 
-        return Str::contains($text, ['assinatura', 'anual', 'vitalicia', 'vitalícia']);
+        return Str::contains($productName, 'assinatura');
     }
 
     protected function courseForPurchase(array $payload, ?string $productId): ?Course

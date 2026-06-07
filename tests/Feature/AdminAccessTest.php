@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Filament\Resources\Users\Pages\CreateUser;
 use App\Models\Course;
 use App\Models\User;
+use App\Models\WebhookEvent;
 use App\Notifications\SetPasswordNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
@@ -163,6 +164,26 @@ class AdminAccessTest extends TestCase
             ->assertSee('Administrador')
             ->assertSee('Aluno')
             ->assertSee('Assinante');
+    }
+
+    public function test_admin_webhooks_page_is_read_only(): void
+    {
+        $admin = User::factory()->admin()->create();
+
+        WebhookEvent::factory()->create([
+            'provider' => 'tutory',
+            'event_id' => 'evt_read_only',
+            'event_type' => 'pagamento_aprovado',
+            'status' => 'processed',
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/webhook-events')
+            ->assertOk()
+            ->assertSee('Webhooks')
+            ->assertSee('evt_read_only')
+            ->assertDontSee('Criar webhook')
+            ->assertDontSee('Novo webhook');
     }
 
     public function test_admin_can_create_student_without_password_and_send_first_access_email(): void

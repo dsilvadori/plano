@@ -132,6 +132,31 @@ class TutoryWebhookTest extends TestCase
         $this->assertFalse($user->availableCoursesQuery()->whereKey($course)->exists());
     }
 
+    public function test_new_payload_with_regular_product_creates_student_even_with_subscription_metadata(): void
+    {
+        Notification::fake();
+
+        $this->postJson('/webhooks/tutory', $this->subscriptionPayload([
+            'id' => 'pedido_curso_regular',
+            'produto' => [
+                'id' => 'curso-regular',
+                'nome' => 'Curso Regular',
+            ],
+            'oferta' => [
+                'nome' => 'Oferta do Curso Regular',
+            ],
+        ]), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'maria@example.com')->firstOrFail();
+        $course = Course::where('tutory_product_id', 'curso-regular')->firstOrFail();
+
+        $this->assertSame('student', $user->role);
+        $this->assertFalse($course->is_active);
+        $this->assertTrue($user->courses()->whereKey($course)->exists());
+    }
+
     public function test_subscription_webhook_creates_subscriber_with_access_to_all_active_courses(): void
     {
         Notification::fake();
