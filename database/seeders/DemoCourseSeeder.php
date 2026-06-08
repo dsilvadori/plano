@@ -23,6 +23,7 @@ class DemoCourseSeeder extends Seeder
                 'name' => 'Gabaritando Santos - Inspetor de Alunos',
                 'description' => 'Plano base inspirado na estrutura real do curso da Prefeitura de Santos para Inspetor de Alunos, com foco em blocos curtos, constância e distribuição entre base, legislação, específicas, revisão e questões.',
                 'tutory_product_id' => 'gabaritando-santos-inspetor-de-alunos',
+                'combo_name' => 'Gabaritando Prefeitura de Santos',
                 'exam_date' => null,
                 'is_active' => true,
             ],

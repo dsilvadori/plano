@@ -46,6 +46,16 @@ class AdminAccessTest extends TestCase
             ->assertSee('Importar planilha');
     }
 
+    public function test_admin_can_access_users_page_and_see_import_students_action(): void
+    {
+        $admin = User::factory()->admin()->create();
+
+        $this->actingAs($admin)
+            ->get('/admin/users')
+            ->assertOk()
+            ->assertSee('Importar alunos');
+    }
+
     public function test_admin_can_access_student_dashboard_and_see_all_active_courses(): void
     {
         $admin = User::factory()->admin()->create([

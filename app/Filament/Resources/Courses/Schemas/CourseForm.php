@@ -30,6 +30,9 @@ class CourseForm
                     ->columnSpanFull(),
                 TextInput::make('tutory_product_id')
                     ->label('ID do produto na Tutory'),
+                TextInput::make('combo_name')
+                    ->label('Combo')
+                    ->helperText('Use vírgula para mais de um combo. Quando o produto comprado/importado tiver um desses nomes, o aluno será vinculado a todos os cursos ativos desse combo. Ex.: Gabaritando Prefeitura de Santos, Combo Santos.'),
                 DatePicker::make('exam_date')
                     ->label('Data da prova do curso')
                     ->native(false)

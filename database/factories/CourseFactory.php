@@ -23,6 +23,7 @@ class CourseFactory extends Factory
             'slug' => fake()->unique()->slug(),
             'description' => fake()->paragraph(),
             'tutory_product_id' => Str::slug(fake()->unique()->sentence(2)),
+            'combo_name' => null,
             'is_active' => true,
         ];
     }

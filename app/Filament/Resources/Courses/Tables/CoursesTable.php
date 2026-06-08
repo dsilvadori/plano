@@ -18,6 +18,7 @@ class CoursesTable
                 TextColumn::make('name')->label('Curso')->searchable()->sortable(),
                 TextColumn::make('slug')->label('Slug')->searchable(),
                 TextColumn::make('tutory_product_id')->label('Tutory ID')->searchable()->toggleable(),
+                TextColumn::make('combo_name')->label('Combo')->searchable()->toggleable(),
                 TextColumn::make('modules_count')->label('Módulos')->counts('modules'),
                 TextColumn::make('study_tracks_count')->label('Trilhas')->counts('studyTracks'),
                 IconColumn::make('is_active')->label('Ativo')->boolean(),

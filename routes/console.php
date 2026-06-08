@@ -3,40 +3,37 @@
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use App\Models\Course;
+use App\Services\CourseAccessResolver;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Artisan::command('courses:expand-santos-combo', function () {
-    $combo = Course::query()
-        ->where('name', 'Gabaritando Prefeitura de Santos')
-        ->orWhere('slug', 'gabaritando-prefeitura-de-santos')
-        ->first();
-
-    if (! $combo) {
-        $this->warn('Curso genérico "Gabaritando Prefeitura de Santos" não encontrado.');
-
-        return 1;
-    }
-
-    $comboCourses = Course::query()
-        ->where('is_active', true)
-        ->where(function ($query): void {
-            $query
-                ->where('name', 'like', '%Santos%')
-                ->orWhere('slug', 'like', '%santos%');
-        })
-        ->whereKeyNot($combo->id)
-        ->get();
+Artisan::command('courses:expand-combo {comboName}', function (string $comboName) {
+    $comboCourses = app(CourseAccessResolver::class)->coursesForCombo($comboName);
 
     if ($comboCourses->isEmpty()) {
-        $this->warn('Nenhum curso ativo de Santos encontrado para vincular.');
+        $this->warn("Nenhum curso ativo encontrado para o combo {$comboName}.");
 
         return 1;
     }
 
-    $students = $combo->students()->where('role', 'student')->get();
+    $comboPlaceholders = Course::query()
+        ->where('name', $comboName)
+        ->orWhere('tutory_product_id', $comboName)
+        ->get();
+
+    if ($comboPlaceholders->isEmpty()) {
+        $this->warn("Nenhum curso placeholder encontrado com nome ou ID {$comboName}.");
+        
+        return 1;
+    }
+
+    $students = $comboPlaceholders
+        ->flatMap(fn (Course $course) => $course->students()->where('role', 'student')->get())
+        ->unique('id')
+        ->values();
+
     $courseLinks = $comboCourses
         ->mapWithKeys(fn (Course $course): array => [
             $course->id => [
@@ -50,7 +47,13 @@ Artisan::command('courses:expand-santos-combo', function () {
         $student->courses()->syncWithoutDetaching($courseLinks);
     }
 
-    $this->info("{$students->count()} aluno(s) atualizado(s) com {$comboCourses->count()} curso(s) do combo de Santos.");
+    $this->info("{$students->count()} aluno(s) atualizado(s) com {$comboCourses->count()} curso(s) do combo {$comboName}.");
 
     return 0;
-})->purpose('Vincula alunos do combo Gabaritando Prefeitura de Santos aos cursos ativos de Santos');
+})->purpose('Vincula alunos de um curso placeholder aos cursos ativos de um combo');
+
+Artisan::command('courses:expand-santos-combo', function () {
+    return Artisan::call('courses:expand-combo', [
+        'comboName' => 'Gabaritando Prefeitura de Santos',
+    ]);
+})->purpose('Vincula alunos do combo Gabaritando Prefeitura de Santos aos cursos ativos marcados com esse combo');

@@ -38,6 +38,7 @@ class Course extends Model
         'slug',
         'description',
         'tutory_product_id',
+        'combo_name',
         'exam_date',
         'is_active',
     ];

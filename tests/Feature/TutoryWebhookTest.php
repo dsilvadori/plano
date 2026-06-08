@@ -122,18 +122,21 @@ class TutoryWebhookTest extends TestCase
         $firstCourse = Course::factory()->create([
             'name' => 'Gabaritando Santos - Oficial de Administração',
             'slug' => 'gabaritando-santos-oficial-de-administracao',
+            'combo_name' => 'Combo Extra, Gabaritando Prefeitura de Santos',
             'is_active' => true,
         ]);
 
         $secondCourse = Course::factory()->create([
             'name' => 'Gabaritando Santos - Inspetor de Alunos',
             'slug' => 'gabaritando-santos-inspetor-de-alunos',
+            'combo_name' => 'Gabaritando Prefeitura de Santos',
             'is_active' => true,
         ]);
 
         $inactiveCourse = Course::factory()->create([
             'name' => 'Gabaritando Santos - Curso Inativo',
             'slug' => 'gabaritando-santos-curso-inativo',
+            'combo_name' => 'Gabaritando Prefeitura de Santos',
             'is_active' => false,
         ]);
 
@@ -171,18 +174,21 @@ class TutoryWebhookTest extends TestCase
         $firstCourse = Course::factory()->create([
             'name' => 'Gabaritando Santos - Oficial de Administração',
             'slug' => 'gabaritando-santos-oficial-de-administracao',
+            'combo_name' => 'Gabaritando Prefeitura de Santos',
             'is_active' => true,
         ]);
 
         $secondCourse = Course::factory()->create([
             'name' => 'Gabaritando Santos - Inspetor de Alunos',
             'slug' => 'gabaritando-santos-inspetor-de-alunos',
+            'combo_name' => 'Gabaritando Prefeitura de Santos',
             'is_active' => true,
         ]);
 
         Course::factory()->create([
             'name' => 'Gabaritando Santos - Curso Inativo',
             'slug' => 'gabaritando-santos-curso-inativo',
+            'combo_name' => 'Gabaritando Prefeitura de Santos',
             'is_active' => false,
         ]);
 
