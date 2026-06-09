@@ -27,43 +27,65 @@ class CourseSpreadsheetImporter
                 ],
             );
 
-            $moduleIds = [];
+            $this->importStructure($course, $payload, $payload['study_track_name']);
 
-            foreach ($payload['modules'] as $moduleData) {
-                $module = CourseModule::updateOrCreate(
-                    [
-                        'course_id' => $course->id,
-                        'name' => $moduleData['name'],
-                    ],
-                    [
-                        'type' => $moduleData['type'],
-                        'lessons' => $moduleData['lessons'] ?? [],
-                        'workload_minutes' => $moduleData['workload_minutes'],
-                        'sort_order' => $moduleData['sort_order'],
-                        'is_active' => true,
-                    ],
-                );
+            return $course->fresh(['modules', 'studyTracks.modules']);
+        });
+    }
 
-                $moduleIds[$module->id] = [
-                    'weight' => 1,
-                    'sort_order' => $moduleData['sort_order'],
-                ];
-            }
+    public function importInto(Course $course, string $path): Course
+    {
+        $payload = $this->parser->parse($path);
 
-            $studyTrack = StudyTrack::updateOrCreate(
+        return DB::transaction(function () use ($course, $payload) {
+            $this->importStructure($course, $payload, 'Trilha Oficial - ' . $course->name, false);
+
+            return $course->fresh(['modules', 'studyTracks.modules']);
+        });
+    }
+
+    protected function importStructure(Course $course, array $payload, string $studyTrackName, bool $replaceTrackModules = true): void
+    {
+        $moduleIds = [];
+
+        foreach ($payload['modules'] as $moduleData) {
+            $module = CourseModule::updateOrCreate(
                 [
                     'course_id' => $course->id,
-                    'name' => $payload['study_track_name'],
+                    'name' => $moduleData['name'],
                 ],
                 [
-                    'description' => 'Trilha oficial gerada automaticamente a partir da planilha do curso.',
+                    'type' => $moduleData['type'],
+                    'lessons' => $moduleData['lessons'] ?? [],
+                    'workload_minutes' => $moduleData['workload_minutes'],
+                    'sort_order' => $moduleData['sort_order'],
                     'is_active' => true,
                 ],
             );
 
+            $moduleIds[$module->id] = [
+                'weight' => 1,
+                'sort_order' => $moduleData['sort_order'],
+            ];
+        }
+
+        $studyTrack = StudyTrack::updateOrCreate(
+            [
+                'course_id' => $course->id,
+                'name' => $studyTrackName,
+            ],
+            [
+                'description' => 'Trilha oficial gerada automaticamente a partir da planilha do curso.',
+                'is_active' => true,
+            ],
+        );
+
+        if ($replaceTrackModules) {
             $studyTrack->modules()->sync($moduleIds);
 
-            return $course->fresh(['modules', 'studyTracks.modules']);
-        });
+            return;
+        }
+
+        $studyTrack->modules()->syncWithoutDetaching($moduleIds);
     }
 }

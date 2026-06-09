@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\Course;
+use App\Models\CourseModule;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -75,5 +77,44 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertNotNull($module);
         $this->assertIsArray($module->lessons);
         $this->assertNotEmpty($module->lessons);
+    }
+
+    public function test_importer_can_add_spreadsheet_structure_to_existing_course(): void
+    {
+        $course = Course::factory()->create([
+            'name' => 'Curso Gabaritando CRT',
+            'slug' => 'curso-gabaritando-crt',
+            'is_active' => false,
+        ]);
+        $existingModule = CourseModule::factory()->for($course)->create([
+            'name' => 'Módulo criado manualmente',
+            'sort_order' => 999,
+        ]);
+
+        $importedCourse = app(CourseSpreadsheetImporter::class)->importInto(
+            $course,
+            base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')
+        );
+
+        $this->assertTrue($importedCourse->is($course));
+        $this->assertSame('Curso Gabaritando CRT', $importedCourse->name);
+        $this->assertSame('curso-gabaritando-crt', $importedCourse->slug);
+        $this->assertFalse($importedCourse->is_active);
+        $this->assertDatabaseHas('course_modules', [
+            'id' => $existingModule->id,
+            'course_id' => $course->id,
+            'name' => 'Módulo criado manualmente',
+        ]);
+        $this->assertDatabaseHas('course_modules', [
+            'course_id' => $course->id,
+            'name' => 'Português - Classe de palavras',
+            'workload_minutes' => 137,
+        ]);
+        $this->assertDatabaseHas('study_tracks', [
+            'course_id' => $course->id,
+            'name' => 'Trilha Oficial - Curso Gabaritando CRT',
+        ]);
+        $this->assertSame(31, $course->modules()->count());
+        $this->assertSame(30, $course->studyTracks()->where('name', 'Trilha Oficial - Curso Gabaritando CRT')->first()->modules()->count());
     }
 }
