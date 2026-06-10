@@ -38,7 +38,9 @@ class CourseSpreadsheetImporter
         $payload = $this->parser->parse($path);
 
         return DB::transaction(function () use ($course, $payload) {
-            $this->importStructure($course, $payload, 'Trilha Oficial - ' . $course->name, false);
+            $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - ' . $course->name;
+
+            $this->importStructure($course, $payload, $studyTrackName);
 
             return $course->fresh(['modules', 'studyTracks.modules']);
         });
@@ -87,5 +89,13 @@ class CourseSpreadsheetImporter
         }
 
         $studyTrack->modules()->syncWithoutDetaching($moduleIds);
+    }
+
+    protected function resolveOfficialStudyTrackName(Course $course): ?string
+    {
+        return $course->studyTracks()
+            ->where('name', 'like', 'Trilha Oficial -%')
+            ->orderBy('id')
+            ->value('name');
     }
 }

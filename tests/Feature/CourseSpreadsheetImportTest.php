@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\StudyTrack;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -116,5 +117,52 @@ class CourseSpreadsheetImportTest extends TestCase
         ]);
         $this->assertSame(31, $course->modules()->count());
         $this->assertSame(30, $course->studyTracks()->where('name', 'Trilha Oficial - Curso Gabaritando CRT')->first()->modules()->count());
+    }
+
+    public function test_importer_updates_existing_official_structure_when_importing_into_course(): void
+    {
+        $course = Course::factory()->create([
+            'name' => 'Curso Gabaritando CRT',
+            'slug' => 'curso-gabaritando-crt',
+            'is_active' => false,
+        ]);
+        $existingImportedModule = CourseModule::factory()->for($course)->create([
+            'name' => 'Português - Classe de palavras',
+            'type' => 'questions',
+            'workload_minutes' => 1,
+            'sort_order' => 999,
+            'lessons' => [
+                ['name' => 'Conteúdo antigo', 'minutes' => 1],
+            ],
+        ]);
+        $staleModule = CourseModule::factory()->for($course)->create([
+            'name' => 'Módulo antigo removido da planilha',
+            'sort_order' => 998,
+        ]);
+        $officialTrack = StudyTrack::factory()->for($course)->create([
+            'name' => 'Trilha Oficial - Nome Antigo',
+        ]);
+        $officialTrack->modules()->attach([
+            $existingImportedModule->id => ['weight' => 1, 'sort_order' => 999],
+            $staleModule->id => ['weight' => 1, 'sort_order' => 998],
+        ]);
+
+        app(CourseSpreadsheetImporter::class)->importInto(
+            $course,
+            base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')
+        );
+
+        $updatedModule = $course->modules()->where('name', 'Português - Classe de palavras')->first();
+        $officialTrack->refresh();
+
+        $this->assertSame($existingImportedModule->id, $updatedModule->id);
+        $this->assertSame('basic', $updatedModule->type);
+        $this->assertSame(137, $updatedModule->workload_minutes);
+        $this->assertNotSame('Conteúdo antigo', $updatedModule->lessons[0]['name']);
+        $this->assertDatabaseCount('study_tracks', 1);
+        $this->assertSame('Trilha Oficial - Nome Antigo', $officialTrack->name);
+        $this->assertTrue($officialTrack->modules()->whereKey($updatedModule->id)->exists());
+        $this->assertFalse($officialTrack->modules()->whereKey($staleModule->id)->exists());
+        $this->assertSame(30, $officialTrack->modules()->count());
     }
 }
