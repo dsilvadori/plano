@@ -265,6 +265,7 @@ class AdminAccessTest extends TestCase
         $this->assertStringContainsString(route('password.reset', ['token' => 'token-teste'], false), $mail->actionUrl);
         $this->assertStringContainsString('email=aluno%40example.com', $mail->actionUrl);
         $this->assertStringContainsString('Olá, Aluno Teste!', $html);
+        $this->assertStringContainsString('Este link expira em 2 dias.', $html);
         $this->assertStringContainsString('Se você estiver com dificuldade para clicar no botão', $html);
         $this->assertStringContainsString('Todos os direitos reservados.', $html);
         $this->assertStringNotContainsString('Regards', $html);

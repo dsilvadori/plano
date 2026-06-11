@@ -16,7 +16,7 @@ class ResetPasswordNotification extends ResetPassword
             ->line('Recebemos uma solicitação para criar ou redefinir a senha da sua conta.')
             ->line('Clique no botão abaixo para escolher uma nova senha de acesso ao Plano de Estudos.')
             ->action('Redefinir senha', $url)
-            ->line('Este link expira em '.config('auth.passwords.'.config('auth.defaults.passwords').'.expire').' minutos.')
+            ->line('Este link expira em 2 dias.')
             ->line('Se você não solicitou essa alteração, ignore este e-mail.')
             ->salutation('Equipe Vencendo Concursos');
     }

@@ -99,7 +99,7 @@ class PasswordResetTest extends TestCase
         $this->assertSame('Redefinir senha', $mail->actionText);
         $this->assertStringContainsString('Olá!', $html);
         $this->assertStringContainsString('Recebemos uma solicitação para criar ou redefinir a senha da sua conta.', $html);
-        $this->assertStringContainsString('Este link expira em 60 minutos.', $html);
+        $this->assertStringContainsString('Este link expira em 2 dias.', $html);
         $this->assertStringContainsString('Se você estiver com dificuldade para clicar no botão', $html);
         $this->assertStringContainsString('Todos os direitos reservados.', $html);
         $this->assertStringNotContainsString('Hello', $html);
