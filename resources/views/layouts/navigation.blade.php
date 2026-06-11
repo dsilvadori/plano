@@ -65,6 +65,7 @@
             @if (Auth::user()->isAdmin())
                 <a href="/admin" class="nav-pill">Painel admin</a>
             @endif
+            <a href="https://ead.vencendoconcursos.com.br/login" target="_blank" rel="noopener noreferrer" class="nav-pill">Plataforma de cursos</a>
             <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
         </div>
 
@@ -100,6 +101,7 @@
             @if (Auth::user()->isAdmin())
                 <a href="/admin" class="nav-pill">Painel admin</a>
             @endif
+            <a href="https://ead.vencendoconcursos.com.br/login" target="_blank" rel="noopener noreferrer" class="nav-pill">Plataforma de cursos</a>
             <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
             <form method="POST" action="{{ route('logout') }}">
                 @csrf
