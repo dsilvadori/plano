@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Notifications\SetPasswordNotification;
+use App\Notifications\ResetPasswordNotification;
 use Illuminate\Database\Eloquent\Builder;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
@@ -99,5 +100,10 @@ class User extends Authenticatable implements FilamentUser
     public function sendSetPasswordNotification(string $token): void
     {
         $this->notify(new SetPasswordNotification($token));
+    }
+
+    public function sendPasswordResetNotification(#[\SensitiveParameter] $token): void
+    {
+        $this->notify(new ResetPasswordNotification($token));
     }
 }

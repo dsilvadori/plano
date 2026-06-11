@@ -257,11 +257,17 @@ class AdminAccessTest extends TestCase
         ]);
 
         $mail = (new SetPasswordNotification('token-teste'))->toMail($student);
+        $html = (string) $mail->render();
 
         $this->assertSame(['nao-responda@vencendoconcursos.com.br', 'Vencendo Concursos'], $mail->from);
         $this->assertSame('Primeiro acesso ao Plano de Estudos | Vencendo Concursos', $mail->subject);
         $this->assertSame('Criar senha de primeiro acesso', $mail->actionText);
         $this->assertStringContainsString(route('password.reset', ['token' => 'token-teste'], false), $mail->actionUrl);
         $this->assertStringContainsString('email=aluno%40example.com', $mail->actionUrl);
+        $this->assertStringContainsString('Olá, Aluno Teste!', $html);
+        $this->assertStringContainsString('Se você estiver com dificuldade para clicar no botão', $html);
+        $this->assertStringContainsString('Todos os direitos reservados.', $html);
+        $this->assertStringNotContainsString('Regards', $html);
+        $this->assertStringNotContainsString("If you're having trouble", $html);
     }
 }

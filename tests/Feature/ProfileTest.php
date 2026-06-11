@@ -18,7 +18,16 @@ class ProfileTest extends TestCase
             ->actingAs($user)
             ->get('/profile');
 
-        $response->assertOk();
+        $response
+            ->assertOk()
+            ->assertSee('Perfil')
+            ->assertSee('Informações do perfil')
+            ->assertSee('Atualizar senha')
+            ->assertSee('Senha atual')
+            ->assertSee('Nova senha')
+            ->assertDontSee('Profile Information')
+            ->assertDontSee('Update Password')
+            ->assertDontSee('Current Password');
     }
 
     public function test_profile_page_does_not_show_account_deletion_option(): void

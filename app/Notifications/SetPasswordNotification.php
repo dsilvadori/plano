@@ -34,7 +34,7 @@ class SetPasswordNotification extends Notification
             ->line('Para entrar no Plano de Estudos, crie sua senha de primeiro acesso no link abaixo.')
             ->action('Criar senha de primeiro acesso', $url)
             ->line('Se você não solicitou este acesso, ignore este e-mail.')
-            ->line('Bons estudos,')
-            ->line('Equipe Vencendo Concursos');
+            ->line('Bons estudos!')
+            ->salutation('Equipe Vencendo Concursos');
     }
 }
