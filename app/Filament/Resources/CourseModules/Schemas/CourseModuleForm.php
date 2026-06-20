@@ -23,6 +23,10 @@ class CourseModuleForm
                 TextInput::make('name')
                     ->label('Nome')
                     ->required(),
+                Textarea::make('description')
+                    ->label('Descrição')
+                    ->rows(3)
+                    ->columnSpanFull(),
                 Select::make('type')
                     ->label('Tipo')
                     ->options([
@@ -54,6 +58,9 @@ class CourseModuleForm
                     ->numeric()
                     ->default(0)
                     ->required(),
+                TextInput::make('panda_folder_id')
+                    ->label('ID da pasta no Panda')
+                    ->helperText('Preparado para a sincronização futura com Panda Video.'),
                 Toggle::make('is_active')
                     ->label('Ativo')
                     ->default(true),

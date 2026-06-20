@@ -31,10 +31,12 @@ class CourseModulesTable
                         default => 'Outro',
                     }),
                 TextColumn::make('lessons_count')
-                    ->label('Aulas')
+                    ->label('Aulas da trilha')
                     ->sortable(query: fn ($query, $direction) => $query->orderBy('workload_minutes', $direction)),
+                TextColumn::make('online_lessons_count')->label('Aulas online')->counts('onlineLessons'),
                 TextColumn::make('workload_minutes')->label('Minutos')->sortable(),
                 TextColumn::make('sort_order')->label('Ordem')->sortable(),
+                TextColumn::make('panda_folder_id')->label('Pasta Panda')->toggleable(),
                 IconColumn::make('is_active')->label('Ativo')->boolean(),
             ])
             ->filters([

@@ -2,7 +2,10 @@
 
 namespace App\Filament\Resources\Courses\Schemas;
 
+use App\Models\CourseSphere;
+use App\Models\EducationLevel;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -28,6 +31,38 @@ class CourseForm
                     ->label('Descrição')
                     ->rows(4)
                     ->columnSpanFull(),
+                Textarea::make('short_description')
+                    ->label('Descrição curta')
+                    ->rows(2)
+                    ->helperText('Resumo usado em cards, home e listagens de cursos.')
+                    ->columnSpanFull(),
+                TextInput::make('thumbnail_url')
+                    ->label('URL da thumbnail')
+                    ->url()
+                    ->maxLength(2048),
+                TextInput::make('checkout_url')
+                    ->label('URL do checkout')
+                    ->url()
+                    ->maxLength(2048),
+                Select::make('sphere_id')
+                    ->label('Esfera')
+                    ->options(fn () => CourseSphere::query()->where('is_active', true)->orderBy('sort_order')->orderBy('name')->pluck('name', 'id'))
+                    ->searchable()
+                    ->preload(),
+                Select::make('education_level_id')
+                    ->label('Escolaridade')
+                    ->options(fn () => EducationLevel::query()->where('is_active', true)->orderBy('sort_order')->orderBy('name')->pluck('name', 'id'))
+                    ->searchable()
+                    ->preload(),
+                Select::make('status')
+                    ->label('Status do catálogo')
+                    ->options([
+                        'draft' => 'Rascunho',
+                        'published' => 'Publicado',
+                        'archived' => 'Arquivado',
+                    ])
+                    ->default('published')
+                    ->required(),
                 TextInput::make('tutory_product_id')
                     ->label('ID do produto na Tutory'),
                 TextInput::make('combo_name')
@@ -41,6 +76,14 @@ class CourseForm
                 Toggle::make('is_active')
                     ->label('Ativo')
                     ->default(true),
+                Toggle::make('is_featured')
+                    ->label('Destaque na home')
+                    ->default(false),
+                TextInput::make('sort_order')
+                    ->label('Ordem no catálogo')
+                    ->numeric()
+                    ->default(0)
+                    ->required(),
             ]);
     }
 }

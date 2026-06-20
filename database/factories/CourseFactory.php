@@ -22,9 +22,15 @@ class CourseFactory extends Factory
             'name' => fake()->unique()->sentence(3),
             'slug' => fake()->unique()->slug(),
             'description' => fake()->paragraph(),
+            'short_description' => fake()->sentence(),
+            'thumbnail_url' => fake()->imageUrl(),
+            'checkout_url' => fake()->url(),
             'tutory_product_id' => Str::slug(fake()->unique()->sentence(2)),
             'combo_name' => null,
+            'status' => 'published',
             'is_active' => true,
+            'is_featured' => false,
+            'sort_order' => 0,
         ];
     }
 }

@@ -5,8 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Facades\DB;
 
 class Course extends Model
 {
@@ -37,20 +37,46 @@ class Course extends Model
         'name',
         'slug',
         'description',
+        'short_description',
+        'thumbnail_url',
+        'checkout_url',
+        'sphere_id',
+        'education_level_id',
         'tutory_product_id',
         'combo_name',
         'exam_date',
+        'status',
         'is_active',
+        'is_featured',
+        'sort_order',
+        'metadata',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'is_featured' => 'boolean',
         'exam_date' => 'date',
+        'metadata' => 'array',
     ];
+
+    public function sphere(): BelongsTo
+    {
+        return $this->belongsTo(CourseSphere::class, 'sphere_id');
+    }
+
+    public function educationLevel(): BelongsTo
+    {
+        return $this->belongsTo(EducationLevel::class);
+    }
 
     public function modules(): HasMany
     {
         return $this->hasMany(CourseModule::class)->orderBy('sort_order');
+    }
+
+    public function lessons(): HasMany
+    {
+        return $this->hasMany(Lesson::class)->orderBy('sort_order');
     }
 
     public function studyTracks(): HasMany

@@ -16,16 +16,20 @@ class CourseModule extends Model
     protected $fillable = [
         'course_id',
         'name',
+        'description',
         'type',
         'lessons',
         'workload_minutes',
         'sort_order',
+        'panda_folder_id',
+        'metadata',
         'is_active',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
         'lessons' => 'array',
+        'metadata' => 'array',
     ];
 
     public function course(): BelongsTo
@@ -43,6 +47,11 @@ class CourseModule extends Model
     public function planItems(): HasMany
     {
         return $this->hasMany(StudyPlanItem::class);
+    }
+
+    public function onlineLessons(): HasMany
+    {
+        return $this->hasMany(Lesson::class)->orderBy('sort_order');
     }
 
     public function getPlanningLessonsAttribute(): array

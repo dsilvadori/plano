@@ -29,6 +29,10 @@ class CourseModulesRelationManager extends RelationManager
             TextInput::make('name')
                 ->label('Nome')
                 ->required(),
+            Textarea::make('description')
+                ->label('Descrição')
+                ->rows(3)
+                ->columnSpanFull(),
             Select::make('type')
                 ->label('Tipo')
                 ->options([
@@ -59,6 +63,9 @@ class CourseModulesRelationManager extends RelationManager
                 ->numeric()
                 ->default(0)
                 ->required(),
+            TextInput::make('panda_folder_id')
+                ->label('ID da pasta no Panda')
+                ->helperText('Preparado para a sincronização futura com Panda Video.'),
             Toggle::make('is_active')
                 ->label('Ativo')
                 ->default(true),
@@ -84,10 +91,12 @@ class CourseModulesRelationManager extends RelationManager
                         default => 'Outro',
                     }),
                 TextColumn::make('lessons_count')
-                    ->label('Aulas')
+                    ->label('Aulas da trilha')
                     ->sortable(query: fn ($query, $direction) => $query->orderBy('workload_minutes', $direction)),
+                TextColumn::make('online_lessons_count')->label('Aulas online')->counts('onlineLessons'),
                 TextColumn::make('workload_minutes')->label('Minutos')->sortable(),
                 TextColumn::make('sort_order')->label('Ordem')->sortable(),
+                TextColumn::make('panda_folder_id')->label('Pasta Panda')->toggleable(),
                 IconColumn::make('is_active')->label('Ativo')->boolean(),
             ])
             ->filters([
