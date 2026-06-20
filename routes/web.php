@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\CourseCatalogController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\StudyPlanController;
 use App\Http\Controllers\TutoryWebhookController;
@@ -20,6 +21,9 @@ Route::post('/webhooks/tutory', TutoryWebhookController::class)->name('webhooks.
 
 Route::middleware('auth')->group(function () {
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
+    Route::get('/dashboard/cursos', [CourseCatalogController::class, 'index'])->name('courses.index');
+    Route::get('/dashboard/meus-cursos', [CourseCatalogController::class, 'mine'])->name('courses.mine');
+    Route::get('/dashboard/cursos/{course:slug}', [CourseCatalogController::class, 'show'])->name('courses.show');
     Route::get('/dashboard/plano/novo', [StudyPlanController::class, 'create'])->name('study-plans.create');
     Route::post('/dashboard/plano', [StudyPlanController::class, 'store'])->name('study-plans.store');
     Route::get('/dashboard/plano/{studyPlan}/editar', [StudyPlanController::class, 'edit'])

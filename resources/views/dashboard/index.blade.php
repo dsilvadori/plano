@@ -36,6 +36,26 @@
                 </div>
             @endif
 
+            @if ($featuredOnlineCourses->isNotEmpty())
+                <div class="mb-6">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                        <div>
+                            <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Cursos online</p>
+                            <h2 class="mt-2 text-2xl font-semibold text-white">Principais cursos disponíveis</h2>
+                        </div>
+                        <a href="{{ route('courses.index') }}" class="rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
+                            Ver catálogo
+                        </a>
+                    </div>
+
+                    <div class="mt-5 grid gap-4 xl:grid-cols-3">
+                        @foreach ($featuredOnlineCourses as $course)
+                            @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $availableCourseIds->contains($course->id)])
+                        @endforeach
+                    </div>
+                </div>
+            @endif
+
             <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <div class="metric-card">
                     <p class="stat-label">Tarefas hoje</p>

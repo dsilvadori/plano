@@ -1,0 +1,107 @@
+@php
+    $thumbnail = $course->thumbnail_url ?: 'https://vencendoconcursos.com.br/wp-content/uploads/2026/04/logo-vc-transparente.png';
+@endphp
+
+<x-app-layout>
+    <x-slot name="header">
+        <div class="hero-panel grid gap-6 lg:grid-cols-[1fr_20rem] lg:items-center">
+            <div>
+                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Curso online</p>
+                <h1 class="mt-2 text-3xl font-semibold text-white">{{ $course->name }}</h1>
+                <p class="mt-3 max-w-3xl text-sm text-slate-300">{{ $course->short_description ?: $course->description ?: 'Curso organizado em módulos e aulas para acompanhar seu plano de estudos.' }}</p>
+                <div class="mt-5 flex flex-wrap gap-3">
+                    @if ($course->sphere)
+                        <span class="rounded-full border border-sky-400/20 bg-sky-400/10 px-4 py-2 text-sm font-semibold text-sky-100">{{ $course->sphere->name }}</span>
+                    @endif
+                    @if ($course->educationLevel)
+                        <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100">{{ $course->educationLevel->name }}</span>
+                    @endif
+                    <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100">{{ $course->modules_count }} módulo(s)</span>
+                    <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100">{{ $course->lessons_count }} aula(s)</span>
+                </div>
+            </div>
+            <div class="overflow-hidden rounded-3xl border border-white/10 bg-slate-950/60">
+                <img src="{{ $thumbnail }}" alt="{{ $course->name }}" class="aspect-[16/10] h-full w-full object-cover">
+            </div>
+        </div>
+    </x-slot>
+
+    @unless ($hasAccess)
+        <section class="mb-6 rounded-3xl border border-amber-400/20 bg-amber-400/10 p-6">
+            <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Acesso bloqueado</p>
+            <h2 class="mt-2 text-2xl font-semibold text-white">Este curso ainda não está na sua área.</h2>
+            <p class="mt-3 max-w-2xl text-sm text-amber-100/90">Você pode visualizar a estrutura do curso, mas precisa de matrícula ativa para assistir às aulas.</p>
+            @if ($course->checkout_url)
+                <a href="{{ $course->checkout_url }}" target="_blank" rel="noopener noreferrer" class="mt-5 inline-flex rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
+                    Comprar acesso
+                </a>
+            @endif
+        </section>
+    @endunless
+
+    <section class="card-panel">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Conteúdo</p>
+                <h2 class="mt-2 text-2xl font-semibold text-white">Módulos e aulas</h2>
+            </div>
+            <a href="{{ route('courses.mine') }}" class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-100">
+                Meus cursos
+            </a>
+        </div>
+
+        <div class="mt-6 space-y-4">
+            @forelse ($course->modules as $module)
+                <div class="card-subtle">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                            <p class="text-xs uppercase tracking-[0.2em] text-slate-400">Módulo</p>
+                            <h3 class="mt-2 text-xl font-semibold text-white">{{ $module->name }}</h3>
+                            @if ($module->description)
+                                <p class="mt-2 text-sm text-slate-400">{{ $module->description }}</p>
+                            @endif
+                        </div>
+                        <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-200">
+                            {{ $module->onlineLessons->count() }} aula(s)
+                        </span>
+                    </div>
+
+                    <div class="mt-5 space-y-3">
+                        @forelse ($module->onlineLessons as $lesson)
+                            <div class="flex flex-col gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                    <div class="flex flex-wrap gap-2">
+                                        <span class="rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1 text-xs font-semibold text-sky-100">{{ match ($lesson->type) {
+                                            'video' => 'Vídeo',
+                                            'pdf' => 'PDF',
+                                            'mixed' => 'Mista',
+                                            'text' => 'Texto',
+                                            'quiz' => 'Questões',
+                                            default => $lesson->type,
+                                        } }}</span>
+                                        <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-200">{{ $lesson->duration_minutes }} min</span>
+                                    </div>
+                                    <p class="mt-3 text-sm font-semibold text-white">{{ $lesson->title }}</p>
+                                    @if ($lesson->description)
+                                        <p class="mt-1 text-sm text-slate-400">{{ $lesson->description }}</p>
+                                    @endif
+                                </div>
+                                <button type="button" disabled class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-400">
+                                    Aula em breve
+                                </button>
+                            </div>
+                        @empty
+                            <div class="rounded-2xl border border-white/10 bg-white/5 p-4">
+                                <p class="text-sm text-slate-400">Nenhuma aula publicada neste módulo ainda.</p>
+                            </div>
+                        @endforelse
+                    </div>
+                </div>
+            @empty
+                <div class="card-subtle">
+                    <p class="text-sm text-slate-400">Este curso ainda não possui módulos publicados.</p>
+                </div>
+            @endforelse
+        </div>
+    </section>
+</x-app-layout>

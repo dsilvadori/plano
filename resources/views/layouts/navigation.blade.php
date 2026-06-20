@@ -52,6 +52,8 @@
             <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->canAccessStudentArea())
                 <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
+                <a href="{{ route('courses.index') }}" class="nav-pill {{ request()->routeIs('courses.index', 'courses.show') ? 'nav-pill-active' : '' }}">Plataforma de cursos</a>
+                <a href="{{ route('courses.mine') }}" class="nav-pill {{ request()->routeIs('courses.mine') ? 'nav-pill-active' : '' }}">Meus cursos</a>
                 @if ($navigationPlans->isNotEmpty())
                     <div class="pt-4">
                         <p class="px-4 text-xs uppercase tracking-[0.25em] text-slate-500">Seus planos</p>
@@ -69,7 +71,6 @@
             @if (Auth::user()->isAdmin())
                 <a href="/admin" class="nav-pill">Painel admin</a>
             @endif
-            <a href="https://ead.vencendoconcursos.com.br/login" target="_blank" rel="noopener noreferrer" class="nav-pill">Plataforma de cursos</a>
             <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
         </div>
 
@@ -97,6 +98,8 @@
             <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->canAccessStudentArea())
                 <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
+                <a href="{{ route('courses.index') }}" class="nav-pill {{ request()->routeIs('courses.index', 'courses.show') ? 'nav-pill-active' : '' }}">Plataforma de cursos</a>
+                <a href="{{ route('courses.mine') }}" class="nav-pill {{ request()->routeIs('courses.mine') ? 'nav-pill-active' : '' }}">Meus cursos</a>
                 @foreach ($navigationPlans as $plan)
                     <a href="{{ route('study-plans.show', $plan) }}"
                        class="nav-pill {{ request()->routeIs('study-plans.show') && $currentStudyPlan?->id === $plan->id ? 'nav-pill-active' : '' }}">
@@ -107,7 +110,6 @@
             @if (Auth::user()->isAdmin())
                 <a href="/admin" class="nav-pill">Painel admin</a>
             @endif
-            <a href="https://ead.vencendoconcursos.com.br/login" target="_blank" rel="noopener noreferrer" class="nav-pill">Plataforma de cursos</a>
             <x-theme-toggle class="w-full lg:hidden" />
             <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
             <form method="POST" action="{{ route('logout') }}">
