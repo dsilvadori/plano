@@ -6,6 +6,28 @@ window.Alpine = Alpine;
 
 Alpine.start();
 
+const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+
+const applyTheme = (theme) => {
+    const normalizedTheme = theme === 'light' ? 'light' : 'dark';
+
+    document.documentElement.dataset.theme = normalizedTheme;
+    localStorage.setItem('vc-theme', normalizedTheme);
+    themeColorMeta?.setAttribute('content', normalizedTheme === 'light' ? '#f1f5f9' : '#050816');
+
+    document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
+        button.setAttribute('aria-pressed', String(normalizedTheme === 'light'));
+    });
+};
+
+document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+        applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+    });
+});
+
+applyTheme(document.documentElement.dataset.theme || 'dark');
+
 const disabledServiceWorkerHosts = [
     'localhost',
     '127.0.0.1',

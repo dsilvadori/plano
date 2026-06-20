@@ -218,32 +218,39 @@
                     <label class="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
                         <div class="flex items-center justify-between">
                             <span class="text-sm font-medium text-slate-100">{{ $label }}</span>
-                            <input
-                                name="available_days[]"
-                                wire:model.live="available_days"
-                                value="{{ $day }}"
-                                type="checkbox"
-                                data-plan-validation
-                                x-on:change="
-                                    const input = $refs['minutes_{{ $day }}'];
+                            <span class="relative inline-flex h-5 w-5 items-center justify-center">
+                                <input
+                                    name="available_days[]"
+                                    wire:model.live="available_days"
+                                    value="{{ $day }}"
+                                    type="checkbox"
+                                    data-plan-validation
+                                    x-on:change="
+                                        const input = $refs['minutes_{{ $day }}'];
 
-                                    if (! input) {
-                                        return;
-                                    }
+                                        if (! input) {
+                                            return;
+                                        }
 
-                                    if ($el.checked && (input.value === '' || input.value === '00:00')) {
-                                        input.value = '02:00';
-                                        input.dispatchEvent(new Event('input', { bubbles: true }));
-                                        return;
-                                    }
+                                        if ($el.checked && (input.value === '' || input.value === '00:00')) {
+                                            input.value = '02:00';
+                                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                                            return;
+                                        }
 
-                                    if (! $el.checked && input.value === '02:00') {
-                                        input.value = '00:00';
-                                        input.dispatchEvent(new Event('input', { bubbles: true }));
-                                    }
-                                "
-                                class="rounded border-white/20 bg-slate-950 text-amber-300"
-                            >
+                                        if (! $el.checked && input.value === '02:00') {
+                                            input.value = '00:00';
+                                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                                        }
+                                    "
+                                    class="day-checkbox"
+                                >
+                                <span class="day-checkmark" aria-hidden="true">
+                                    <svg viewBox="0 0 20 20" fill="none">
+                                        <path d="M5 10.3 8.3 13.5 15.2 6.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+                                    </svg>
+                                </span>
+                            </span>
                         </div>
                         <div class="mt-3">
                             <input
@@ -363,10 +370,10 @@
         x-show="isBuilding"
         x-transition.opacity
         x-init="$watch('isBuilding', value => { if (!value) { clearInterval(timer) } })"
-        class="fixed inset-0 z-50 items-center justify-center bg-slate-950/85 p-6 backdrop-blur"
+        class="app-modal-overlay fixed inset-0 z-50 items-center justify-center bg-slate-950/85 p-6 backdrop-blur"
         style="display: none;"
     >
-        <div class="w-full max-w-2xl rounded-[2rem] border border-white/10 bg-[radial-gradient(circle_at_top,_rgba(250,204,21,0.14),_transparent_24%),linear-gradient(180deg,_rgba(15,23,42,0.98),_rgba(2,6,23,0.98))] p-8 shadow-2xl shadow-black/50">
+        <div class="app-modal-panel w-full max-w-2xl rounded-[2rem] border border-white/10 bg-[radial-gradient(circle_at_top,_rgba(250,204,21,0.14),_transparent_24%),linear-gradient(180deg,_rgba(15,23,42,0.98),_rgba(2,6,23,0.98))] p-8 shadow-2xl shadow-black/50">
             <div class="flex items-start justify-between gap-4">
                 <div>
                     <p class="text-sm uppercase tracking-[0.3em] text-amber-300">Montando seu plano</p>
