@@ -16,12 +16,16 @@
                 </div>
             </a>
 
-            <button @click="open = !open" class="rounded-2xl border border-white/10 bg-white/5 p-3 text-slate-200">
-                <svg class="h-5 w-5" stroke="currentColor" fill="none" viewBox="0 0 24 24">
-                    <path :class="{'hidden': open, 'inline-flex': ! open }" class="inline-flex" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-                    <path :class="{'hidden': ! open, 'inline-flex': open }" class="hidden" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-            </button>
+            <div class="flex items-center gap-2">
+                <x-theme-toggle class="theme-toggle-icon-only" />
+
+                <button @click="open = !open" class="rounded-2xl border border-white/10 bg-white/5 p-3 text-slate-200">
+                    <svg class="h-5 w-5" stroke="currentColor" fill="none" viewBox="0 0 24 24">
+                        <path :class="{'hidden': open, 'inline-flex': ! open }" class="inline-flex" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                        <path :class="{'hidden': ! open, 'inline-flex': open }" class="hidden" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
         </div>
     </div>
 
@@ -35,7 +39,7 @@
         </div>
 
         <div class="px-4">
-            <div class="rounded-3xl border border-white/10 bg-white/5 p-4">
+            <div class="user-card rounded-3xl border border-white/10 bg-white/5 p-4">
                 <p class="text-sm font-semibold text-slate-50">{{ Auth::user()->name }}</p>
                 <p class="mt-1 text-sm text-slate-400">{{ Auth::user()->email }}</p>
                 <p class="mt-3 text-xs uppercase tracking-[0.25em] text-amber-300">
@@ -70,6 +74,8 @@
         </div>
 
         <div class="px-4 pb-4">
+            <x-theme-toggle class="w-full" />
+
             <button id="install-app-button" type="button" class="hidden w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
                 Instalar aplicativo
             </button>
@@ -102,6 +108,7 @@
                 <a href="/admin" class="nav-pill">Painel admin</a>
             @endif
             <a href="https://ead.vencendoconcursos.com.br/login" target="_blank" rel="noopener noreferrer" class="nav-pill">Plataforma de cursos</a>
+            <x-theme-toggle class="w-full lg:hidden" />
             <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
             <form method="POST" action="{{ route('logout') }}">
                 @csrf
