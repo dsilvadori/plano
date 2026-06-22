@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\Course;
+use App\Models\CourseModule;
 use App\Models\StudyTrack;
 use Illuminate\Database\Seeder;
 
@@ -59,7 +60,10 @@ class DemoCourseSeeder extends Seeder
             ['name' => 'Conhecimentos Específicos - Primeiros Socorros', 'type' => 'specific', 'workload_minutes' => $this->estimateMinutes(2), 'sort_order' => 27],
         ];
 
-        $course->modules()->where('name', 'Apresentação e Boas-Vindas')->delete();
+        CourseModule::query()
+            ->where('course_id', $course->id)
+            ->where('name', 'Apresentação e Boas-Vindas')
+            ->delete();
 
         foreach ($modules as $moduleData) {
             $course->modules()->updateOrCreate(
