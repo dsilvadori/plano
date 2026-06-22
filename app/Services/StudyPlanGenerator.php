@@ -4,7 +4,9 @@ namespace App\Services;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\Lesson;
 use App\Models\StudyPlan;
+use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
 use App\Models\User;
 use App\Support\StudyTime;
@@ -859,7 +861,7 @@ class StudyPlanGenerator
         $lessonNames = $lessonBlock['lesson_names'] ?? [];
         $lastSubjectsByType[$type] = $this->moduleSubject($module);
 
-        $plan->items()->create([
+        $item = $plan->items()->create([
             'course_module_id' => $module->id,
             'scheduled_date' => $date->toDateString(),
             'week_number' => $weekNumber,
@@ -870,6 +872,8 @@ class StudyPlanGenerator
             'estimated_minutes' => $estimatedMinutes,
             'sort_order' => $sortOrder++,
         ]);
+
+        $this->attachOnlineLessonsToItem($item, $module, $lessonNames);
 
         $remainingByModule[$module->id] -= $estimatedMinutes;
         $lessonStates[$module->id] = $lessonBlock['state'];
@@ -917,6 +921,68 @@ class StudyPlanGenerator
             'estimated_minutes' => $plannedMinutes,
             'sort_order' => $sortOrder++,
         ]);
+    }
+
+    protected function attachOnlineLessonsToItem(StudyPlanItem $item, CourseModule $module, array $lessonNames): void
+    {
+        $normalizedLessonNames = collect($lessonNames)
+            ->map(fn (string $lessonName) => $this->normalizeLessonName($lessonName))
+            ->filter()
+            ->values();
+
+        if ($normalizedLessonNames->isEmpty()) {
+            return;
+        }
+
+        $onlineLessons = $module->onlineLessons()
+            ->where('status', 'published')
+            ->get();
+
+        if ($onlineLessons->isEmpty()) {
+            return;
+        }
+
+        $matchedLessons = collect();
+
+        foreach ($normalizedLessonNames as $lessonName) {
+            $matchedLesson = $onlineLessons->first(function (Lesson $lesson) use ($lessonName, $matchedLessons) {
+                if ($matchedLessons->contains(fn (Lesson $matched) => $matched->is($lesson))) {
+                    return false;
+                }
+
+                $normalizedTitle = $this->normalizeLessonName($lesson->title);
+
+                return $normalizedTitle === $lessonName
+                    || Str::contains($normalizedTitle, $lessonName)
+                    || Str::contains($lessonName, $normalizedTitle);
+            });
+
+            if ($matchedLesson) {
+                $matchedLessons->push($matchedLesson);
+            }
+        }
+
+        if ($matchedLessons->isEmpty()) {
+            return;
+        }
+
+        $syncPayload = $matchedLessons
+            ->values()
+            ->mapWithKeys(fn (Lesson $lesson, int $index) => [$lesson->id => ['sort_order' => $index + 1]])
+            ->all();
+
+        $item->lessons()->syncWithoutDetaching($syncPayload);
+    }
+
+    protected function normalizeLessonName(string $value): string
+    {
+        return Str::of($value)
+            ->replaceMatches('/^continua(?:c|ç)(?:a|ã)o:\s*/iu', '')
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
+            ->value();
     }
 
     protected function buildTheoryQueues(Collection $modules): array

@@ -4,7 +4,6 @@ namespace App\Filament\Resources\Courses\Pages;
 
 use App\Filament\Resources\Courses\CourseResource;
 use App\Services\CourseSpreadsheetImporter;
-use App\Services\CourseSpreadsheetParser;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
 use Filament\Forms\Components\FileUpload;
@@ -37,15 +36,22 @@ class ListCourses extends ListRecords
                         ->label('Planilha do curso')
                         ->acceptedFileTypes([
                             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            'text/csv',
+                            'text/plain',
                         ])
                         ->disk('local')
                         ->directory('imports/courses')
                         ->preserveFilenames()
                         ->live()
-                        ->afterStateUpdated(function (mixed $state, Set $set, CourseSpreadsheetParser $parser): void {
+                        ->afterStateUpdated(function (mixed $state, Set $set, CourseSpreadsheetImporter $importer): void {
                             $set('preview_error', null);
                             $set('preview_course_name', null);
                             $set('preview_module_count', null);
+                            $set('preview_module_create_count', null);
+                            $set('preview_module_update_count', null);
+                            $set('preview_lesson_count', null);
+                            $set('preview_lesson_create_count', null);
+                            $set('preview_lesson_update_count', null);
                             $set('preview_track_count', null);
                             $set('preview_total_minutes', null);
 
@@ -56,12 +62,17 @@ class ListCourses extends ListRecords
                             }
 
                             try {
-                                $payload = $parser->parse(Storage::disk('local')->path($path));
+                                $preview = $importer->preview(Storage::disk('local')->path($path));
 
-                                $set('preview_course_name', $payload['course_name']);
-                                $set('preview_module_count', count($payload['modules']));
+                                $set('preview_course_name', $preview['course']['name']);
+                                $set('preview_module_count', $preview['modules']['total']);
+                                $set('preview_module_create_count', $preview['modules']['create']);
+                                $set('preview_module_update_count', $preview['modules']['update']);
+                                $set('preview_lesson_count', $preview['lessons']['total']);
+                                $set('preview_lesson_create_count', $preview['lessons']['create']);
+                                $set('preview_lesson_update_count', $preview['lessons']['update']);
                                 $set('preview_track_count', 1);
-                                $set('preview_total_minutes', array_sum(array_column($payload['modules'], 'workload_minutes')));
+                                $set('preview_total_minutes', $preview['total_minutes']);
                             } catch (Throwable $exception) {
                                 $set('preview_error', $exception->getMessage());
                             }
@@ -69,6 +80,11 @@ class ListCourses extends ListRecords
                         ->required(),
                     Hidden::make('preview_course_name'),
                     Hidden::make('preview_module_count'),
+                    Hidden::make('preview_module_create_count'),
+                    Hidden::make('preview_module_update_count'),
+                    Hidden::make('preview_lesson_count'),
+                    Hidden::make('preview_lesson_create_count'),
+                    Hidden::make('preview_lesson_update_count'),
                     Hidden::make('preview_track_count'),
                     Hidden::make('preview_total_minutes'),
                     Hidden::make('preview_error'),
@@ -82,13 +98,19 @@ class ListCourses extends ListRecords
 
                             $courseName = (string) ($get('preview_course_name') ?? '');
                             $moduleCount = (int) ($get('preview_module_count') ?? 0);
+                            $moduleCreateCount = (int) ($get('preview_module_create_count') ?? 0);
+                            $moduleUpdateCount = (int) ($get('preview_module_update_count') ?? 0);
+                            $lessonCount = (int) ($get('preview_lesson_count') ?? 0);
+                            $lessonCreateCount = (int) ($get('preview_lesson_create_count') ?? 0);
+                            $lessonUpdateCount = (int) ($get('preview_lesson_update_count') ?? 0);
                             $trackCount = (int) ($get('preview_track_count') ?? 0);
                             $totalMinutes = (int) ($get('preview_total_minutes') ?? 0);
 
                             return new HtmlString(implode('', [
                                 '<div class="space-y-1 text-sm">',
                                 '<div><strong>Curso:</strong> ' . e($courseName) . '</div>',
-                                '<div><strong>Módulos importáveis:</strong> ' . e((string) $moduleCount) . '</div>',
+                                '<div><strong>Módulos importáveis:</strong> ' . e((string) $moduleCount) . ' (' . e((string) $moduleCreateCount) . ' novos, ' . e((string) $moduleUpdateCount) . ' atualizados)</div>',
+                                '<div><strong>Aulas importáveis:</strong> ' . e((string) $lessonCount) . ' (' . e((string) $lessonCreateCount) . ' novas, ' . e((string) $lessonUpdateCount) . ' atualizadas)</div>',
                                 '<div><strong>Trilhas oficiais criadas:</strong> ' . e((string) $trackCount) . '</div>',
                                 '<div><strong>Carga total:</strong> ' . e(self::formatPreviewMinutes($totalMinutes)) . '</div>',
                                 '</div>',

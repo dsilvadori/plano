@@ -52,7 +52,7 @@
             <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->canAccessStudentArea())
                 <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
-                <a href="{{ route('courses.index') }}" class="nav-pill {{ request()->routeIs('courses.index', 'courses.show') ? 'nav-pill-active' : '' }}">Plataforma de cursos</a>
+                <a href="{{ route('courses.index') }}" class="nav-pill {{ request()->routeIs('courses.index', 'courses.show', 'courses.lessons.show') ? 'nav-pill-active' : '' }}">Plataforma de cursos</a>
                 <a href="{{ route('courses.mine') }}" class="nav-pill {{ request()->routeIs('courses.mine') ? 'nav-pill-active' : '' }}">Meus cursos</a>
                 @if ($navigationPlans->isNotEmpty())
                     <div class="pt-4">
@@ -98,7 +98,7 @@
             <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->canAccessStudentArea())
                 <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
-                <a href="{{ route('courses.index') }}" class="nav-pill {{ request()->routeIs('courses.index', 'courses.show') ? 'nav-pill-active' : '' }}">Plataforma de cursos</a>
+                <a href="{{ route('courses.index') }}" class="nav-pill {{ request()->routeIs('courses.index', 'courses.show', 'courses.lessons.show') ? 'nav-pill-active' : '' }}">Plataforma de cursos</a>
                 <a href="{{ route('courses.mine') }}" class="nav-pill {{ request()->routeIs('courses.mine') ? 'nav-pill-active' : '' }}">Meus cursos</a>
                 @foreach ($navigationPlans as $plan)
                     <a href="{{ route('study-plans.show', $plan) }}"

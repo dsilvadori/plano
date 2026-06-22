@@ -1,5 +1,7 @@
 @php
     $hasAccess = $hasAccess ?? false;
+    $progress = $progress ?? null;
+    $progressPercentage = (int) ($progress['percentage'] ?? 0);
     $thumbnail = $course->thumbnail_url ?: 'https://vencendoconcursos.com.br/wp-content/uploads/2026/04/logo-vc-transparente.png';
 @endphp
 
@@ -33,10 +35,22 @@
             <span>{{ $course->lessons_count }} aula(s)</span>
         </div>
 
+        @if ($hasAccess && $progress)
+            <div class="mt-4">
+                <div class="mb-2 flex items-center justify-between text-xs font-semibold text-slate-300">
+                    <span>{{ $progress['completed'] }} de {{ $progress['total'] }} aula(s)</span>
+                    <span>{{ $progressPercentage }}%</span>
+                </div>
+                <div class="h-2 overflow-hidden rounded-full bg-slate-800">
+                    <div class="h-full rounded-full bg-sky-400" style="width: {{ min(100, $progressPercentage) }}%"></div>
+                </div>
+            </div>
+        @endif
+
         <div class="mt-auto pt-5">
             @if ($hasAccess)
                 <a href="{{ route('courses.show', $course->slug) }}" class="inline-flex w-full justify-center rounded-2xl bg-amber-300 px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
-                    Acessar curso
+                    {{ $progressPercentage > 0 ? 'Continuar curso' : 'Acessar curso' }}
                 </a>
             @elseif ($course->checkout_url)
                 <a href="{{ $course->checkout_url }}" target="_blank" rel="noopener noreferrer" class="inline-flex w-full justify-center rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-200">

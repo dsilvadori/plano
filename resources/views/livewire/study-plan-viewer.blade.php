@@ -194,7 +194,13 @@
                                                 <div class="mt-3 space-y-2">
                                                     @foreach ($itemLessons[$item->id] as $lesson)
                                                         <div class="flex items-start justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
-                                                            <p class="text-sm leading-5 text-slate-300">{{ $lesson['name'] }}</p>
+                                                            @if (! empty($lesson['url']))
+                                                                <a href="{{ $lesson['url'] }}" class="text-sm font-semibold leading-5 text-sky-100 underline-offset-4 hover:underline">
+                                                                    {{ $lesson['name'] }}
+                                                                </a>
+                                                            @else
+                                                                <p class="text-sm leading-5 text-slate-300">{{ $lesson['name'] }}</p>
+                                                            @endif
                                                             <span class="shrink-0 rounded-full border border-white/10 bg-slate-900/80 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-200">{{ $lesson['minutes_label'] }}</span>
                                                         </div>
                                                     @endforeach

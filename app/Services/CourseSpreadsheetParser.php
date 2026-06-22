@@ -16,6 +16,10 @@ class CourseSpreadsheetParser
             throw new RuntimeException("Spreadsheet not found: {$path}");
         }
 
+        if (Str::lower(pathinfo($path, PATHINFO_EXTENSION)) === 'csv') {
+            return $this->parseCsv($path);
+        }
+
         $archive = new ZipArchive();
 
         if ($archive->open($path) !== true) {
@@ -42,6 +46,120 @@ class CourseSpreadsheetParser
         } finally {
             $archive->close();
         }
+    }
+
+    protected function parseCsv(string $path): array
+    {
+        $handle = fopen($path, 'rb');
+
+        if ($handle === false) {
+            throw new RuntimeException("Unable to open CSV: {$path}");
+        }
+
+        try {
+            $headers = null;
+            $rows = [];
+
+            while (($row = fgetcsv($handle, 0, ';')) !== false) {
+                if (count($row) === 1 && str_contains((string) $row[0], ',')) {
+                    $row = str_getcsv((string) $row[0], ',');
+                }
+
+                if ($headers === null) {
+                    $headers = collect($row)
+                        ->map(fn (string $header) => $this->normalizeHeader($header))
+                        ->all();
+
+                    continue;
+                }
+
+                $mapped = [];
+
+                foreach ($headers as $index => $header) {
+                    $mapped[$header] = trim((string) ($row[$index] ?? ''));
+                }
+
+                if (collect($mapped)->filter()->isNotEmpty()) {
+                    $rows[] = $mapped;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        if ($rows === []) {
+            throw new RuntimeException('O CSV não possui linhas importáveis.');
+        }
+
+        $firstRow = $rows[0];
+        $courseName = $firstRow['course_name'] ?? $firstRow['curso'] ?? $this->fallbackCourseNameFromPath($path);
+        $groupedRows = collect($rows)
+            ->filter(fn (array $row) => filled($row['module_name'] ?? $row['modulo'] ?? null) && filled($row['lesson_title'] ?? $row['aula'] ?? null))
+            ->groupBy(fn (array $row) => $row['module_name'] ?? $row['modulo']);
+
+        if ($groupedRows->isEmpty()) {
+            throw new RuntimeException('O CSV precisa conter as colunas module_name e lesson_title.');
+        }
+
+        $sortOrder = 1;
+        $modules = $groupedRows
+            ->map(function (Collection $moduleRows, string $moduleName) use (&$sortOrder) {
+                $first = $moduleRows->first();
+                $moduleSortOrder = (int) ($first['module_sort_order'] ?? $first['ordem_modulo'] ?? 0);
+                $lessons = $moduleRows
+                    ->values()
+                    ->map(function (array $row, int $index) {
+                        $minutes = (int) round((float) str_replace(',', '.', $row['lesson_minutes'] ?? $row['minutos'] ?? 0));
+
+                        return [
+                            'name' => $this->normalizeLessonName($row['lesson_title'] ?? $row['aula']),
+                            'minutes' => max(0, $minutes),
+                            'type' => $row['lesson_type'] ?? $row['tipo_aula'] ?? 'video',
+                            'status' => $row['lesson_status'] ?? $row['status_aula'] ?? 'published',
+                            'thumbnail_url' => $row['thumbnail_url'] ?? null,
+                            'panda_video_id' => $row['panda_video_id'] ?? null,
+                            'panda_embed_url' => $row['panda_embed_url'] ?? null,
+                            'panda_player_url' => $row['panda_player_url'] ?? null,
+                            'sort_order' => (int) ($row['lesson_sort_order'] ?? $row['ordem_aula'] ?? ($index + 1)),
+                        ];
+                    })
+                    ->filter(fn (array $lesson) => filled($lesson['name']) && $lesson['minutes'] > 0)
+                    ->values()
+                    ->all();
+
+                $assignedSortOrder = $moduleSortOrder ?: $sortOrder++;
+
+                return [
+                    'sheet_name' => 'CSV',
+                    'group_name' => $first['module_group'] ?? $first['grupo_modulo'] ?? 'CSV',
+                    'track_name' => $moduleName,
+                    'name' => $moduleName,
+                    'type' => $first['module_type'] ?? $first['tipo_modulo'] ?? $this->inferModuleType('CSV', null, $moduleName),
+                    'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
+                    'sort_order' => $assignedSortOrder,
+                    'lessons' => $lessons,
+                ];
+            })
+            ->filter(fn (array $module) => $module['lessons'] !== [])
+            ->sortBy('sort_order')
+            ->values()
+            ->map(function (array $module, int $index) {
+                $module['sort_order'] = $module['sort_order'] ?: ($index + 1);
+
+                return $module;
+            })
+            ->all();
+
+        if ($modules === []) {
+            throw new RuntimeException('O CSV não possui aulas com minutos válidos.');
+        }
+
+        return [
+            'course_name' => trim($courseName),
+            'course_slug' => Str::slug($courseName),
+            'study_track_name' => 'Trilha Oficial - ' . trim($courseName),
+            'modules' => $modules,
+        ];
     }
 
     protected function parseModules(ZipArchive $archive, array $sharedStrings, Collection $sheets): array
@@ -192,6 +310,17 @@ class CourseSpreadsheetParser
     protected function normalizeLessonName(string $value): string
     {
         return trim(str_replace("\n", ' ', preg_replace('/\s+/', ' ', $value) ?? $value));
+    }
+
+    protected function normalizeHeader(string $value): string
+    {
+        return Str::of($value)
+            ->trim()
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/[^a-z0-9]+/', '_')
+            ->trim('_')
+            ->value();
     }
 
     protected function readSheets(ZipArchive $archive): Collection

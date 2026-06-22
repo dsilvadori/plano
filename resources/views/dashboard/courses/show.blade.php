@@ -1,5 +1,6 @@
 @php
     $thumbnail = $course->thumbnail_url ?: 'https://vencendoconcursos.com.br/wp-content/uploads/2026/04/logo-vc-transparente.png';
+    $progressPercentage = (int) ($progressSummary['percentage'] ?? 0);
 @endphp
 
 <x-app-layout>
@@ -19,6 +20,11 @@
                     <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100">{{ $course->modules_count }} módulo(s)</span>
                     <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100">{{ $course->lessons_count }} aula(s)</span>
                 </div>
+                @if ($hasAccess && $continueLesson)
+                    <a href="{{ route('courses.lessons.show', [$course->slug, $continueLesson]) }}" class="mt-6 inline-flex rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
+                        {{ $progressPercentage > 0 ? 'Continuar aula' : 'Começar curso' }}
+                    </a>
+                @endif
             </div>
             <div class="overflow-hidden rounded-3xl border border-white/10 bg-slate-950/60">
                 <img src="{{ $thumbnail }}" alt="{{ $course->name }}" class="aspect-[16/10] h-full w-full object-cover">
@@ -44,11 +50,26 @@
             <div>
                 <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Conteúdo</p>
                 <h2 class="mt-2 text-2xl font-semibold text-white">Módulos e aulas</h2>
+                @if ($hasAccess)
+                    <p class="mt-2 text-sm text-slate-300">{{ $progressSummary['completed'] }} de {{ $progressSummary['total'] }} aula(s) concluída(s).</p>
+                @endif
             </div>
             <a href="{{ route('courses.mine') }}" class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-100">
                 Meus cursos
             </a>
         </div>
+
+        @if ($hasAccess)
+            <div class="mt-6 rounded-2xl border border-sky-400/20 bg-sky-400/10 p-4">
+                <div class="mb-2 flex items-center justify-between text-sm font-semibold text-sky-100">
+                    <span>Progresso do curso</span>
+                    <span>{{ $progressPercentage }}%</span>
+                </div>
+                <div class="h-3 overflow-hidden rounded-full bg-slate-800">
+                    <div class="h-full rounded-full bg-sky-400" style="width: {{ min(100, $progressPercentage) }}%"></div>
+                </div>
+            </div>
+        @endif
 
         <div class="mt-6 space-y-4">
             @forelse ($course->modules as $module)
@@ -68,6 +89,9 @@
 
                     <div class="mt-5 space-y-3">
                         @forelse ($module->onlineLessons as $lesson)
+                            @php
+                                $lessonCompleted = $completedLessonIds->contains($lesson->id);
+                            @endphp
                             <div class="flex flex-col gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
                                     <div class="flex flex-wrap gap-2">
@@ -86,9 +110,21 @@
                                         <p class="mt-1 text-sm text-slate-400">{{ $lesson->description }}</p>
                                     @endif
                                 </div>
-                                <button type="button" disabled class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-400">
-                                    Aula em breve
-                                </button>
+                                <div class="flex shrink-0 flex-col gap-2 sm:items-end">
+                                    @if ($lessonCompleted)
+                                        <span class="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-200">Concluída</span>
+                                    @endif
+
+                                    @if ($hasAccess)
+                                        <a href="{{ route('courses.lessons.show', [$course->slug, $lesson]) }}" class="rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-center text-sm font-semibold text-sky-100">
+                                            {{ $lessonCompleted ? 'Rever aula' : 'Assistir aula' }}
+                                        </a>
+                                    @else
+                                        <button type="button" disabled class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-400">
+                                            Bloqueada
+                                        </button>
+                                    @endif
+                                </div>
                             </div>
                         @empty
                             <div class="rounded-2xl border border-white/10 bg-white/5 p-4">

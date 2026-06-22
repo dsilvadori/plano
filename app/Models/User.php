@@ -97,6 +97,11 @@ class User extends Authenticatable implements FilamentUser
         return $this->hasMany(StudyPlan::class);
     }
 
+    public function lessonProgress(): HasMany
+    {
+        return $this->hasMany(LessonProgress::class);
+    }
+
     public function sendSetPasswordNotification(string $token): void
     {
         $this->notify(new SetPasswordNotification($token));

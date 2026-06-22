@@ -69,14 +69,24 @@ class Course extends Model
         return $this->belongsTo(EducationLevel::class);
     }
 
-    public function modules(): HasMany
+    public function modules(): BelongsToMany
     {
-        return $this->hasMany(CourseModule::class)->orderBy('sort_order');
+        return $this->belongsToMany(CourseModule::class, 'course_module_course')
+            ->withPivot('sort_order')
+            ->withTimestamps()
+            ->orderByPivot('sort_order')
+            ->orderBy('course_modules.sort_order')
+            ->orderBy('course_modules.name');
     }
 
     public function lessons(): HasMany
     {
         return $this->hasMany(Lesson::class)->orderBy('sort_order');
+    }
+
+    public function lessonProgress(): HasMany
+    {
+        return $this->hasMany(LessonProgress::class);
     }
 
     public function studyTracks(): HasMany

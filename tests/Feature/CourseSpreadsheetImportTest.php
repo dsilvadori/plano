@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\Lesson;
 use App\Models\StudyTrack;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
@@ -78,6 +79,13 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertNotNull($module);
         $this->assertIsArray($module->lessons);
         $this->assertNotEmpty($module->lessons);
+        $this->assertDatabaseHas('lessons', [
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => $module->lessons[0]['name'],
+            'duration_seconds' => $module->lessons[0]['minutes'] * 60,
+            'status' => 'published',
+        ]);
     }
 
     public function test_importer_can_add_spreadsheet_structure_to_existing_course(): void
@@ -164,5 +172,125 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($officialTrack->modules()->whereKey($updatedModule->id)->exists());
         $this->assertFalse($officialTrack->modules()->whereKey($staleModule->id)->exists());
         $this->assertSame(30, $officialTrack->modules()->count());
+    }
+
+    public function test_importer_preview_reports_dry_run_counts_without_writing(): void
+    {
+        $preview = app(CourseSpreadsheetImporter::class)->preview(
+            base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')
+        );
+
+        $this->assertSame('create', $preview['course']['action']);
+        $this->assertSame(30, $preview['modules']['total']);
+        $this->assertSame(30, $preview['modules']['create']);
+        $this->assertSame(0, $preview['modules']['update']);
+        $this->assertGreaterThan(0, $preview['lessons']['total']);
+        $this->assertSame($preview['lessons']['total'], $preview['lessons']['create']);
+        $this->assertDatabaseCount('courses', 0);
+        $this->assertDatabaseCount('course_modules', 0);
+        $this->assertDatabaseCount('lessons', 0);
+    }
+
+    public function test_csv_import_creates_course_modules_and_online_lessons(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'course-import-') . '.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes,lesson_type,lesson_status,panda_video_id,panda_embed_url',
+            'Curso CSV,Português,basic,1,Classes de palavras,30,video,published,video_1,https://player.example.com/video_1',
+            'Curso CSV,Português,basic,1,Advérbio,20,video,published,video_2,https://player.example.com/video_2',
+            'Curso CSV,Legislação,specific,2,Lei Orgânica,45,video,draft,video_3,https://player.example.com/video_3',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertSame('Curso CSV', $course->name);
+        $this->assertSame(2, $course->modules()->count());
+        $this->assertSame(3, $course->lessons()->count());
+        $this->assertDatabaseHas('lessons', [
+            'course_id' => $course->id,
+            'title' => 'Classes de palavras',
+            'duration_seconds' => 1800,
+            'panda_video_id' => 'video_1',
+            'panda_embed_url' => 'https://player.example.com/video_1',
+            'status' => 'published',
+        ]);
+        $this->assertDatabaseHas('lessons', [
+            'course_id' => $course->id,
+            'title' => 'Lei Orgânica',
+            'duration_seconds' => 2700,
+            'status' => 'draft',
+        ]);
+    }
+
+    public function test_reimport_archives_removed_spreadsheet_lessons(): void
+    {
+        $firstPath = tempnam(sys_get_temp_dir(), 'course-import-first-') . '.csv';
+        $secondPath = tempnam(sys_get_temp_dir(), 'course-import-second-') . '.csv';
+        file_put_contents($firstPath, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes',
+            'Curso CSV,Português,basic,1,Classes de palavras,30',
+            'Curso CSV,Português,basic,1,Advérbio,20',
+        ]));
+        file_put_contents($secondPath, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes',
+            'Curso CSV,Português,basic,1,Classes de palavras,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($firstPath);
+            $removedLesson = $course->lessons()->where('title', 'Advérbio')->firstOrFail();
+
+            app(CourseSpreadsheetImporter::class)->importInto($course, $secondPath);
+        } finally {
+            @unlink($firstPath);
+            @unlink($secondPath);
+        }
+
+        $this->assertSame('archived', $removedLesson->fresh()->status);
+    }
+
+    public function test_spreadsheet_import_reuses_existing_modules_and_lessons_by_name(): void
+    {
+        $libraryCourse = Course::factory()->create(['name' => 'Biblioteca']);
+        $existingModule = CourseModule::factory()->create([
+            'course_id' => $libraryCourse->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 30,
+        ]);
+        $existingLesson = Lesson::factory()->create([
+            'course_id' => $libraryCourse->id,
+            'course_module_id' => $existingModule->id,
+            'title' => 'Classes de palavras',
+            'slug' => 'classes-de-palavras',
+            'duration_seconds' => 1800,
+            'panda_video_id' => 'panda-original',
+            'panda_embed_url' => 'https://player.example.com/original',
+            'status' => 'published',
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-reuse-') . '.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes',
+            'Curso Novo,Portugues,basic,1,Classes de palavras,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertSame(1, CourseModule::query()->whereRaw('lower(name) like ?', ['portugu%'])->count());
+        $this->assertSame(1, Lesson::query()->where('title', 'Classes de palavras')->count());
+        $this->assertTrue($course->modules()->whereKey($existingModule->id)->exists());
+        $this->assertTrue($existingModule->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($existingModule->id)->exists());
+        $this->assertSame('panda-original', $existingLesson->fresh()->panda_video_id);
+        $this->assertSame('https://player.example.com/original', $existingLesson->fresh()->panda_embed_url);
     }
 }

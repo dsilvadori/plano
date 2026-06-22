@@ -10,7 +10,7 @@
     <section class="card-panel">
         <div class="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
             @forelse ($courses as $course)
-                @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => true])
+                @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => true, 'progress' => $courseProgress[$course->id] ?? null])
             @empty
                 <div class="card-subtle md:col-span-2 xl:col-span-4">
                     <p class="text-sm font-semibold text-white">Você ainda não tem cursos liberados.</p>

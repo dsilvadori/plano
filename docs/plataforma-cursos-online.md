@@ -20,6 +20,7 @@ Unificar em uma mesma experiencia:
 - A plataforma local e a fonte da verdade pedagogica: cursos, modulos, aulas, materiais, vinculos com plano, acesso dos alunos, progresso e conteudos gerados por IA.
 - O Panda Video e a fonte de midia: video, player, thumbnail, duracao, status de processamento e metadados tecnicos.
 - O plano de estudos deve se vincular a aulas internas (`lessons`) e nunca depender diretamente do ID do Panda.
+- Aulas e modulos devem ser reutilizaveis. Cursos sao montados a partir de modulos existentes, e modulos apontam para aulas existentes. A mesma aula interna pode aparecer em varios modulos/cursos, principalmente quando vier do mesmo `panda_video_id`.
 - Tudo que for importado deve ser auditavel, reversivel quando possivel e revisavel pelo admin antes de publicar.
 - Preparar multi-tenant sem implementar SaaS completo no inicio: usar nomes e estruturas que permitam futura tabela `organizations` ou `tenants`.
 - Nenhuma integracao externa deve bloquear a experiencia principal. Se IA/Panda falhar, curso, plano e aulas continuam acessiveis.
@@ -56,7 +57,7 @@ Unificar em uma mesma experiencia:
 
 2. `course_modules`
    - `id`
-   - `course_id`
+   - `course_id`: curso de origem/legado, mantido para compatibilidade
    - `title`
    - `description`
    - `sort_order`
@@ -109,21 +110,31 @@ Unificar em uma mesma experiencia:
    - `progress_seconds`
    - `completed_at`
 
-7. `study_plan_items`
+7. `course_module_lessons`
+   - Pivot entre modulos e aulas.
+   - Permite que a mesma aula seja reutilizada em varios modulos e cursos.
+   - Guarda ordem local da aula dentro daquele modulo.
+
+8. `course_module_course`
+   - Pivot entre cursos e modulos.
+   - Permite montar cursos reaproveitando modulos ja existentes.
+   - Guarda ordem local do modulo dentro daquele curso.
+
+9. `study_plan_items`
    - Evoluir para permitir `lesson_id`, `material_id` e `question_set_id`.
    - A tarefa do plano continua independente do player externo.
 
-8. `course_spheres`
+10. `course_spheres`
    - Esferas editaveis no admin: municipal, estadual, federal, tribunais, policia, educacao, fiscal, etc.
 
-9. `education_levels`
+11. `education_levels`
    - Nivel/grau de escolaridade editavel no admin: fundamental, medio, tecnico, superior.
 
-10. `home_sections`
+12. `home_sections`
     - Blocos customizaveis da home.
     - Exemplo: principais cursos, ultimos adicionados, federais em destaque, cursos para nivel medio.
 
-11. `home_section_items`
+13. `home_section_items`
     - Cursos ligados a cada secao, com ordem e regras de exibicao.
 
 ### Entidades de Integracao Panda
@@ -547,6 +558,8 @@ Criterios de aceite:
 
 Objetivo: permitir consumo real das aulas.
 
+Status: em implementacao inicial.
+
 - Pagina do curso com modulos e aulas.
 - Pagina da aula.
 - Player via embed/URL Panda.
@@ -562,9 +575,19 @@ Criterios de aceite:
 - Curso mostra progresso atualizado.
 - Aluno continua a ultima aula.
 
+Implementacao inicial:
+
+- Tabela `lesson_progress` registra andamento por aluno, curso e aula.
+- Curso exibe progresso geral e aulas concluidas.
+- Aula publicada abre em pagina propria com embed Panda quando houver URL cadastrada.
+- Botao de conclusao atualiza o progresso do curso.
+- Cards de curso mostram progresso para alunos com acesso.
+
 ### Fase 4 - Vinculo com Plano de Estudos
 
 Objetivo: ligar aulas ao plano atual.
+
+Status: em implementacao inicial.
 
 - Adicionar `lesson_id` em itens do plano ou tabela pivot se uma tarefa tiver varias aulas.
 - Atualizar gerador/importador do plano para associar aulas por materia/assunto/planilha.
@@ -578,9 +601,19 @@ Criterios de aceite:
 - Clique abre aula.
 - Plano continua funcionando se aula nao existir.
 
+Implementacao inicial:
+
+- Tabela `study_plan_item_lessons` permite vincular uma ou mais aulas a uma tarefa do plano.
+- Gerador do plano tenta associar aulas publicadas do modulo aos blocos teoricos criados.
+- Visualizacao do plano mostra link direto para o player quando ha aula real vinculada.
+- Quando nao existe aula vinculada, o plano continua exibindo a aula textual planejada.
+- Concluir aula pelo player pode marcar a tarefa do plano como concluida quando todas as aulas vinculadas foram finalizadas.
+
 ### Fase 5 - Importacao por Planilha
 
 Objetivo: montar cursos pela mesma planilha do plano.
+
+Status: em implementacao inicial.
 
 - Definir template oficial.
 - Parser de XLS/CSV.
@@ -596,9 +629,27 @@ Criterios de aceite:
 - Admin confirma.
 - Cursos e aulas aparecem corretamente.
 
+Implementacao inicial:
+
+- Importador aceita `.xlsx` no formato atual do plano e `.csv` no template oficial simples.
+- Preview em modo dry-run mostra curso, modulos, aulas, carga total e quantos itens serao criados ou atualizados.
+- Importacao cria/atualiza curso, modulos, trilha oficial e registros reais em `lessons`.
+- Antes de criar novos registros, a importacao procura modulos e aulas existentes por nome normalizado. Se encontrar, vincula o curso ao modulo existente e o modulo a aula existente.
+- Aulas importadas por planilha ficam publicadas por padrao quando o arquivo nao informar status.
+- Reimportacao atualiza aulas existentes e arquiva aulas antigas importadas por planilha quando saem da estrutura.
+
+Template CSV inicial:
+
+```csv
+course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes,lesson_type,lesson_status,panda_video_id,panda_embed_url,panda_player_url,thumbnail_url
+Curso Exemplo,Portugues,basic,1,Classes de palavras,30,video,published,video_123,https://player.example.com/video_123,,https://example.com/thumb.jpg
+```
+
 ### Fase 6 - Integracao Panda Manual
 
 Objetivo: importar aulas e thumbnails do Panda.
+
+Status: em implementacao inicial.
 
 - Configurar credenciais Panda.
 - Testar conexao.
@@ -614,6 +665,17 @@ Criterios de aceite:
 - Aulas criadas usam thumb do Panda.
 - Player funciona na aula.
 - Nova sincronizacao atualiza metadados sem duplicar aulas.
+
+Implementacao inicial:
+
+- Configuracao por `PANDA_API_KEY`, `PANDA_API_BASE_URL`, `PANDA_AUTH_HEADER`, `PANDA_AUTH_SCHEME`, `PANDA_VIDEOS_PATH`, `PANDA_FOLDER_QUERY_PARAM` e `PANDA_EMBED_BASE_URL`.
+- Admin importa uma pasta do Panda dentro da edicao do modulo, nao diretamente dentro do curso.
+- Na tela de `course-modules`, a importacao por nome procura modulo existente pelo nome normalizado e substitui/atualiza esse modulo, sem duplicar.
+- O curso deve ser montado a partir de modulos existentes/reutilizaveis.
+- Videos viram aulas internas com `panda_video_id`, duracao, thumbnail, status e URLs de player/embed.
+- Aulas sao reutilizadas por `panda_video_id`: se o mesmo video for importado em outro curso, o registro da aula e reaproveitado e apenas um novo vinculo modulo-aula e criado.
+- Modulos tambem podem ser reutilizados em varios cursos pela pivot `course_module_course`.
+- Historico basico fica em `panda_import_runs` e `panda_import_items`.
 
 ### Fase 7 - Webhooks e Sincronizacao Avancada Panda
 

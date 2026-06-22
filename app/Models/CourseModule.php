@@ -13,6 +13,19 @@ class CourseModule extends Model
     /** @use HasFactory<\Database\Factories\CourseModuleFactory> */
     use HasFactory;
 
+    protected static function booted(): void
+    {
+        static::saved(function (CourseModule $module): void {
+            if (! $module->course_id) {
+                return;
+            }
+
+            $module->courses()->syncWithoutDetaching([
+                $module->course_id => ['sort_order' => (int) $module->sort_order],
+            ]);
+        });
+    }
+
     protected $fillable = [
         'course_id',
         'name',
@@ -37,6 +50,13 @@ class CourseModule extends Model
         return $this->belongsTo(Course::class);
     }
 
+    public function courses(): BelongsToMany
+    {
+        return $this->belongsToMany(Course::class, 'course_module_course')
+            ->withPivot('sort_order')
+            ->withTimestamps();
+    }
+
     public function studyTracks(): BelongsToMany
     {
         return $this->belongsToMany(StudyTrack::class, 'study_track_modules')
@@ -49,9 +69,14 @@ class CourseModule extends Model
         return $this->hasMany(StudyPlanItem::class);
     }
 
-    public function onlineLessons(): HasMany
+    public function onlineLessons(): BelongsToMany
     {
-        return $this->hasMany(Lesson::class)->orderBy('sort_order');
+        return $this->belongsToMany(Lesson::class, 'course_module_lessons')
+            ->withPivot('sort_order')
+            ->withTimestamps()
+            ->orderByPivot('sort_order')
+            ->orderBy('lessons.sort_order')
+            ->orderBy('lessons.title');
     }
 
     public function getPlanningLessonsAttribute(): array

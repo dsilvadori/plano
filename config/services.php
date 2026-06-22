@@ -40,4 +40,15 @@ return [
         'webhook_url' => env('TUTORY_WEBHOOK_URL', rtrim((string) env('APP_URL', 'http://localhost'), '/').'/webhooks/tutory'),
     ],
 
+    'panda' => [
+        'api_key' => env('PANDA_API_KEY'),
+        'base_url' => env('PANDA_API_BASE_URL', 'https://api-v2.pandavideo.com.br'),
+        'auth_header' => env('PANDA_AUTH_HEADER', 'Authorization'),
+        'auth_scheme' => env('PANDA_AUTH_SCHEME', 'Bearer'),
+        'folders_path' => env('PANDA_FOLDERS_PATH', '/folders'),
+        'videos_path' => env('PANDA_VIDEOS_PATH', '/videos'),
+        'folder_query_param' => env('PANDA_FOLDER_QUERY_PARAM', 'folder_id'),
+        'embed_base_url' => env('PANDA_EMBED_BASE_URL'),
+    ],
+
 ];

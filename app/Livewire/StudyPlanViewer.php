@@ -23,7 +23,7 @@ class StudyPlanViewer extends Component
     public function mount(StudyPlan $studyPlan): void
     {
         $this->authorize('view', $studyPlan);
-        $this->studyPlan = $studyPlan->load(['items.courseModule', 'course', 'studyTrack']);
+        $this->studyPlan = $studyPlan->load(['items.courseModule', 'items.lessons', 'course', 'studyTrack']);
         $this->selectedWeek = (int) $this->studyPlan->items->min('week_number') ?: 1;
     }
 
@@ -34,7 +34,7 @@ class StudyPlanViewer extends Component
 
     public function render(): View
     {
-        $this->studyPlan->load(['items.courseModule']);
+        $this->studyPlan->load(['items.courseModule', 'items.lessons', 'course']);
         $orderedItems = $this->orderedPlanItems();
 
         $grouped = $orderedItems
@@ -152,6 +152,21 @@ class StudyPlanViewer extends Component
                 ['id', 'asc'],
             ])
             ->each(function (StudyPlanItem $item) use (&$lessonIndexes, &$lessonsByItem, $modulesById) {
+                if ($item->lessons->isNotEmpty()) {
+                    $lessonsByItem[$item->id] = $item->lessons
+                        ->map(fn ($lesson) => [
+                            'name' => $lesson->title,
+                            'minutes' => $lesson->duration_minutes,
+                            'minutes_label' => $this->formatLessonMinutes($lesson->duration_minutes),
+                            'url' => route('courses.lessons.show', [$this->studyPlan->course->slug, $lesson]),
+                            'is_online' => true,
+                        ])
+                        ->values()
+                        ->all();
+
+                    return;
+                }
+
                 $module = $modulesById->get($item->course_module_id);
 
                 if (! in_array($item->type, ['basic', 'specific', 'complementary'], true) || ! $module) {
@@ -180,6 +195,8 @@ class StudyPlanViewer extends Component
                         'name' => (string) ($lessons[$index]['name'] ?? $module->name),
                         'minutes' => $lessonMinutes,
                         'minutes_label' => $this->formatLessonMinutes($lessonMinutes),
+                        'url' => null,
+                        'is_online' => false,
                     ];
                     $minutes += $lessonMinutes;
                     $index++;

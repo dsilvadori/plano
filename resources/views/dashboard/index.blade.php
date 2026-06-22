@@ -50,7 +50,7 @@
 
                     <div class="mt-5 grid gap-4 xl:grid-cols-3">
                         @foreach ($featuredOnlineCourses as $course)
-                            @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $availableCourseIds->contains($course->id)])
+                            @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $availableCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
                         @endforeach
                     </div>
                 </div>

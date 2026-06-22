@@ -24,7 +24,7 @@
 
                 <div class="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
                     @foreach ($featuredCourses as $course)
-                        @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id)])
+                        @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
                     @endforeach
                 </div>
             </section>
@@ -38,7 +38,7 @@
 
             <div class="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
                 @forelse ($latestCourses as $course)
-                    @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id)])
+                    @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
                 @empty
                     <div class="card-subtle md:col-span-2 xl:col-span-4">
                         <p class="text-sm text-slate-300">Nenhum curso publicado no momento.</p>
@@ -58,7 +58,7 @@
 
                         <div class="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
                             @foreach ($sphere->courses as $course)
-                                @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id)])
+                                @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
                             @endforeach
                         </div>
                     </div>
