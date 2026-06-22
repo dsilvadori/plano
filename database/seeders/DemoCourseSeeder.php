@@ -66,10 +66,20 @@ class DemoCourseSeeder extends Seeder
             ->delete();
 
         foreach ($modules as $moduleData) {
-            $course->modules()->updateOrCreate(
-                ['name' => $moduleData['name']],
-                $moduleData + ['is_active' => true],
+            $module = CourseModule::query()->updateOrCreate(
+                [
+                    'course_id' => $course->id,
+                    'name' => $moduleData['name'],
+                ],
+                $moduleData + [
+                    'course_id' => $course->id,
+                    'is_active' => true,
+                ],
             );
+
+            $course->modules()->syncWithoutDetaching([
+                $module->id => ['sort_order' => (int) $module->sort_order],
+            ]);
         }
 
         $track = StudyTrack::updateOrCreate(
