@@ -7,6 +7,7 @@ use App\Models\CourseModule;
 use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\PandaImportRun;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -26,7 +27,7 @@ class PandaCourseImporter
         ]);
 
         try {
-            $videos = $this->client->videos($folderId);
+            $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
             DB::transaction(function () use ($course, $folderId, $moduleName, $lessonStatus, $run, $videos): void {
                 $resolvedModuleName = $moduleName
@@ -53,6 +54,7 @@ class PandaCourseImporter
 
                 $created = 0;
                 $updated = 0;
+                $planningLessons = [];
 
                 foreach ($videos->values() as $index => $video) {
                     $lesson = Lesson::query()->firstOrNew([
@@ -86,6 +88,7 @@ class PandaCourseImporter
                         $module->id => ['sort_order' => $index + 1],
                     ]);
                     $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
+                    $planningLessons[] = $this->planningLessonFromVideo($video, $index);
 
                     $run->items()->create([
                         'external_type' => 'video',
@@ -98,6 +101,8 @@ class PandaCourseImporter
 
                     $wasRecentlyCreated ? $created++ : $updated++;
                 }
+
+                $this->syncModulePlanningLessons($module, $planningLessons);
 
                 $run->forceFill([
                     'status' => 'finished',
@@ -134,7 +139,7 @@ class PandaCourseImporter
         ]);
 
         try {
-            $videos = $this->client->videos($folderId);
+            $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
             DB::transaction(function () use ($module, $folderId, $lessonStatus, $run, $videos): void {
                 $module->forceFill([
@@ -148,6 +153,7 @@ class PandaCourseImporter
 
                 $created = 0;
                 $updated = 0;
+                $planningLessons = [];
 
                 foreach ($videos->values() as $index => $video) {
                     $lesson = Lesson::query()->firstOrNew([
@@ -181,6 +187,7 @@ class PandaCourseImporter
                         $module->id => ['sort_order' => $index + 1],
                     ]);
                     $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
+                    $planningLessons[] = $this->planningLessonFromVideo($video, $index);
 
                     $run->items()->create([
                         'external_type' => 'video',
@@ -193,6 +200,8 @@ class PandaCourseImporter
 
                     $wasRecentlyCreated ? $created++ : $updated++;
                 }
+
+                $this->syncModulePlanningLessons($module, $planningLessons);
 
                 $run->forceFill([
                     'status' => 'finished',
@@ -250,6 +259,44 @@ class PandaCourseImporter
     protected function normalizeLessonStatus(string $status): string
     {
         return in_array($status, ['draft', 'published', 'archived'], true) ? $status : 'draft';
+    }
+
+    protected function planningLessonFromVideo(array $video, int $index): array
+    {
+        $minutes = (int) ceil(((int) ($video['duration_seconds'] ?? 0)) / 60);
+
+        return [
+            'name' => trim((string) ($video['title'] ?? '')) ?: 'Aula Panda ' . ($index + 1),
+            'minutes' => max(1, $minutes),
+        ];
+    }
+
+    protected function syncModulePlanningLessons(CourseModule $module, array $planningLessons): void
+    {
+        if ($planningLessons === []) {
+            return;
+        }
+
+        $module->forceFill([
+            'lessons' => array_values($planningLessons),
+            'workload_minutes' => array_sum(array_column($planningLessons, 'minutes')),
+        ])->save();
+    }
+
+    protected function sortVideosNaturally(Collection $videos): Collection
+    {
+        return $videos
+            ->values()
+            ->sortBy(function (array $video, int $index): string {
+                preg_match('/^\D*(\d+)/', (string) ($video['title'] ?? ''), $matches);
+
+                return implode('|', [
+                    isset($matches[1]) ? '0' : '1',
+                    str_pad((string) ((int) ($matches[1] ?? 0)), 8, '0', STR_PAD_LEFT),
+                    str_pad((string) $index, 8, '0', STR_PAD_LEFT),
+                ]);
+            })
+            ->values();
     }
 
     protected function syncPandaAiArtifacts(Lesson $lesson, array $artifacts, array $payload): void

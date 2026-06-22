@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Courses\RelationManagers;
 
+use App\Models\CourseModule;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
@@ -48,7 +49,9 @@ class CourseModulesRelationManager extends RelationManager
                 ->label('Aulas da trilha')
                 ->rows(8)
                 ->helperText('Uma aula por linha no formato: Nome da aula|50. A carga horária será recalculada pela soma das aulas.')
-                ->formatStateUsing(fn ($state): string => self::formatLessonsForTextarea(is_array($state) ? $state : []))
+                ->formatStateUsing(fn ($state, ?CourseModule $record = null): string => self::formatLessonsForTextarea(
+                    is_array($state) && $state !== [] ? $state : ($record?->planning_lessons ?? []),
+                ))
                 ->dehydrateStateUsing(fn (?string $state): array => self::parseLessonsFromTextarea($state))
                 ->afterStateUpdated(function ($state, callable $set): void {
                     $set('workload_minutes', array_sum(array_column(self::parseLessonsFromTextarea($state), 'minutes')));

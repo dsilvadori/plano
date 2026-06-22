@@ -171,6 +171,7 @@ class CourseCatalogController extends Controller
             'nextLesson' => $currentIndex === false ? null : $orderedLessons->get($currentIndex + 1),
             'progressSummary' => $this->progressForCourse($course, $user),
             'aiArtifacts' => $lesson->aiArtifacts,
+            'planLessonContext' => $this->planLessonContextForLesson($user, $course, $lesson),
         ]);
     }
 
@@ -302,6 +303,47 @@ class CourseCatalogController extends Controller
         return $lesson->modules()
             ->where('course_modules.course_id', $course->id)
             ->exists();
+    }
+
+    protected function planLessonContextForLesson(User $user, Course $course, Lesson $lesson): ?array
+    {
+        $currentItem = StudyPlanItem::query()
+            ->whereHas('studyPlan', fn (Builder $query) => $query
+                ->where('user_id', $user->id)
+                ->where('course_id', $course->id)
+                ->where('status', 'active'))
+            ->whereHas('lessons', fn (Builder $query) => $query->whereKey($lesson->id))
+            ->with('studyPlan')
+            ->orderBy('scheduled_date')
+            ->orderBy('sort_order')
+            ->first();
+
+        if (! $currentItem || ! $currentItem->scheduled_date) {
+            return null;
+        }
+
+        $dayItems = StudyPlanItem::query()
+            ->where('study_plan_id', $currentItem->study_plan_id)
+            ->whereDate('scheduled_date', $currentItem->scheduled_date)
+            ->with(['courseModule', 'lessons'])
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        $completedLessonIds = LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->where('status', 'completed')
+            ->whereIn('lesson_id', $dayItems->flatMap->lessons->pluck('id')->unique())
+            ->pluck('lesson_id')
+            ->all();
+
+        return [
+            'plan' => $currentItem->studyPlan,
+            'current_item_id' => $currentItem->id,
+            'date_label' => $currentItem->scheduled_date->translatedFormat('d/m/Y'),
+            'items' => $dayItems,
+            'completed_lesson_ids' => $completedLessonIds,
+        ];
     }
 
     protected function markLinkedPlanItemsIfReady(User $user, Lesson $lesson): void

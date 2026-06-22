@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
 class StudyPlanItem extends Model
@@ -48,6 +49,22 @@ class StudyPlanItem extends Model
             ->withPivot('sort_order')
             ->withTimestamps()
             ->orderByPivot('sort_order');
+    }
+
+    public function orderedLessonsForDisplay(): Collection
+    {
+        return $this->lessons
+            ->values()
+            ->sortBy(function (Lesson $lesson, int $index): string {
+                preg_match('/^\D*(\d+)/', $lesson->title, $matches);
+
+                return implode('|', [
+                    isset($matches[1]) ? '0' : '1',
+                    str_pad((string) ((int) ($matches[1] ?? 0)), 8, '0', STR_PAD_LEFT),
+                    str_pad((string) $index, 8, '0', STR_PAD_LEFT),
+                ]);
+            })
+            ->values();
     }
 
     public function toggleCompleted(): void

@@ -44,7 +44,9 @@
                         src="{{ $playerUrl }}"
                         title="{{ $lesson->title }}"
                         class="aspect-video w-full"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture"
+                        sandbox="allow-scripts allow-same-origin allow-presentation"
+                        referrerpolicy="strict-origin-when-cross-origin"
                         allowfullscreen
                     ></iframe>
                 @else
@@ -132,6 +134,44 @@
                     @endunless
                 </div>
             </div>
+
+            @if ($planLessonContext)
+                <div class="card-panel">
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Trilha do plano</p>
+                    <p class="mt-3 text-lg font-semibold text-white">{{ $planLessonContext['date_label'] }}</p>
+
+                    <a href="{{ route('study-plans.show', $planLessonContext['plan']) }}" class="mt-4 block rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-center text-sm font-semibold text-sky-100">
+                        Voltar ao plano
+                    </a>
+
+                    <div class="mt-5 space-y-3">
+                        @foreach ($planLessonContext['items'] as $planItem)
+                            <div class="rounded-2xl border {{ $planItem->id === $planLessonContext['current_item_id'] ? 'border-amber-300/40 bg-amber-300/10' : 'border-white/10 bg-white/5' }} p-4">
+                                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{{ $planItem->display_title }}</p>
+
+                                @if ($planItem->lessons->isNotEmpty())
+                                    <div class="mt-3 space-y-2">
+                                        @foreach ($planItem->orderedLessonsForDisplay() as $planLesson)
+                                            @php
+                                                $isCurrentPlanLesson = $planLesson->is($lesson);
+                                                $isCompletedPlanLesson = in_array($planLesson->id, $planLessonContext['completed_lesson_ids'], true);
+                                            @endphp
+                                            <a href="{{ route('courses.lessons.show', [$course->slug, $planLesson]) }}" class="block rounded-xl border px-3 py-2 text-sm {{ $isCurrentPlanLesson ? 'border-amber-300/40 bg-amber-300/15 text-amber-100' : 'border-white/10 bg-slate-950/40 text-slate-200' }}">
+                                                <span class="block font-semibold">{{ $planLesson->title }}</span>
+                                                <span class="mt-1 block text-xs {{ $isCurrentPlanLesson ? 'text-amber-100/80' : 'text-slate-400' }}">
+                                                    {{ $planLesson->duration_minutes }} min{{ $isCompletedPlanLesson ? ' · concluída' : '' }}
+                                                </span>
+                                            </a>
+                                        @endforeach
+                                    </div>
+                                @else
+                                    <p class="mt-2 text-sm text-slate-400">{{ $planItem->estimated_minutes }} min reservados</p>
+                                @endif
+                            </div>
+                        @endforeach
+                    </div>
+                </div>
+            @endif
 
             <div class="card-panel">
                 <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Status</p>

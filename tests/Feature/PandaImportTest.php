@@ -53,6 +53,18 @@ class PandaImportTest extends TestCase
 
         $this->assertSame('finished', $run->status);
         $this->assertSame('Português', $module->name);
+        $this->assertSame([
+            [
+                'name' => 'Aula Panda',
+                'minutes' => 21,
+            ],
+        ], $module->fresh()->lessons);
+        $this->assertSame([
+            [
+                'name' => 'Aula Panda',
+                'minutes' => 21,
+            ],
+        ], $module->fresh()->planning_lessons);
         $this->assertSame('Aula Panda', $lesson->title);
         $this->assertSame(1234, $lesson->duration_seconds);
         $this->assertSame('https://cdn.test/thumb.jpg', $lesson->thumbnail_url);
@@ -116,6 +128,55 @@ class PandaImportTest extends TestCase
         $this->assertTrue($secondCourse->modules()->first()->onlineLessons()->whereKey($lesson->id)->exists());
     }
 
+    public function test_panda_import_orders_track_lessons_by_numeric_title_prefix(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'video-03',
+                        'title' => '03 - Princípios Arquivísticos.mp4',
+                        'duration_seconds' => 1800,
+                    ],
+                    [
+                        'id' => 'video-01',
+                        'title' => '01 - Conceitos Iniciais de Arquivologia.mp4',
+                        'duration_seconds' => 1680,
+                    ],
+                    [
+                        'id' => 'video-02',
+                        'title' => '02 - Terminologias Arquivísticas.mp4',
+                        'duration_seconds' => 1440,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $course = Course::factory()->create();
+
+        app(PandaCourseImporter::class)->importFolder($course, 'folder-order', 'Arquivologia', 'published');
+
+        $module = $course->modules()->where('panda_folder_id', 'folder-order')->firstOrFail();
+
+        $this->assertSame([
+            '01 - Conceitos Iniciais de Arquivologia.mp4',
+            '02 - Terminologias Arquivísticas.mp4',
+            '03 - Princípios Arquivísticos.mp4',
+        ], collect($module->fresh()->lessons)->pluck('name')->all());
+
+        $this->assertSame([
+            '01 - Conceitos Iniciais de Arquivologia.mp4',
+            '02 - Terminologias Arquivísticas.mp4',
+            '03 - Princípios Arquivísticos.mp4',
+        ], $module->fresh()->onlineLessons()->pluck('title')->all());
+    }
+
     public function test_panda_folder_import_runs_from_existing_module(): void
     {
         config([
@@ -149,8 +210,42 @@ class PandaImportTest extends TestCase
 
         $this->assertSame('finished', $run->status);
         $this->assertSame('folder-module', $module->fresh()->panda_folder_id);
+        $this->assertSame([
+            [
+                'name' => 'Aula no módulo',
+                'minutes' => 15,
+            ],
+        ], $module->fresh()->lessons);
         $this->assertTrue($module->fresh()->onlineLessons()->whereKey($lesson->id)->exists());
         $this->assertSame(1, $course->fresh()->modules()->whereKey($module->id)->count());
+    }
+
+    public function test_module_planning_lessons_fall_back_to_linked_online_lessons(): void
+    {
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'lessons' => null,
+            'workload_minutes' => 120,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Aula vinculada',
+            'duration_seconds' => 721,
+            'sort_order' => 1,
+        ]);
+
+        $module->onlineLessons()->sync([
+            $lesson->id => ['sort_order' => 1],
+        ]);
+
+        $this->assertSame([
+            [
+                'name' => 'Aula vinculada',
+                'minutes' => 13,
+            ],
+        ], $module->fresh()->planning_lessons);
     }
 
     public function test_panda_import_replaces_existing_module_with_same_name(): void

@@ -239,4 +239,58 @@ class CourseCatalogFoundationTest extends TestCase
 
         $this->assertNotNull($item->fresh()->completed_at);
     }
+
+    public function test_lesson_page_shows_active_plan_day_track_sidebar(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com plano',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Arquivologia',
+            'type' => 'specific',
+        ]);
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '01 - Conceitos Iniciais',
+            'duration_seconds' => 1200,
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '02 - Terminologias',
+            'duration_seconds' => 900,
+            'status' => 'published',
+        ]);
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-06-29',
+            'title' => 'Bloco 1: Arquivologia',
+            'estimated_minutes' => 35,
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $item->lessons()->attach($secondLesson, ['sort_order' => 1]);
+        $item->lessons()->attach($firstLesson, ['sort_order' => 2]);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $firstLesson]))
+            ->assertOk()
+            ->assertSee('Trilha do plano')
+            ->assertSee('Voltar ao plano')
+            ->assertSee(route('study-plans.show', $plan), false)
+            ->assertSee('01 - Conceitos Iniciais')
+            ->assertSee('02 - Terminologias')
+            ->assertSeeInOrder(['01 - Conceitos Iniciais', '02 - Terminologias']);
+    }
 }

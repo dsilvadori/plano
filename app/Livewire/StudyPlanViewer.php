@@ -153,7 +153,7 @@ class StudyPlanViewer extends Component
             ])
             ->each(function (StudyPlanItem $item) use (&$lessonIndexes, &$lessonsByItem, $modulesById) {
                 if ($item->lessons->isNotEmpty()) {
-                    $lessonsByItem[$item->id] = $item->lessons
+                    $lessonsByItem[$item->id] = $item->orderedLessonsForDisplay()
                         ->map(fn ($lesson) => [
                             'name' => $lesson->title,
                             'minutes' => $lesson->duration_minutes,
