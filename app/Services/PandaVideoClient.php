@@ -115,10 +115,13 @@ class PandaVideoClient
             ?? 0;
         $embedUrl = Arr::get($video, 'embed_url')
             ?? Arr::get($video, 'player_embed_url')
-            ?? Arr::get($video, 'panda_embed_url');
+            ?? Arr::get($video, 'panda_embed_url')
+            ?? Arr::get($video, 'video_player');
         $playerUrl = Arr::get($video, 'player_url')
             ?? Arr::get($video, 'url')
-            ?? Arr::get($video, 'panda_player_url');
+            ?? Arr::get($video, 'panda_player_url')
+            ?? Arr::get($video, 'video_player')
+            ?? Arr::get($video, 'video_hls');
 
         if (blank($embedUrl) && filled(config('services.panda.embed_base_url')) && filled($pandaId)) {
             $embedUrl = rtrim((string) config('services.panda.embed_base_url'), '/') . '/' . $pandaId;
@@ -129,13 +132,40 @@ class PandaVideoClient
             'title' => (string) (Arr::get($video, 'title') ?? Arr::get($video, 'name') ?? ''),
             'description' => Arr::get($video, 'description'),
             'duration_seconds' => (int) round((float) $duration),
-            'thumbnail_url' => Arr::get($video, 'thumbnail_url') ?? Arr::get($video, 'thumbnail') ?? Arr::get($video, 'thumb'),
+            'thumbnail_url' => Arr::get($video, 'thumbnail_url') ?? Arr::get($video, 'thumbnail') ?? Arr::get($video, 'preview') ?? Arr::get($video, 'thumb'),
             'panda_status' => Arr::get($video, 'status'),
             'panda_embed_url' => $embedUrl,
             'panda_player_url' => $playerUrl,
+            'ai_artifacts' => $this->extractAiArtifacts($video),
             'folder_id' => Arr::get($video, 'folder_id') ?? Arr::get($video, 'folder.id') ?? $folderId,
             'folder_name' => Arr::get($video, 'folder_name') ?? Arr::get($video, 'folder.name'),
             'payload' => $video,
         ];
+    }
+
+    protected function extractAiArtifacts(array $video): array
+    {
+        $paths = [
+            'summary' => ['summary', 'ai_summary', 'ai.summary', 'intelligence.summary'],
+            'transcript' => ['transcript', 'transcription', 'captions', 'subtitles', 'ai.transcript', 'ai.transcription'],
+            'chapters' => ['chapters', 'ai_chapters', 'ai.chapters'],
+            'quiz' => ['questions', 'quiz', 'ai_questions', 'ai.questions', 'ai.quiz'],
+            'mindmap' => ['mindmap', 'mind_map', 'ai.mindmap', 'ai.mind_map'],
+            'raw_ai' => ['ai', 'intelligence'],
+        ];
+
+        return collect($paths)
+            ->mapWithKeys(function (array $candidatePaths, string $type) use ($video) {
+                foreach ($candidatePaths as $path) {
+                    $value = Arr::get($video, $path);
+
+                    if (filled($value)) {
+                        return [$type => $value];
+                    }
+                }
+
+                return [];
+            })
+            ->all();
     }
 }

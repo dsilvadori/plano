@@ -144,7 +144,7 @@ class CourseCatalogController extends Controller
         abort_unless($lesson->status === 'published' && $this->lessonBelongsToCourse($lesson, $course), 404);
         abort_unless($this->userCanAccessCourse($user, $course), 403);
 
-        $lesson->load(['course', 'module']);
+        $lesson->load(['course', 'module', 'aiArtifacts']);
 
         $progress = LessonProgress::query()
             ->firstOrCreate([
@@ -170,6 +170,7 @@ class CourseCatalogController extends Controller
             'previousLesson' => $currentIndex === false ? null : $orderedLessons->get($currentIndex - 1),
             'nextLesson' => $currentIndex === false ? null : $orderedLessons->get($currentIndex + 1),
             'progressSummary' => $this->progressForCourse($course, $user),
+            'aiArtifacts' => $lesson->aiArtifacts,
         ]);
     }
 

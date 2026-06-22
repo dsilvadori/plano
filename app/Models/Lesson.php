@@ -70,6 +70,12 @@ class Lesson extends Model
         return $this->hasMany(LessonProgress::class);
     }
 
+    public function aiArtifacts(): HasMany
+    {
+        return $this->hasMany(AiArtifact::class, 'source_id')
+            ->where('source_type', self::class);
+    }
+
     public function studyPlanItems(): BelongsToMany
     {
         return $this->belongsToMany(StudyPlanItem::class, 'study_plan_item_lessons')

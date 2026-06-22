@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\PandaImportRun;
 use Illuminate\Support\Facades\DB;
@@ -84,6 +85,7 @@ class PandaCourseImporter
                     $lesson->modules()->syncWithoutDetaching([
                         $module->id => ['sort_order' => $index + 1],
                     ]);
+                    $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
 
                     $run->items()->create([
                         'external_type' => 'video',
@@ -178,6 +180,7 @@ class PandaCourseImporter
                     $lesson->modules()->syncWithoutDetaching([
                         $module->id => ['sort_order' => $index + 1],
                     ]);
+                    $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
 
                     $run->items()->create([
                         'external_type' => 'video',
@@ -247,6 +250,43 @@ class PandaCourseImporter
     protected function normalizeLessonStatus(string $status): string
     {
         return in_array($status, ['draft', 'published', 'archived'], true) ? $status : 'draft';
+    }
+
+    protected function syncPandaAiArtifacts(Lesson $lesson, array $artifacts, array $payload): void
+    {
+        foreach ($artifacts as $type => $content) {
+            AiArtifact::query()->updateOrCreate([
+                'source_type' => Lesson::class,
+                'source_id' => $lesson->id,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+            ], [
+                'status' => 'ready',
+                'content' => is_array($content) ? $content : ['text' => (string) $content],
+                'metadata' => [
+                    'panda_video_id' => $lesson->panda_video_id,
+                    'imported_at' => now()->toIso8601String(),
+                ],
+            ]);
+        }
+
+        if ($artifacts === []) {
+            return;
+        }
+
+        AiArtifact::query()->updateOrCreate([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'panda_payload',
+            'provider' => 'panda',
+        ], [
+            'status' => 'ready',
+            'content' => $payload,
+            'metadata' => [
+                'panda_video_id' => $lesson->panda_video_id,
+                'imported_at' => now()->toIso8601String(),
+            ],
+        ]);
     }
 
     protected function findModuleByName(string $moduleName): ?CourseModule

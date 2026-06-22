@@ -85,6 +85,30 @@
                     </button>
                 </form>
             </div>
+
+            @if ($aiArtifacts->isNotEmpty())
+                <div class="mt-6 rounded-3xl border border-white/10 bg-white/5 p-5">
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Recursos de IA</p>
+                    <div class="mt-4 space-y-3">
+                        @foreach ($aiArtifacts->where('artifact_type', '!=', 'panda_payload') as $artifact)
+                            <details class="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                                <summary class="cursor-pointer text-sm font-semibold text-white">
+                                    {{ match ($artifact->artifact_type) {
+                                        'summary' => 'Resumo',
+                                        'transcript' => 'Transcrição',
+                                        'chapters' => 'Capítulos',
+                                        'quiz' => 'Questões',
+                                        'mindmap' => 'Mapa mental',
+                                        'raw_ai' => 'IA do Panda',
+                                        default => ucfirst($artifact->artifact_type),
+                                    } }}
+                                </summary>
+                                <pre class="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-2xl bg-slate-950 p-4 text-xs leading-5 text-slate-300">{{ json_encode($artifact->content, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) }}</pre>
+                            </details>
+                        @endforeach
+                    </div>
+                </div>
+            @endif
         </section>
 
         <aside class="space-y-4">

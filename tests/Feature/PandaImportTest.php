@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\PandaImportRun;
 use App\Services\PandaCourseImporter;
@@ -31,8 +32,12 @@ class PandaImportTest extends TestCase
                         'title' => 'Aula Panda',
                         'duration_seconds' => 1234,
                         'thumbnail_url' => 'https://cdn.test/thumb.jpg',
-                        'embed_url' => 'https://player.test/embed/panda-video-1',
+                        'video_player' => 'https://player.test/embed/panda-video-1',
                         'status' => 'ready',
+                        'summary' => 'Resumo gerado pelo Panda.',
+                        'questions' => [
+                            ['question' => 'Pergunta 1?', 'answer' => 'A'],
+                        ],
                         'folder' => ['id' => 'folder-1', 'name' => 'Português'],
                     ],
                 ],
@@ -51,7 +56,20 @@ class PandaImportTest extends TestCase
         $this->assertSame('Aula Panda', $lesson->title);
         $this->assertSame(1234, $lesson->duration_seconds);
         $this->assertSame('https://cdn.test/thumb.jpg', $lesson->thumbnail_url);
+        $this->assertSame('https://player.test/embed/panda-video-1', $lesson->panda_embed_url);
         $this->assertTrue($module->onlineLessons()->whereKey($lesson->id)->exists());
+        $this->assertDatabaseHas('ai_artifacts', [
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'summary',
+            'provider' => 'panda',
+        ]);
+        $this->assertDatabaseHas('ai_artifacts', [
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'quiz',
+            'provider' => 'panda',
+        ]);
         $this->assertDatabaseHas('panda_import_items', [
             'panda_import_run_id' => $run->id,
             'external_type' => 'video',
