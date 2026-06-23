@@ -29,6 +29,18 @@ class EditCourseModule extends EditRecord
                         ->label('ID da pasta no Panda')
                         ->default(fn () => $this->record->panda_folder_id)
                         ->required(),
+                    Select::make('module_type')
+                        ->label('Tipo do módulo')
+                        ->options([
+                            'basic' => 'Matéria Básica',
+                            'specific' => 'Conhecimentos Específicos',
+                            'complementary' => 'Conhecimentos Complementares',
+                            'review' => 'Revisão',
+                            'questions' => 'Questões',
+                            'other' => 'Outro/Legado',
+                        ])
+                        ->default(fn () => $this->record->type ?: 'specific')
+                        ->required(),
                     Select::make('lesson_status')
                         ->label('Status inicial das aulas')
                         ->options([
@@ -44,6 +56,7 @@ class EditCourseModule extends EditRecord
                             $this->record,
                             (string) $data['panda_folder_id'],
                             (string) ($data['lesson_status'] ?? 'draft'),
+                            (string) ($data['module_type'] ?? $this->record->type),
                         );
 
                         Notification::make()

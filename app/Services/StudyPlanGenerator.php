@@ -567,7 +567,7 @@ class StudyPlanGenerator
                 $weeklyTheoryMinutes[$weekNumber] = ($weeklyTheoryMinutes[$weekNumber] ?? 0) + $balancedAllocated;
             }
 
-            while ($theoryBudget > 0 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
+            while ($theoryBudget >= 15 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
                 $allocated = $this->createInterleavedStudyItem(
                     $plan,
                     $date,
@@ -671,8 +671,9 @@ class StudyPlanGenerator
             $nextGroupMinimum = isset($dailyGroups[$index + 1])
                 ? $this->minimumTheoryBlockMinutesForTypes($dailyGroups[$index + 1], $typeQueues, $typePointers, $lessonStates, $remainingByModule)
                 : 0;
+            $currentGroupMinimum = $this->minimumTheoryBlockMinutesForTypes($preferredTypes, $typeQueues, $typePointers, $lessonStates, $remainingByModule);
             $availableForBlock = $index === 0
-                ? max(15, min((int) floor($theoryBudget / 2), $theoryBudget - $nextGroupMinimum))
+                ? max($currentGroupMinimum, min((int) floor($theoryBudget / 2), $theoryBudget - $nextGroupMinimum), 15)
                 : $remainingBudget;
             $availableForBlock = min($remainingBudget, $availableForBlock);
 
@@ -1206,20 +1207,17 @@ class StudyPlanGenerator
             }
 
             if (($totalMinutes + $lessonMinutes) > $maxBlockMinutes) {
-                if (blank($module->lessons)) {
-                    $remainingBlockMinutes = $maxBlockMinutes - $totalMinutes;
+                $remainingBlockMinutes = $maxBlockMinutes - $totalMinutes;
 
-                    if ($remainingBlockMinutes <= 0) {
-                        break;
-                    }
-
-                    $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
-                    $totalMinutes += $remainingBlockMinutes;
-                    $lessons[$index + $consumedLessons]['minutes'] = $lessonMinutes - $remainingBlockMinutes;
-                    $state['lessons'] = $lessons;
-
+                if ($remainingBlockMinutes <= 0) {
                     break;
                 }
+
+                $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
+                $totalMinutes += $remainingBlockMinutes;
+                $lessons[$index + $consumedLessons]['minutes'] = $lessonMinutes - $remainingBlockMinutes;
+                $lessons[$index + $consumedLessons]['name'] = 'Continuação: ' . preg_replace('/^Continuação:\s*/', '', (string) ($lesson['name'] ?? $module->name));
+                $state['lessons'] = $lessons;
 
                 break;
             }

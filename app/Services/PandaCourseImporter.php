@@ -17,7 +17,7 @@ class PandaCourseImporter
         protected PandaVideoClient $client,
     ) {}
 
-    public function importFolder(Course $course, string $folderId, ?string $moduleName = null, string $lessonStatus = 'draft'): PandaImportRun
+    public function importFolder(Course $course, string $folderId, ?string $moduleName = null, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun
     {
         $run = PandaImportRun::create([
             'course_id' => $course->id,
@@ -29,7 +29,7 @@ class PandaCourseImporter
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
-            DB::transaction(function () use ($course, $folderId, $moduleName, $lessonStatus, $run, $videos): void {
+            DB::transaction(function () use ($course, $folderId, $moduleName, $lessonStatus, $moduleType, $run, $videos): void {
                 $resolvedModuleName = $moduleName
                     ?: (string) ($videos->first()['folder_name'] ?? null)
                     ?: 'Panda - Pasta ' . $folderId;
@@ -41,7 +41,7 @@ class PandaCourseImporter
                     ],
                     [
                         'name' => $resolvedModuleName,
-                        'type' => 'specific',
+                        'type' => $this->normalizeModuleType($moduleType),
                         'workload_minutes' => (int) ceil($videos->sum('duration_seconds') / 60),
                         'sort_order' => (int) ($course->modules()->max('course_modules.sort_order') + 1),
                         'is_active' => true,
@@ -128,7 +128,7 @@ class PandaCourseImporter
         return $run->fresh(['items']);
     }
 
-    public function importIntoModule(CourseModule $module, string $folderId, string $lessonStatus = 'draft'): PandaImportRun
+    public function importIntoModule(CourseModule $module, string $folderId, string $lessonStatus = 'draft', ?string $moduleType = null): PandaImportRun
     {
         $course = $module->course;
         $run = PandaImportRun::create([
@@ -141,9 +141,10 @@ class PandaCourseImporter
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
-            DB::transaction(function () use ($module, $folderId, $lessonStatus, $run, $videos): void {
+            DB::transaction(function () use ($module, $folderId, $lessonStatus, $moduleType, $run, $videos): void {
                 $module->forceFill([
                     'panda_folder_id' => $folderId,
+                    'type' => $moduleType ? $this->normalizeModuleType($moduleType) : $module->type,
                     'workload_minutes' => (int) ceil($videos->sum('duration_seconds') / 60),
                     'metadata' => [
                         'source' => 'panda',
@@ -227,7 +228,7 @@ class PandaCourseImporter
         return $run->fresh(['items']);
     }
 
-    public function importReplacingModuleByName(Course $fallbackCourse, string $moduleName, string $folderId, string $lessonStatus = 'draft'): PandaImportRun
+    public function importReplacingModuleByName(Course $fallbackCourse, string $moduleName, string $folderId, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun
     {
         $module = $this->findModuleByName($moduleName);
 
@@ -235,7 +236,7 @@ class PandaCourseImporter
             $module = CourseModule::create([
                 'course_id' => $fallbackCourse->id,
                 'name' => $moduleName,
-                'type' => 'specific',
+                'type' => $this->normalizeModuleType($moduleType),
                 'workload_minutes' => 0,
                 'sort_order' => (int) ($fallbackCourse->modules()->max('course_modules.sort_order') + 1),
                 'is_active' => true,
@@ -246,7 +247,11 @@ class PandaCourseImporter
             $fallbackCourse->id => ['sort_order' => (int) $module->sort_order],
         ]);
 
-        return $this->importIntoModule($module, $folderId, $lessonStatus);
+        $module->forceFill([
+            'type' => $this->normalizeModuleType($moduleType),
+        ])->save();
+
+        return $this->importIntoModule($module, $folderId, $lessonStatus, $moduleType);
     }
 
     protected function lessonSlug(string $title, int $sortOrder): string
@@ -259,6 +264,11 @@ class PandaCourseImporter
     protected function normalizeLessonStatus(string $status): string
     {
         return in_array($status, ['draft', 'published', 'archived'], true) ? $status : 'draft';
+    }
+
+    protected function normalizeModuleType(string $type): string
+    {
+        return in_array($type, ['basic', 'specific', 'complementary', 'review', 'questions', 'other'], true) ? $type : 'specific';
     }
 
     protected function planningLessonFromVideo(array $video, int $index): array

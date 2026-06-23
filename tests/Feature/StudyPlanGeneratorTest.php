@@ -51,7 +51,7 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertTrue($plan->items()->where('type', 'questions')->exists());
         $this->assertTrue($plan->items()->where('type', 'review')->exists());
         $this->assertGreaterThanOrEqual(1, $plan->items()->distinct('week_number')->count('week_number'));
-        $this->assertTrue($plan->items()->get()->every(fn ($item) => $item->estimated_minutes <= 60));
+        $this->assertTrue($plan->items()->get()->every(fn ($item) => $item->estimated_minutes <= 90));
         $this->assertTrue($plan->items()->where('day_of_week', 'saturday')->exists());
         $saturdayItems = $plan->items()->where('day_of_week', 'saturday')->orderBy('sort_order')->get()->values();
         $this->assertTrue(in_array($saturdayItems->last()->type, ['questions', 'review'], true));
@@ -137,7 +137,7 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertSame(22, $items[3]->estimated_minutes);
     }
 
-    public function test_generator_does_not_split_a_lesson_when_next_one_does_not_fit_in_remaining_time(): void
+    public function test_generator_continues_lesson_later_when_next_part_does_not_fit_in_remaining_time(): void
     {
         $course = Course::factory()->create();
         $student = User::factory()->create();
@@ -170,11 +170,12 @@ class StudyPlanGeneratorTest extends TestCase
         $tuesdayItems = $plan->items()->where('day_of_week', 'tuesday')->orderBy('sort_order')->get()->values();
 
         $this->assertSame($module->id, $mondayItems[0]->course_module_id);
-        $this->assertSame(50, $mondayItems[0]->estimated_minutes);
+        $this->assertSame(60, $mondayItems[0]->estimated_minutes);
         $this->assertStringContainsString('Classe de Palavras - Aula 1', $mondayItems[0]->description);
+        $this->assertStringContainsString('Classe de Palavras - Aula 2', $mondayItems[0]->description);
         $this->assertSame($module->id, $tuesdayItems[0]->course_module_id);
-        $this->assertSame(15, $tuesdayItems[0]->estimated_minutes);
-        $this->assertStringContainsString('Classe de Palavras - Aula 2', $tuesdayItems[0]->description);
+        $this->assertSame(5, $tuesdayItems[0]->estimated_minutes);
+        $this->assertStringContainsString('Continuação: Classe de Palavras - Aula 2', $tuesdayItems[0]->description);
     }
 
     public function test_generator_keeps_daily_questions_and_review_at_ten_minutes_each_when_day_has_one_hour(): void

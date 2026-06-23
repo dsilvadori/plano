@@ -35,6 +35,18 @@ class ListCourseModules extends ListRecords
                     TextInput::make('module_name')
                         ->label('Nome do módulo')
                         ->required(),
+                    Select::make('module_type')
+                        ->label('Tipo do módulo')
+                        ->options([
+                            'basic' => 'Matéria Básica',
+                            'specific' => 'Conhecimentos Específicos',
+                            'complementary' => 'Conhecimentos Complementares',
+                            'review' => 'Revisão',
+                            'questions' => 'Questões',
+                            'other' => 'Outro/Legado',
+                        ])
+                        ->default('specific')
+                        ->required(),
                     TextInput::make('panda_folder_id')
                         ->label('ID da pasta no Panda')
                         ->required(),
@@ -55,6 +67,7 @@ class ListCourseModules extends ListRecords
                             (string) $data['module_name'],
                             (string) $data['panda_folder_id'],
                             (string) ($data['lesson_status'] ?? 'draft'),
+                            (string) ($data['module_type'] ?? 'specific'),
                         );
 
                         Notification::make()

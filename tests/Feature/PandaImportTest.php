@@ -220,6 +220,46 @@ class PandaImportTest extends TestCase
         $this->assertSame(1, $course->fresh()->modules()->whereKey($module->id)->count());
     }
 
+    public function test_panda_import_updates_module_type_when_reimporting_existing_module(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'basic-video',
+                        'title' => 'Classe de palavras',
+                        'duration_seconds' => 900,
+                        'embed_url' => 'https://player.test/basic-video',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'specific',
+        ]);
+
+        app(PandaCourseImporter::class)->importReplacingModuleByName(
+            $course,
+            'Portugues',
+            'folder-basic',
+            'published',
+            'basic',
+        );
+
+        $this->assertSame('basic', $module->fresh()->type);
+        $this->assertTrue($course->fresh()->modules()->whereKey($module->id)->exists());
+    }
+
     public function test_module_planning_lessons_fall_back_to_linked_online_lessons(): void
     {
         $course = Course::factory()->create();

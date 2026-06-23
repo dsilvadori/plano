@@ -101,7 +101,7 @@ class CourseSpreadsheetImporter
                 ]);
 
             $module->fill([
-                'course_id' => $module->exists ? $module->course_id : $course->id,
+                'course_id' => $course->id,
                 'name' => $module->name ?: $moduleData['name'],
                 'type' => $moduleData['type'],
                 'lessons' => $moduleData['lessons'] ?? [],
