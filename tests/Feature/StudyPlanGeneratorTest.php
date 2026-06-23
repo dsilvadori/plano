@@ -311,6 +311,53 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertSame([37, 35, 24, 24], $items->pluck('estimated_minutes')->all());
     }
 
+    public function test_generator_reduces_practice_reserve_to_keep_basic_and_specific_blocks_when_they_fit_the_day(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Interpretação',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Interpretação de textos', 'minutes' => 50],
+            ],
+            'workload_minutes' => 50,
+            'sort_order' => 1,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Arquivologia',
+            'type' => 'specific',
+            'lessons' => [
+                ['name' => '01 - Conceitos Iniciais de Arquivologia', 'minutes' => 45],
+            ],
+            'workload_minutes' => 45,
+            'sort_order' => 2,
+        ]);
+
+        $startDate = now()->next('monday');
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            $startDate->toDateString(),
+            $startDate->toDateString(),
+            ['monday'],
+            ['monday' => 120],
+            'balanced',
+        );
+
+        $items = $plan->items()->where('day_of_week', 'monday')->orderBy('sort_order')->get()->values();
+
+        $this->assertSame(['basic', 'specific', 'questions', 'review'], $items->pluck('type')->all());
+        $this->assertSame([50, 45, 13, 12], $items->pluck('estimated_minutes')->all());
+    }
+
     public function test_generator_interleaves_theory_types_without_breaking_each_module_sequence(): void
     {
         $course = Course::factory()->create();

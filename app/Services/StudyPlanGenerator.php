@@ -536,6 +536,11 @@ class StudyPlanGenerator
                 $theoryBudget = max(0, $remainingToday - $reserveMinutes);
             }
 
+            $minimumPairTheoryMinutes = $this->minimumDailyPairTheoryMinutes($typeQueues, $typePointers, $lessonStates, $remainingByModule);
+            if ($minimumPairTheoryMinutes > $theoryBudget && $minimumPairTheoryMinutes <= $remainingToday) {
+                $theoryBudget = $minimumPairTheoryMinutes;
+            }
+
             $balancedTheoryBlocks = 0;
             $balancedAllocated = $this->createBalancedDailyTheoryItems(
                 $plan,
@@ -663,8 +668,11 @@ class StudyPlanGenerator
                 continue;
             }
 
+            $nextGroupMinimum = isset($dailyGroups[$index + 1])
+                ? $this->minimumTheoryBlockMinutesForTypes($dailyGroups[$index + 1], $typeQueues, $typePointers, $lessonStates, $remainingByModule)
+                : 0;
             $availableForBlock = $index === 0
-                ? max(15, (int) floor($theoryBudget / 2))
+                ? max(15, min((int) floor($theoryBudget / 2), $theoryBudget - $nextGroupMinimum))
                 : $remainingBudget;
             $availableForBlock = min($remainingBudget, $availableForBlock);
 
@@ -716,6 +724,43 @@ class StudyPlanGenerator
         }
 
         return $allocated;
+    }
+
+    protected function minimumDailyPairTheoryMinutes(array $typeQueues, array $typePointers, array $lessonStates, array $remainingByModule): int
+    {
+        if (
+            ! $this->hasRemainingTheoryTypes(['basic'], $typeQueues, $typePointers, $lessonStates)
+            || ! $this->hasRemainingTheoryTypes(['specific', 'complementary'], $typeQueues, $typePointers, $lessonStates)
+        ) {
+            return 0;
+        }
+
+        return $this->minimumTheoryBlockMinutesForTypes(['basic'], $typeQueues, $typePointers, $lessonStates, $remainingByModule)
+            + $this->minimumTheoryBlockMinutesForTypes(['specific', 'complementary'], $typeQueues, $typePointers, $lessonStates, $remainingByModule);
+    }
+
+    protected function minimumTheoryBlockMinutesForTypes(array $types, array $typeQueues, array $typePointers, array $lessonStates, array $remainingByModule): int
+    {
+        foreach ($types as $type) {
+            $module = $this->remainingTheoryModules($typeQueues[$type] ?? collect(), $typePointers[$type] ?? 0, $lessonStates)->first();
+
+            if (! $module) {
+                continue;
+            }
+
+            $state = $lessonStates[$module->id] ?? null;
+            $index = (int) ($state['index'] ?? 0);
+            $lessons = $state['lessons'] ?? [];
+            $lessonMinutes = (int) ($lessons[$index]['minutes'] ?? 0);
+
+            if ($lessonMinutes > 0) {
+                return $lessonMinutes;
+            }
+
+            return min(60, max(15, (int) ($remainingByModule[$module->id] ?? $module->workload_minutes)));
+        }
+
+        return 0;
     }
 
     protected function resolveReserveMinutes(string $dayKey, int $remainingToday, int $weeklyTheoryMinutes): int
