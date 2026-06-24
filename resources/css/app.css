@@ -579,6 +579,31 @@ html[data-theme="light"] .color-scheme-dark {
         @apply border-white/15 bg-white/5 text-slate-200;
     }
 
+    .lesson-ai-panel {
+        @apply overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-2xl shadow-black/20 backdrop-blur;
+    }
+
+    .lesson-ai-tabs {
+        @apply flex gap-2 overflow-x-auto border-b border-white/10 px-5 py-3;
+    }
+
+    .lesson-ai-tab {
+        @apply inline-flex min-h-11 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-slate-950/50 px-4 text-sm font-semibold text-slate-200 transition;
+    }
+
+    .lesson-ai-tab:hover,
+    .lesson-ai-tab.is-active {
+        @apply border-sky-400/30 bg-sky-400/10 text-sky-100;
+    }
+
+    .lesson-ai-prose {
+        @apply space-y-4 text-sm leading-7 text-slate-300;
+    }
+
+    .lesson-ai-empty {
+        @apply rounded-2xl border border-white/10 bg-slate-950/50 p-5 text-sm leading-6 text-slate-400;
+    }
+
     @media (max-width: 1024px) {
         .card-panel {
             @apply rounded-[1.6rem] p-4;
@@ -587,5 +612,171 @@ html[data-theme="light"] .color-scheme-dark {
         .metric-card {
             @apply rounded-[1.2rem] p-4;
         }
+    }
+}
+
+[x-cloak] {
+    display: none !important;
+}
+
+.lesson-mindmap {
+    display: grid;
+    gap: 1.25rem;
+}
+
+.lesson-mindmap-center {
+    position: relative;
+    display: grid;
+    gap: .35rem;
+    place-items: center;
+    min-height: 8rem;
+    padding: 1.5rem;
+    border: 1px solid rgba(250, 204, 21, .34);
+    border-radius: 1.5rem;
+    background:
+        radial-gradient(circle at 18% 15%, rgba(250, 204, 21, .18), transparent 30%),
+        linear-gradient(135deg, rgba(30, 41, 59, .92), rgba(2, 6, 23, .92));
+    color: #fff;
+    text-align: center;
+}
+
+.lesson-mindmap-center span {
+    color: rgb(252 211 77);
+    font-size: .78rem;
+    font-weight: 800;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+}
+
+.lesson-mindmap-center strong {
+    max-width: 42rem;
+    font-size: 1.2rem;
+    line-height: 1.35;
+}
+
+.lesson-mindmap-branches {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr));
+    gap: .9rem;
+}
+
+.lesson-mindmap-branch {
+    position: relative;
+    min-height: 8rem;
+    padding: 1rem;
+    border: 1px solid rgba(148, 163, 184, .2);
+    border-radius: 1.25rem;
+    background: rgba(15, 23, 42, .68);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+.lesson-mindmap-branch::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 1.25rem;
+    right: 1.25rem;
+    height: 3px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #facc15, #38bdf8, #22c55e);
+}
+
+.lesson-mindmap-branch h3 {
+    margin: 0;
+    color: #fff;
+    font-size: .98rem;
+    font-weight: 800;
+    line-height: 1.45;
+}
+
+.lesson-mindmap-branch ul {
+    display: grid;
+    gap: .45rem;
+    margin: .85rem 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.lesson-mindmap-branch li {
+    position: relative;
+    padding-left: 1rem;
+    color: rgb(203 213 225);
+    font-size: .86rem;
+    line-height: 1.45;
+}
+
+.lesson-mindmap-branch li::before {
+    content: "";
+    position: absolute;
+    top: .55em;
+    left: 0;
+    width: .38rem;
+    height: .38rem;
+    border-radius: 999px;
+    background: rgb(56 189 248);
+}
+
+html[data-theme="light"] .lesson-ai-panel,
+html[data-theme="light"] .lesson-ai-tabs {
+    border-color: var(--vc-border) !important;
+    background: var(--vc-surface) !important;
+    box-shadow: var(--vc-shadow) !important;
+}
+
+html[data-theme="light"] .lesson-ai-tab {
+    border-color: var(--vc-border) !important;
+    background: var(--vc-surface-soft) !important;
+    color: var(--vc-text) !important;
+}
+
+html[data-theme="light"] .lesson-ai-tab:hover,
+html[data-theme="light"] .lesson-ai-tab.is-active {
+    border-color: rgba(24, 24, 165, .28) !important;
+    background: var(--vc-primary-soft) !important;
+    color: var(--vc-primary) !important;
+}
+
+html[data-theme="light"] .lesson-ai-prose,
+html[data-theme="light"] .lesson-ai-empty {
+    color: var(--vc-muted) !important;
+}
+
+html[data-theme="light"] .lesson-ai-empty,
+html[data-theme="light"] .lesson-mindmap-branch {
+    border-color: var(--vc-border) !important;
+    background: var(--vc-surface-soft) !important;
+}
+
+html[data-theme="light"] .lesson-mindmap-center {
+    border-color: rgba(24, 24, 165, .2);
+    background:
+        radial-gradient(circle at 18% 15%, rgba(246, 215, 25, .22), transparent 30%),
+        linear-gradient(135deg, #ffffff, #eef2ff);
+    color: var(--vc-heading);
+}
+
+html[data-theme="light"] .lesson-mindmap-center span {
+    color: var(--vc-primary);
+}
+
+html[data-theme="light"] .lesson-mindmap-branch h3 {
+    color: var(--vc-heading);
+}
+
+html[data-theme="light"] .lesson-mindmap-branch li {
+    color: var(--vc-muted);
+}
+
+@media (max-width: 640px) {
+    .lesson-ai-tabs {
+        padding-inline: 1rem;
+    }
+
+    .lesson-ai-tab {
+        min-width: 9rem;
+    }
+
+    .lesson-mindmap-center {
+        min-height: 6.5rem;
     }
 }
