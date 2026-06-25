@@ -55,4 +55,10 @@ return [
         'embed_base_url' => env('PANDA_EMBED_BASE_URL'),
     ],
 
+    'gemini' => [
+        'api_key' => env('GEMINI_API_KEY'),
+        'base_url' => env('GEMINI_API_BASE_URL', 'https://generativelanguage.googleapis.com'),
+        'model' => env('GEMINI_MODEL', 'gemini-3.5-flash'),
+    ],
+
 ];

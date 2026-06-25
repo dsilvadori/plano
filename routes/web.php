@@ -1,8 +1,9 @@
 <?php
 
-use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\CourseCatalogController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\QuestionBankController;
 use App\Http\Controllers\StudyPlanController;
 use App\Http\Controllers\TutoryWebhookController;
 use Illuminate\Support\Facades\Route;
@@ -27,6 +28,9 @@ Route::middleware('auth')->group(function () {
     Route::get('/dashboard/cursos/{course:slug}/aulas/{lesson}', [CourseCatalogController::class, 'lesson'])->name('courses.lessons.show');
     Route::post('/dashboard/cursos/{course:slug}/aulas/{lesson}/ia/panda', [CourseCatalogController::class, 'syncPandaAi'])->name('courses.lessons.ai.panda');
     Route::post('/dashboard/cursos/{course:slug}/aulas/{lesson}/concluir', [CourseCatalogController::class, 'completeLesson'])->name('courses.lessons.complete');
+    Route::get('/dashboard/questoes', [QuestionBankController::class, 'index'])->name('questions.index');
+    Route::get('/dashboard/questoes/{questionBank}', [QuestionBankController::class, 'show'])->name('questions.show');
+    Route::post('/dashboard/questoes/responder/{question}', [QuestionBankController::class, 'answer'])->name('questions.answer');
     Route::get('/dashboard/plano/novo', [StudyPlanController::class, 'create'])->name('study-plans.create');
     Route::post('/dashboard/plano', [StudyPlanController::class, 'store'])->name('study-plans.store');
     Route::get('/dashboard/plano/{studyPlan}/editar', [StudyPlanController::class, 'edit'])

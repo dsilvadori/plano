@@ -302,6 +302,8 @@ Se o Panda disponibilizar transcricao, resumo ou questoes por IA:
 
 ## Banco de Questoes
 
+Objetivo: criar uma area propria de banco de questoes, capaz de importar questoes a partir de PDFs e transformar o conteudo em exercicios interativos, organizados por curso, disciplina, assunto e relacao com as aulas estudadas.
+
 ### Fontes
 
 - PDF.
@@ -309,6 +311,7 @@ Se o Panda disponibilizar transcricao, resumo ou questoes por IA:
 - CSV.
 - Entrada manual no admin.
 - Geracao por IA a partir de aula/PDF.
+- Comentarios gerados por IA, inicialmente com API do Gemini.
 
 ### Entidades
 
@@ -317,18 +320,26 @@ Se o Panda disponibilizar transcricao, resumo ou questoes por IA:
    - `course_id`
    - `title`
    - `source_type`
+   - `source_file_path`
    - `status`
+   - `metadata`
 
 2. `questions`
    - `id`
    - `question_bank_id`
    - `course_id`
+   - `course_module_id`
    - `lesson_id`
+   - `subject`
+   - `topic`
+   - `subtopic`
    - `statement`
    - `type`: multiple_choice, true_false, discursive
    - `answer_key`
    - `commentary`
    - `source_reference`
+   - `difficulty`
+   - `status`: draft, review, published, archived
    - `metadata`
 
 3. `question_options`
@@ -346,14 +357,100 @@ Se o Panda disponibilizar transcricao, resumo ou questoes por IA:
    - `is_correct`
    - `answered_at`
 
+5. `question_import_batches`
+   - `id`
+   - `course_id`
+   - `question_bank_id`
+   - `source_type`: pdf, xlsx, csv, manual, ai
+   - `file_path`
+   - `status`: uploaded, extracting, parsed, review, imported, failed
+   - `summary`
+   - `error_message`
+   - `created_by`
+   - `metadata`
+
+6. `question_import_rows`
+   - `id`
+   - `question_import_batch_id`
+   - `raw_text`
+   - `parsed_payload`
+   - `status`: pending, parsed, needs_review, imported, skipped, failed
+   - `error_message`
+   - `metadata`
+
+7. `question_topics`
+   - `id`
+   - `course_id`
+   - `course_module_id`
+   - `lesson_id`
+   - `name`
+   - `normalized_name`
+   - `parent_id`
+   - `metadata`
+
+8. `question_sets`
+   - `id`
+   - `course_id`
+   - `title`
+   - `type`: manual, lesson_related, study_plan_task, review, simulation
+   - `status`
+   - `metadata`
+
+9. `question_set_items`
+   - `id`
+   - `question_set_id`
+   - `question_id`
+   - `sort_order`
+
 ### Importacao
 
 1. Admin sobe PDF ou XLS.
 2. Sistema cria lote de importacao.
-3. Parser identifica questoes, alternativas, gabarito e comentarios quando houver.
-4. Admin revisa uma tela de pre-importacao.
-5. Sistema salva questoes.
-6. Questoes podem ser vinculadas a curso, modulo, aula ou plano.
+3. PDF fica salvo como fonte original para auditoria.
+4. Sistema extrai texto do PDF em background.
+5. Parser identifica questoes, alternativas, gabarito e comentarios quando houver.
+6. Quando comentario nao existir, sistema pode gerar comentario com IA usando Gemini.
+7. IA classifica cada questao por disciplina, assunto, subassunto, modulo e possivel aula relacionada.
+8. Admin revisa uma tela de pre-importacao.
+9. Admin ajusta enunciado, alternativas, gabarito, comentario e assunto quando necessario.
+10. Admin pode editar comentarios gerados por IA antes e depois da publicacao.
+11. Sistema salva questoes revisadas.
+12. Questoes podem ser vinculadas a curso, modulo, aula, plano ou conjunto de questoes.
+
+### Organizacao por Assunto e Trilha
+
+- Cada questao deve ter assunto normalizado para permitir busca, filtro e recomendacao.
+- A IA deve comparar o texto da questao com titulos de aulas, resumos, transcricoes, mapas mentais e metadados do modulo.
+- O sistema deve sugerir vinculo com aula/modulo, mas o admin pode revisar.
+- Questoes exibidas no plano de estudos devem ter relacao com o conteudo estudado naquele dia ou naquela semana.
+- Tarefas de questoes podem ser geradas por:
+  - aula concluida;
+  - modulo em andamento;
+  - assunto do bloco do plano;
+  - revisao programada;
+  - desempenho do aluno.
+- Quando nao houver confianca suficiente na classificacao por IA, a questao deve ficar em revisao.
+
+### Experiencia do Aluno
+
+- Menu separado para `Banco de Questoes`.
+- Filtros por curso, disciplina, assunto, banca, dificuldade, status e questoes erradas.
+- Resolucao interativa com clique na alternativa.
+- Exibicao de gabarito e comentario apos resposta.
+- Historico de tentativas.
+- Percentual de acertos por assunto.
+- Recomendacao de novas questoes com base nas aulas estudadas e erros anteriores.
+- Possibilidade de abrir um conjunto de questoes a partir da tarefa do plano.
+
+### IA e Cache
+
+- Comentarios gerados por IA devem ser salvos em cache no campo `commentary` ou em `ai_artifacts`.
+- Uma questao ja comentada nao deve gerar nova chamada de IA sem acao explicita do admin.
+- Guardar provider, prompt version, data da geracao e payload resumido em metadata.
+- Usar fila para importacao e comentario em lote.
+- Registrar falhas por questao sem interromper o lote inteiro.
+- Permitir edicao manual do comentario gerado por IA no admin.
+- Permitir regerar comentario apenas para questoes selecionadas.
 
 ## Planilha do Plano de Estudos
 
@@ -677,7 +774,74 @@ Implementacao inicial:
 - Modulos tambem podem ser reutilizados em varios cursos pela pivot `course_module_course`.
 - Historico basico fica em `panda_import_runs` e `panda_import_items`.
 
-### Fase 7 - Webhooks e Sincronizacao Avancada Panda
+### Fase 7 - Banco de Questoes
+
+Objetivo: iniciar uma nova frente de desenvolvimento antes da preparacao SaaS, criando um banco de questoes capaz de receber PDFs por upload, extrair questoes, organizar por assunto e transformar o conteudo em exercicios interativos com gabarito comentado.
+
+Status: proxima fase de desenvolvimento.
+
+Escopo principal:
+
+- Criar menu separado `Banco de Questoes`.
+- Criar estrutura de bancos, lotes de importacao, questoes, alternativas, assuntos, conjuntos e tentativas.
+- Upload de PDF pelo admin.
+- Armazenar PDF original como fonte/auditoria.
+- Extrair texto do PDF em background.
+- Parser inicial para identificar enunciado, alternativas e gabarito.
+- Tela de revisao antes de publicar questoes.
+- Questoes interativas para o aluno, com clique na alternativa.
+- Exibir gabarito e comentario apos resposta.
+- Salvar tentativas e historico do aluno.
+- Estatisticas por questao, assunto e aluno.
+
+IA e Gemini:
+
+- Usar API do Gemini para gerar comentario quando o PDF nao trouxer comentario.
+- Usar IA para sugerir disciplina, assunto, subassunto, modulo e aula relacionada.
+- Guardar comentarios gerados em cache para nao repetir chamadas de IA.
+- Permitir que o admin edite comentarios gerados por IA antes e depois da publicacao.
+- Permitir regerar comentario apenas por acao explicita do admin.
+- Registrar provider, prompt version, data e status da geracao.
+- Questao com classificacao incerta deve ficar em revisao.
+
+Organizacao por assunto e plano:
+
+- Questoes devem ser organizadas por assunto normalizado.
+- Sistema deve relacionar questoes com aulas, modulos e resumos/transcricoes quando disponiveis.
+- Plano de estudos deve poder incluir tarefas de questoes.
+- Questoes da trilha devem ter relacao com o conteudo estudado pelo aluno.
+- A tarefa de questoes pode vir apos aula, modulo, revisao ou bloco de assunto.
+- Aluno deve conseguir resolver questoes dentro do plano e tambem pelo menu separado.
+
+Fluxo inicial:
+
+1. Admin cria ou escolhe um banco de questoes.
+2. Admin sobe um PDF.
+3. Sistema cria `question_import_batch`.
+4. Sistema extrai texto e tenta separar as questoes.
+5. Sistema identifica alternativas e gabarito quando possivel.
+6. Sistema gera comentario com IA quando necessario.
+7. Sistema sugere assunto e vinculo com aula/modulo.
+8. Admin revisa e corrige.
+9. Admin publica questoes.
+10. Aluno resolve questoes interativas.
+11. Sistema salva resultado e atualiza estatisticas.
+
+Criterios de aceite:
+
+- Admin sobe PDF com questoes.
+- Sistema cria lote de importacao.
+- Sistema extrai e apresenta questoes em tela de revisao.
+- Admin publica questoes revisadas.
+- Aluno responde questoes.
+- Sistema mostra gabarito e comentario.
+- Resultado fica salvo no historico.
+- Questoes aparecem em menu separado.
+- Plano de estudos pode apontar para conjunto de questoes relacionado ao assunto estudado.
+- Comentario gerado por IA fica cacheado e nao gera nova chamada automaticamente.
+- Admin consegue editar o comentario gerado por IA sem perder historico da origem.
+
+### Fase 8 - Webhooks e Sincronizacao Avancada Panda
 
 Objetivo: manter dados atualizados automaticamente.
 
@@ -694,7 +858,7 @@ Criterios de aceite:
 - Falhas ficam registradas.
 - Admin enxerga inconsistencias.
 
-### Fase 8 - PDF e Livro Digital
+### Fase 9 - PDF e Livro Digital
 
 Objetivo: suportar aulas e materiais em PDF.
 
@@ -711,7 +875,7 @@ Criterios de aceite:
 - Download respeita configuracao.
 - Texto extraido fica disponivel para IA.
 
-### Fase 9 - IA para Aulas e PDFs
+### Fase 10 - IA para Aulas e PDFs
 
 Objetivo: enriquecer conteudo com IA.
 
@@ -730,26 +894,7 @@ Criterios de aceite:
 - Aluno visualiza resumo/mapa/questoes.
 - Aluno tira duvida limitada ao conteudo do curso.
 
-### Fase 10 - Banco de Questoes
-
-Objetivo: transformar PDFs/XLS em questoes interativas.
-
-- Upload de XLS/CSV/PDF.
-- Parser inicial de XLS.
-- Parser assistido para PDF.
-- Tela de revisao.
-- Questoes com alternativas, gabarito e comentario.
-- Tentativas dos alunos.
-- Estatisticas por questao.
-
-Criterios de aceite:
-
-- Admin importa questoes de XLS.
-- Aluno responde questoes.
-- Sistema mostra gabarito e comentario.
-- Resultado fica salvo no historico.
-
-password### Fase 11 - Preparacao SaaS
+### Fase 11 - Preparacao SaaS
 
 Objetivo: deixar arquitetura pronta para multiplas organizacoes.
 

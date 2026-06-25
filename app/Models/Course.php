@@ -2,16 +2,17 @@
 
 namespace App\Models;
 
+use Database\Factories\CourseFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Storage;
 
 class Course extends Model
 {
-    /** @use HasFactory<\Database\Factories\CourseFactory> */
+    /** @use HasFactory<CourseFactory> */
     use HasFactory;
 
     protected static function booted(): void
@@ -106,6 +107,11 @@ class Course extends Model
     public function studyPlans(): HasMany
     {
         return $this->hasMany(StudyPlan::class);
+    }
+
+    public function questionBanks(): HasMany
+    {
+        return $this->hasMany(QuestionBank::class);
     }
 
     public function getThumbnailDisplayUrlAttribute(): string

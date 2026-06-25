@@ -2,20 +2,22 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\AiArtifact;
 use App\Models\Course;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
-use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\LessonProgress;
+use App\Models\QuestionBank;
 use App\Models\StudyPlanItem;
 use App\Models\User;
 use App\Services\PandaVideoClient;
 use Illuminate\Contracts\View\View;
-use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -24,6 +26,7 @@ use Throwable;
 class CourseCatalogController extends Controller
 {
     protected const LESSON_AI_ARTIFACT_TYPES = ['summary', 'quiz', 'mindmap'];
+
     protected const PANDA_AI_REQUEST_RETRY_MINUTES = 60;
 
     public function index(): View
@@ -185,6 +188,7 @@ class CourseCatalogController extends Controller
             'progressSummary' => $this->progressForCourse($course, $user),
             'aiArtifacts' => $lesson->aiArtifacts,
             'planLessonContext' => $this->planLessonContextForLesson($user, $course, $lesson),
+            'lessonQuestionLink' => $this->questionLinkForLesson($user, $course, $lesson),
             'pandaTutorUrl' => $this->pandaTutorUrlForLesson($lesson),
             'pandaTutorCandidateUrl' => $this->pandaTutorCandidateUrlForLesson($lesson),
             'pandaTutorConfigUrl' => $this->pandaTutorConfigUrlForLesson($lesson),
@@ -246,7 +250,7 @@ class CourseCatalogController extends Controller
         } catch (Throwable $exception) {
             report($exception);
 
-            return back()->with('error', 'Não foi possível sincronizar a IA da aula: ' . $exception->getMessage());
+            return back()->with('error', 'Não foi possível sincronizar a IA da aula: '.$exception->getMessage());
         }
     }
 
@@ -394,6 +398,56 @@ class CourseCatalogController extends Controller
             'date_label' => $currentItem->scheduled_date->translatedFormat('d/m/Y'),
             'items' => $dayItems,
             'completed_lesson_ids' => $completedLessonIds,
+        ];
+    }
+
+    protected function questionLinkForLesson(User $user, Course $course, Lesson $lesson): ?array
+    {
+        $bank = QuestionBank::query()
+            ->where('status', 'published')
+            ->where(function (Builder $query) use ($course): void {
+                $query->whereNull('course_id')
+                    ->orWhere('course_id', $course->id);
+            })
+            ->whereHas('questions', function (Builder $query) use ($lesson): void {
+                $query->where('status', 'published')
+                    ->where(function (Builder $query) use ($lesson): void {
+                        $query->where('lesson_id', $lesson->id);
+
+                        if ($lesson->course_module_id) {
+                            $query->orWhere('course_module_id', $lesson->course_module_id);
+                        }
+                    });
+            })
+            ->orderBy('title')
+            ->first();
+
+        if (! $bank) {
+            return null;
+        }
+
+        $hasLessonQuestions = $bank->questions()
+            ->where('status', 'published')
+            ->where('lesson_id', $lesson->id)
+            ->exists();
+
+        $params = [
+            $hasLessonQuestions ? 'lesson_id' : 'module_id' => $hasLessonQuestions ? $lesson->id : $lesson->course_module_id,
+        ];
+
+        $plan = $user->studyPlans()
+            ->where('course_id', $course->id)
+            ->where('status', 'active')
+            ->latest('id')
+            ->first();
+
+        if ($plan) {
+            $params['plan_id'] = $plan->id;
+        }
+
+        return [
+            'label' => 'Resolver questões deste assunto',
+            'url' => route('questions.show', [$bank] + $params),
         ];
     }
 
@@ -593,7 +647,7 @@ class CourseCatalogController extends Controller
             return true;
         }
 
-        return now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastAttempt)) >= 1;
+        return now()->diffInMinutes(Carbon::parse($lastAttempt)) >= 1;
     }
 
     protected function shouldRequestLessonAiPackage(array $metadata, bool $forceRequest = false): bool
@@ -605,10 +659,10 @@ class CourseCatalogController extends Controller
         }
 
         if (! $forceRequest) {
-            return now()->diffInMinutes(\Illuminate\Support\Carbon::parse($requestedAt)) >= self::PANDA_AI_REQUEST_RETRY_MINUTES;
+            return now()->diffInMinutes(Carbon::parse($requestedAt)) >= self::PANDA_AI_REQUEST_RETRY_MINUTES;
         }
 
-        return now()->diffInMinutes(\Illuminate\Support\Carbon::parse($requestedAt)) >= 1;
+        return now()->diffInMinutes(Carbon::parse($requestedAt)) >= 1;
     }
 
     protected function ensurePandaTutorAvailabilityIsCached(Lesson $lesson, PandaVideoClient $panda): void
@@ -628,7 +682,7 @@ class CourseCatalogController extends Controller
 
         $cacheMinutes = (bool) data_get($lesson->metadata, 'panda_ai.tutor_available', false) ? 10 : 1;
 
-        if (filled($lastCheckedAt) && now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastCheckedAt)) < $cacheMinutes) {
+        if (filled($lastCheckedAt) && now()->diffInMinutes(Carbon::parse($lastCheckedAt)) < $cacheMinutes) {
             return;
         }
 
@@ -638,7 +692,7 @@ class CourseCatalogController extends Controller
             $lastCheckedAt = data_get($lesson->metadata, 'panda_ai.tutor_checked_at');
             $cacheMinutes = (bool) data_get($lesson->metadata, 'panda_ai.tutor_available', false) ? 10 : 1;
 
-            if (filled($lastCheckedAt) && now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastCheckedAt)) < $cacheMinutes) {
+            if (filled($lastCheckedAt) && now()->diffInMinutes(Carbon::parse($lastCheckedAt)) < $cacheMinutes) {
                 return;
             }
 
@@ -694,7 +748,7 @@ class CourseCatalogController extends Controller
         $playerEmbedBase = preg_replace('/\?.*$/', '', $playerUrl);
         $playerEmbedBase = rtrim(str_ends_with($playerEmbedBase, '/embed/') ? $playerEmbedBase : dirname($playerEmbedBase), '/');
 
-        return $playerEmbedBase . '/assist_chat.html?' . http_build_query(['v' => $videoExternalId, 'l' => $pullzoneName]);
+        return $playerEmbedBase.'/assist_chat.html?'.http_build_query(['v' => $videoExternalId, 'l' => $pullzoneName]);
     }
 
     protected function pandaTutorConfigUrlForLesson(Lesson $lesson): ?string
@@ -707,9 +761,9 @@ class CourseCatalogController extends Controller
         }
 
         return rtrim((string) config('services.panda.ai_config_base_url'), '/')
-            . '/' . trim($pullzoneName, '/')
-            . '/' . $videoExternalId
-            . '.json';
+            .'/'.trim($pullzoneName, '/')
+            .'/'.$videoExternalId
+            .'.json';
     }
 
     protected function firstAiPayloadValue(array $payload, array $paths): mixed
@@ -784,5 +838,4 @@ class CourseCatalogController extends Controller
 
         return null;
     }
-
 }

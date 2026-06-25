@@ -208,6 +208,16 @@
                                             @else
                                                 <p class="mt-2 text-sm text-slate-400">{{ $item->display_description }}</p>
                                             @endif
+                                            @if (! empty($itemQuestionLinks[$item->id]))
+                                                <div class="mt-3 space-y-2">
+                                                    @foreach ($itemQuestionLinks[$item->id] as $questionLink)
+                                                        <a href="{{ $questionLink['url'] }}" class="block rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300/40 hover:bg-sky-400/15">
+                                                            <span class="block font-semibold">{{ $questionLink['label'] }}</span>
+                                                            <span class="mt-1 block text-xs text-sky-100/80">Pratique pelo tempo reservado neste bloco</span>
+                                                        </a>
+                                                    @endforeach
+                                                </div>
+                                            @endif
                                         </div>
                                         <div class="mt-auto flex justify-end pt-2">
                                             <livewire:toggle-study-plan-item :item="$item" :key="$item->id" />

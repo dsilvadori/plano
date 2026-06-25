@@ -3,12 +3,14 @@
 namespace App\Livewire;
 
 use App\Models\CourseModule;
+use App\Models\QuestionBank;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Support\StudyTime;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\View\View;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+use Illuminate\Support\Collection;
 use Livewire\Component;
 
 class StudyPlanViewer extends Component
@@ -16,6 +18,7 @@ class StudyPlanViewer extends Component
     use AuthorizesRequests;
 
     public StudyPlan $studyPlan;
+
     public int $selectedWeek = 1;
 
     protected $listeners = ['study-plan-item-toggled' => '$refresh'];
@@ -88,7 +91,7 @@ class StudyPlanViewer extends Component
                     'total_minutes' => $totalMinutes,
                     'completed_minutes' => $completedMinutes,
                     'progress' => $progress,
-                    'minutes_label' => StudyTime::formatMinutes($completedMinutes) . ' / ' . StudyTime::formatMinutes($totalMinutes),
+                    'minutes_label' => StudyTime::formatMinutes($completedMinutes).' / '.StudyTime::formatMinutes($totalMinutes),
                 ];
             })
             ->filter(fn (array $row) => $row['tasks'] > 0)
@@ -97,29 +100,27 @@ class StudyPlanViewer extends Component
         $theoryMinutes = max(0, $weeklySummary['total_minutes'] - $weeklySummary['review_minutes'] - $weeklySummary['questions_minutes']);
         $weeklyFocusMessage = match (true) {
             $weeklySummary['total_minutes'] === 0 => 'Esta semana ainda não tem blocos planejados.',
-            $weeklySummary['review_minutes'] > 0 && $weeklySummary['questions_minutes'] > 0
-                => 'Nesta semana você vai avançar em teoria, revisar o que estudou e testar retenção com questões.',
-            $weeklySummary['review_minutes'] > 0
-                => 'Nesta semana o plano reserva um espaço especial para revisão e consolidação.',
-            $weeklySummary['questions_minutes'] > 0
-                => 'Nesta semana o plano já separa tempo de prática para você medir evolução com questões.',
+            $weeklySummary['review_minutes'] > 0 && $weeklySummary['questions_minutes'] > 0 => 'Nesta semana você vai avançar em teoria, revisar o que estudou e testar retenção com questões.',
+            $weeklySummary['review_minutes'] > 0 => 'Nesta semana o plano reserva um espaço especial para revisão e consolidação.',
+            $weeklySummary['questions_minutes'] > 0 => 'Nesta semana o plano já separa tempo de prática para você medir evolução com questões.',
             default => 'Nesta semana o foco está concentrado em construir base e avançar no conteúdo principal.',
         };
 
         $weeklyBreakdownMessage = $weeklySummary['total_minutes'] > 0
-            ? 'Você vai dedicar ' . StudyTime::formatMinutes($theoryMinutes) . ' para teoria, '
-                . StudyTime::formatMinutes($weeklySummary['review_minutes']) . ' para revisão e '
-                . StudyTime::formatMinutes($weeklySummary['questions_minutes']) . ' para questões.'
+            ? 'Você vai dedicar '.StudyTime::formatMinutes($theoryMinutes).' para teoria, '
+                .StudyTime::formatMinutes($weeklySummary['review_minutes']).' para revisão e '
+                .StudyTime::formatMinutes($weeklySummary['questions_minutes']).' para questões.'
             : 'Assim que o plano tiver blocos nesta semana, mostramos a distribuição aqui.';
 
         $selectedWeekRange = null;
         $itemLessons = $this->buildItemLessons();
+        $itemQuestionLinks = $this->buildItemQuestionLinks();
 
         if ($selectedWeekItems->isNotEmpty()) {
             $firstItem = $selectedWeekItems->first();
             $weekStart = $firstItem->scheduled_date->copy()->startOfWeek(CarbonInterface::MONDAY);
             $weekEnd = $firstItem->scheduled_date->copy()->endOfWeek(CarbonInterface::SUNDAY);
-            $selectedWeekRange = $weekStart->format('d/m') . ' até ' . $weekEnd->format('d/m');
+            $selectedWeekRange = $weekStart->format('d/m').' até '.$weekEnd->format('d/m');
         }
 
         return view('livewire.study-plan-viewer', [
@@ -133,7 +134,77 @@ class StudyPlanViewer extends Component
             'weeklyBreakdownMessage' => $weeklyBreakdownMessage,
             'selectedWeekRange' => $selectedWeekRange,
             'itemLessons' => $itemLessons,
+            'itemQuestionLinks' => $itemQuestionLinks,
         ]);
+    }
+
+    protected function buildItemQuestionLinks(): array
+    {
+        $links = [];
+        $courseId = $this->studyPlan->course_id;
+        $modulesById = CourseModule::query()
+            ->whereIn('id', $this->studyPlan->items->pluck('course_module_id')->filter()->unique())
+            ->get()
+            ->keyBy('id');
+
+        $this->studyPlan->items->each(function (StudyPlanItem $item) use (&$links, $courseId, $modulesById): void {
+            if ($item->type !== 'questions') {
+                return;
+            }
+
+            $moduleIds = $this->studyPlan->items
+                ->where('scheduled_date', $item->scheduled_date)
+                ->whereIn('type', ['basic', 'specific', 'complementary'])
+                ->pluck('course_module_id')
+                ->filter()
+                ->unique()
+                ->values();
+
+            if ($moduleIds->isEmpty() && $item->course_module_id) {
+                $moduleIds = collect([$item->course_module_id]);
+            }
+
+            if ($moduleIds->isEmpty()) {
+                return;
+            }
+
+            $itemLinks = [];
+
+            foreach ($moduleIds as $moduleId) {
+                $questionFilter = fn ($query) => $query
+                    ->where('status', 'published')
+                    ->where('course_module_id', $moduleId);
+
+                $bank = QuestionBank::query()
+                    ->where('status', 'published')
+                    ->where(function ($query) use ($courseId): void {
+                        $query->whereNull('course_id')
+                            ->orWhere('course_id', $courseId);
+                    })
+                    ->whereHas('questions', $questionFilter)
+                    ->withCount(['questions as related_questions_count' => $questionFilter])
+                    ->orderByDesc('related_questions_count')
+                    ->orderBy('title')
+                    ->first();
+
+                if (! $bank) {
+                    continue;
+                }
+
+                $itemLinks[] = [
+                    'label' => 'Resolver questões: '.($modulesById->get($moduleId)?->name ?: 'Assunto'),
+                    'url' => route('questions.show', [$bank, 'plan_id' => $this->studyPlan->id, 'module_id' => $moduleId]),
+                ];
+            }
+
+            if ($itemLinks === []) {
+                return;
+            }
+
+            $links[$item->id] = $itemLinks;
+        });
+
+        return $links;
     }
 
     protected function buildItemLessons(): array
@@ -184,6 +255,7 @@ class StudyPlanViewer extends Component
 
                     if ($lessonMinutes <= 0) {
                         $index++;
+
                         continue;
                     }
 
@@ -212,7 +284,7 @@ class StudyPlanViewer extends Component
         return $lessonsByItem;
     }
 
-    protected function orderedPlanItems(): \Illuminate\Support\Collection
+    protected function orderedPlanItems(): Collection
     {
         return $this->studyPlan->items
             ->sortBy(function (StudyPlanItem $item): string {
@@ -238,16 +310,16 @@ class StudyPlanViewer extends Component
     protected function formatLessonMinutes(int $minutes): string
     {
         if ($minutes < 60) {
-            return $minutes . ' min';
+            return $minutes.' min';
         }
 
         $hours = intdiv($minutes, 60);
         $remainingMinutes = $minutes % 60;
 
         if ($remainingMinutes === 0) {
-            return $hours . 'h';
+            return $hours.'h';
         }
 
-        return $hours . 'h ' . $remainingMinutes . 'min';
+        return $hours.'h '.$remainingMinutes.'min';
     }
 }
