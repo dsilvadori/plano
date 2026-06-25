@@ -16,6 +16,7 @@ use App\Services\QuestionLessonLinker;
 use App\Services\QuestionPdfImporter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class QuestionBankTest extends TestCase
@@ -78,6 +79,57 @@ TXT;
         $this->assertSame('published', $bank->fresh()->status);
         $this->assertSame('c', $question->fresh()->answer_key);
         $this->assertTrue($correct->fresh()->is_correct);
+    }
+
+    public function test_pdf_importer_uses_gemini_fallback_when_local_text_extraction_fails(): void
+    {
+        config([
+            'services.gemini.api_key' => 'testing-key',
+            'services.gemini.model' => 'gemini-2.5-flash-lite',
+        ]);
+
+        Storage::disk('local')->put('question-banks/scanned.pdf', 'not a text pdf');
+
+        Http::fake([
+            '*gemini-2.5-flash-lite*' => Http::response([
+                'candidates' => [[
+                    'content' => [
+                        'parts' => [[
+                            'text' => <<<'TXT'
+VUNESP - Cargo/Org/2026
+Língua Portuguesa (Português) - Substantivo
+1)
+Assinale a alternativa correta.
+a) primeira alternativa.
+b) segunda alternativa.
+c) terceira alternativa.
+d) quarta alternativa.
+
+1 - Gabarito
+1 c
+TXT,
+                        ]],
+                    ],
+                ]],
+            ]),
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco escaneado',
+            'source_type' => 'pdf',
+            'source_file_path' => 'question-banks/scanned.pdf',
+            'status' => 'draft',
+        ]);
+
+        $batch = app(QuestionPdfImporter::class)->import($bank);
+
+        $this->assertSame('imported', $batch->status);
+        $this->assertSame(1, $batch->questions_imported);
+        $this->assertDatabaseHas('questions', [
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'answer_key' => 'c',
+        ]);
     }
 
     public function test_student_can_open_question_bank_answer_and_see_commentary(): void

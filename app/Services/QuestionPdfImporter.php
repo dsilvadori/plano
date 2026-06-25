@@ -5,7 +5,9 @@ namespace App\Services;
 use App\Models\Question;
 use App\Models\QuestionBank;
 use App\Models\QuestionImportBatch;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -138,26 +140,130 @@ class QuestionPdfImporter
 
     public function extractText(string $pdfPath): string
     {
+        $text = $this->extractTextWithPdftotext($pdfPath);
+
+        if (trim($text) !== '') {
+            return $text;
+        }
+
+        $text = $this->extractTextWithGemini($pdfPath);
+
+        if (trim($text) !== '') {
+            return $text;
+        }
+
+        throw new RuntimeException('Não foi possível extrair texto do PDF. Verifique se o arquivo não está protegido ou escaneado.');
+    }
+
+    protected function extractTextWithPdftotext(string $pdfPath): string
+    {
         $outputPath = tempnam(sys_get_temp_dir(), 'questions-pdf-');
 
         if ($outputPath === false) {
             throw new RuntimeException('Não foi possível criar arquivo temporário para leitura do PDF.');
         }
 
-        $process = new Process(['pdftotext', '-layout', $pdfPath, $outputPath]);
-        $process->setTimeout(60);
-        $process->run();
+        try {
+            $process = new Process(['pdftotext', '-layout', $pdfPath, $outputPath]);
+            $process->setTimeout(60);
+            $process->run();
 
-        if (! $process->isSuccessful()) {
+            if (! $process->isSuccessful()) {
+                return '';
+            }
+
+            return (string) file_get_contents($outputPath);
+        } catch (Throwable) {
+            return '';
+        } finally {
             @unlink($outputPath);
+        }
+    }
 
-            throw new RuntimeException('Não foi possível extrair texto do PDF. Verifique se o arquivo não está protegido ou escaneado.');
+    protected function extractTextWithGemini(string $pdfPath): string
+    {
+        $apiKey = config('services.gemini.api_key');
+
+        if (blank($apiKey)) {
+            throw new RuntimeException('Não foi possível extrair texto do PDF automaticamente. Configure GEMINI_API_KEY ou instale o pdftotext/poppler-utils no servidor.');
         }
 
-        $text = (string) file_get_contents($outputPath);
-        @unlink($outputPath);
+        $contents = file_get_contents($pdfPath);
 
-        return $text;
+        if ($contents === false) {
+            return '';
+        }
+
+        $prompt = implode("\n", [
+            'Extraia o texto deste PDF de questões de concurso.',
+            'Preserve a numeração das questões no formato "1)" e preserve as alternativas no formato "a)", "b)", "c)", "d)" e "e)".',
+            'Preserve também a seção de gabarito, se existir.',
+            'Retorne apenas o texto extraído, sem comentários adicionais.',
+        ]);
+        $lastException = null;
+
+        foreach ($this->geminiModelsToTry() as $model) {
+            try {
+                $response = Http::baseUrl(rtrim((string) config('services.gemini.base_url'), '/'))
+                    ->acceptJson()
+                    ->timeout(90)
+                    ->post("/v1beta/models/{$model}:generateContent?key={$apiKey}", [
+                        'contents' => [[
+                            'parts' => [
+                                ['text' => $prompt],
+                                [
+                                    'inline_data' => [
+                                        'mime_type' => 'application/pdf',
+                                        'data' => base64_encode($contents),
+                                    ],
+                                ],
+                            ],
+                        ]],
+                        'generationConfig' => [
+                            'temperature' => 0,
+                            'maxOutputTokens' => 16000,
+                        ],
+                    ]);
+
+                $response->throw();
+
+                return trim((string) data_get($response->json(), 'candidates.0.content.parts.0.text', ''));
+            } catch (RequestException $exception) {
+                $lastException = $exception;
+
+                if (in_array($exception->response->status(), [404, 429, 503], true)) {
+                    continue;
+                }
+
+                throw $exception;
+            }
+        }
+
+        if ($lastException) {
+            throw $lastException;
+        }
+
+        return '';
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function geminiModelsToTry(): array
+    {
+        $configuredModel = trim((string) config('services.gemini.model'), '/');
+
+        return collect([
+            $configuredModel,
+            'gemini-2.5-flash-lite',
+            'gemini-3.5-flash',
+            'gemini-2.5-flash',
+            'gemini-flash-latest',
+        ])
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
     }
 
     public function parseText(string $text): array
