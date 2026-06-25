@@ -78,6 +78,40 @@
         return $blocks;
     };
 
+    $inlineSegments = function (string $text): array {
+        $segments = [];
+        $offset = 0;
+
+        preg_match_all('/\*\*(.+?)\*\*/s', $text, $matches, PREG_OFFSET_CAPTURE);
+
+        foreach ($matches[0] as $index => $match) {
+            [$fullMatch, $position] = $match;
+
+            if ($position > $offset) {
+                $segments[] = [
+                    'text' => substr($text, $offset, $position - $offset),
+                    'bold' => false,
+                ];
+            }
+
+            $segments[] = [
+                'text' => $matches[1][$index][0],
+                'bold' => true,
+            ];
+
+            $offset = $position + strlen($fullMatch);
+        }
+
+        if ($offset < strlen($text)) {
+            $segments[] = [
+                'text' => substr($text, $offset),
+                'bold' => false,
+            ];
+        }
+
+        return $segments !== [] ? $segments : [['text' => $text, 'bold' => false]];
+    };
+
     $normalizeQuizItems = function (mixed $value) use (&$normalizeQuizItems, $contentToText): array {
         if (! is_array($value)) {
             return [];
@@ -250,6 +284,83 @@
             ->values()
             ->all();
     }
+
+    $summaryTimeline = [];
+    $appendTimelineItem = function (array $item, int $depth = 0) use (&$appendTimelineItem, &$summaryTimeline, $timeToSeconds): void {
+        $seconds = $timeToSeconds($item['time'] ?? null);
+
+        if (($item['time'] ?? null) && $seconds !== null) {
+            $summaryTimeline[] = [
+                'title' => $item['title'],
+                'time' => $item['time'],
+                'seconds' => $seconds,
+                'depth' => min($depth, 2),
+            ];
+        }
+
+        foreach ($item['children'] ?? [] as $child) {
+            if (is_array($child)) {
+                $appendTimelineItem($child, $depth + 1);
+            }
+        }
+    };
+
+    foreach ($mindMapBranches as $branch) {
+        $appendTimelineItem($branch);
+    }
+
+    $summaryTimelineIndex = 0;
+    $usedSummaryTimelineIndexes = [];
+    $summaryTextTokens = function (string $text): array {
+        $normalized = str($text)->lower()->ascii()->replaceMatches('/[^a-z0-9\s]+/', ' ')->squish()->toString();
+
+        return collect(explode(' ', $normalized))
+            ->filter(fn (string $word) => strlen($word) >= 4)
+            ->unique()
+            ->values()
+            ->all();
+    };
+    $timelineForSummaryText = function (string $text, bool $allowSequentialFallback = true) use (&$summaryTimelineIndex, &$usedSummaryTimelineIndexes, $summaryTimeline, $summaryTextTokens): ?array {
+        if ($summaryTimeline === []) {
+            return null;
+        }
+
+        $textTokens = $summaryTextTokens($text);
+
+        if ($textTokens !== []) {
+            foreach ($summaryTimeline as $index => $item) {
+                if (in_array($index, $usedSummaryTimelineIndexes, true)) {
+                    continue;
+                }
+
+                $itemTokens = $summaryTextTokens($item['title']);
+                $sharedTokens = count(array_intersect($textTokens, $itemTokens));
+                $minimumTokens = max(1, min(count($textTokens), count($itemTokens)));
+
+                if ($sharedTokens / $minimumTokens >= 0.35) {
+                    $usedSummaryTimelineIndexes[] = $index;
+
+                    return $item;
+                }
+            }
+        }
+
+        if (! $allowSequentialFallback) {
+            return null;
+        }
+
+        while (isset($summaryTimeline[$summaryTimelineIndex]) && in_array($summaryTimelineIndex, $usedSummaryTimelineIndexes, true)) {
+            $summaryTimelineIndex++;
+        }
+
+        if (! isset($summaryTimeline[$summaryTimelineIndex])) {
+            return null;
+        }
+
+        $usedSummaryTimelineIndexes[] = $summaryTimelineIndex;
+
+        return $summaryTimeline[$summaryTimelineIndex++];
+    };
 
     $cachedAiTabs = [
         'summary' => $summaryBlocks !== [],
@@ -441,21 +552,85 @@
                             <div class="lesson-ai-prose">
                                 @foreach ($summaryBlocks as $block)
                                     @if ($block['type'] === 'heading')
+                                        @php
+                                            $summaryTime = $timelineForSummaryText($block['text']);
+                                        @endphp
                                         @if ($block['level'] <= 1)
-                                            <h2>{{ $block['text'] }}</h2>
+                                            <h2>
+                                                @foreach ($inlineSegments($block['text']) as $segment)
+                                                    @if ($segment['bold'])
+                                                        <strong>{{ $segment['text'] }}</strong>
+                                                    @else
+                                                        {{ $segment['text'] }}
+                                                    @endif
+                                                @endforeach
+                                                @if ($summaryTime)
+                                                    <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
+                                                @endif
+                                            </h2>
                                         @elseif ($block['level'] === 2)
-                                            <h3>{{ $block['text'] }}</h3>
+                                            <h3>
+                                                @foreach ($inlineSegments($block['text']) as $segment)
+                                                    @if ($segment['bold'])
+                                                        <strong>{{ $segment['text'] }}</strong>
+                                                    @else
+                                                        {{ $segment['text'] }}
+                                                    @endif
+                                                @endforeach
+                                                @if ($summaryTime)
+                                                    <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
+                                                @endif
+                                            </h3>
                                         @else
-                                            <h4>{{ $block['text'] }}</h4>
+                                            <h4>
+                                                @foreach ($inlineSegments($block['text']) as $segment)
+                                                    @if ($segment['bold'])
+                                                        <strong>{{ $segment['text'] }}</strong>
+                                                    @else
+                                                        {{ $segment['text'] }}
+                                                    @endif
+                                                @endforeach
+                                                @if ($summaryTime)
+                                                    <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
+                                                @endif
+                                            </h4>
                                         @endif
                                     @elseif ($block['type'] === 'list')
                                         <ul>
                                             @foreach ($block['items'] as $item)
-                                                <li>{{ $item }}</li>
+                                                @php
+                                                    $summaryTime = $timelineForSummaryText($item);
+                                                @endphp
+                                                <li>
+                                                    @foreach ($inlineSegments($item) as $segment)
+                                                        @if ($segment['bold'])
+                                                            <strong>{{ $segment['text'] }}</strong>
+                                                        @else
+                                                            {{ $segment['text'] }}
+                                                        @endif
+                                                    @endforeach
+                                                    @if ($summaryTime)
+                                                        <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
+                                                    @endif
+                                                </li>
                                             @endforeach
                                         </ul>
                                     @else
-                                        <p>{{ $block['text'] }}</p>
+                                        @php
+                                            $summaryTime = $timelineForSummaryText($block['text']);
+                                        @endphp
+                                        <p>
+                                            @foreach ($inlineSegments($block['text']) as $segment)
+                                                @if ($segment['bold'])
+                                                    <strong>{{ $segment['text'] }}</strong>
+                                                @else
+                                                    {{ $segment['text'] }}
+                                                @endif
+                                            @endforeach
+                                            @if ($summaryTime)
+                                                <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
+                                            @endif
+                                        </p>
                                     @endif
                                 @endforeach
                             </div>
@@ -549,43 +724,17 @@
                                 </div>
                                 <div class="lesson-mindmap-branches">
                                     @foreach ($mindMapBranches as $branch)
-                                        <section class="lesson-mindmap-branch">
-                                            <h3>
-                                                {{ $branch['title'] }}
-                                                @php
-                                                    $branchSeconds = $timeToSeconds($branch['time']);
-                                                @endphp
-                                                @if ($branch['time'] && $branchSeconds !== null)
-                                                    <button type="button" class="lesson-mindmap-time" @click="seekLessonVideo({{ $branchSeconds }})">{{ $branch['time'] }}</button>
-                                                @elseif ($branch['time'])
-                                                    <span>{{ $branch['time'] }}</span>
-                                                @endif
-                                            </h3>
+                                        <section class="lesson-mindmap-branch lesson-mindmap-tone-{{ ($loop->index % 6) + 1 }}">
+                                            <h3>{{ $branch['title'] }}</h3>
                                             @if ($branch['children'] !== [])
                                                 <ul>
                                                     @foreach ($branch['children'] as $child)
                                                         <li>
                                                             <strong>{{ $child['title'] }}</strong>
-                                                            @php
-                                                                $childSeconds = $timeToSeconds($child['time']);
-                                                            @endphp
-                                                            @if ($child['time'] && $childSeconds !== null)
-                                                                <button type="button" class="lesson-mindmap-time" @click="seekLessonVideo({{ $childSeconds }})">{{ $child['time'] }}</button>
-                                                            @elseif ($child['time'])
-                                                                <span>{{ $child['time'] }}</span>
-                                                            @endif
                                                             @if ($child['children'] !== [])
                                                                 <small>
                                                                     @foreach (collect($child['children'])->take(3) as $grandchild)
                                                                         <span>{{ $grandchild['title'] }}</span>
-                                                                        @php
-                                                                            $grandchildSeconds = $timeToSeconds($grandchild['time']);
-                                                                        @endphp
-                                                                        @if ($grandchild['time'] && $grandchildSeconds !== null)
-                                                                            <button type="button" class="lesson-mindmap-time" @click="seekLessonVideo({{ $grandchildSeconds }})">{{ $grandchild['time'] }}</button>
-                                                                        @elseif ($grandchild['time'])
-                                                                            <em>{{ $grandchild['time'] }}</em>
-                                                                        @endif
                                                                         @unless ($loop->last)
                                                                             <span aria-hidden="true"> · </span>
                                                                         @endunless

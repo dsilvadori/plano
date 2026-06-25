@@ -332,6 +332,16 @@ class CourseCatalogFoundationTest extends TestCase
         AiArtifact::query()->create([
             'source_type' => Lesson::class,
             'source_id' => $lesson->id,
+            'artifact_type' => 'summary',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'text' => "## Resumo da aula\n\n**Substantivo** e a classe que nomeia seres.",
+            ],
+        ]);
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
             'artifact_type' => 'quiz',
             'provider' => 'panda',
             'status' => 'ready',
@@ -374,6 +384,10 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('activeTab: null', false)
             ->assertSee('@click="selected = 0; revealed = true"', false)
             ->assertSee('Gabarito: Substantivo nomeia seres.')
+            ->assertSee('<strong>Substantivo</strong>', false)
+            ->assertDontSee('**Substantivo**')
+            ->assertDontSee('Momentos da aula')
+            ->assertSee('lesson-summary-inline-time', false)
             ->assertSee('seekLessonVideo(168.075)', false)
             ->assertSee('00:02:48.075')
             ->assertSee('tutorTabVisible: false', false)

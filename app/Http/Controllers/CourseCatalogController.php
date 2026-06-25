@@ -612,7 +612,7 @@ class CourseCatalogController extends Controller
             return true;
         }
 
-        return now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastAttempt)) >= 10;
+        return now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastAttempt)) >= 1;
     }
 
     protected function ensurePandaTutorAvailabilityIsCached(Lesson $lesson, PandaVideoClient $panda): void
