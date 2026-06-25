@@ -23,12 +23,52 @@ class PandaVideoClient
             ->values();
     }
 
+    public function createAiPackage(string $videoId, string $fromLang = 'auto', string $type = 'ALL_TEXT_ITEMS'): array
+    {
+        return $this->postWithAuthFallback($this->path('ai_workflow_path'), [
+            'video_id' => $videoId,
+            'from_lang' => $fromLang,
+            'type' => $type,
+        ]);
+    }
+
+    public function aiPackage(string $pullzoneName, string $videoExternalId): ?array
+    {
+        $response = Http::baseUrl(rtrim((string) config('services.panda.ai_config_base_url'), '/'))
+            ->acceptJson()
+            ->get('/' . trim($pullzoneName, '/') . '/' . $videoExternalId . '-ai.json');
+
+        if ($response->status() === 404) {
+            return null;
+        }
+
+        $response->throw();
+
+        return $response->json() ?? [];
+    }
+
+    public function playerConfig(string $pullzoneName, string $videoExternalId): ?array
+    {
+        $response = Http::baseUrl(rtrim((string) config('services.panda.ai_config_base_url'), '/'))
+            ->acceptJson()
+            ->timeout(5)
+            ->get('/' . trim($pullzoneName, '/') . '/' . $videoExternalId . '.json');
+
+        if ($response->status() === 404) {
+            return null;
+        }
+
+        $response->throw();
+
+        return $response->json() ?? [];
+    }
+
     protected function getWithAuthFallback(string $path, array $query = []): array
     {
         $apiKey = config('services.panda.api_key');
 
         if (blank($apiKey)) {
-            throw new RuntimeException('Configure PANDA_API_KEY antes de importar vídeos do Panda.');
+            throw new RuntimeException('Configure PANDA_API_KEY antes de importar vídeos.');
         }
 
         $attempts = $this->authAttempts((string) $apiKey);
@@ -51,8 +91,45 @@ class PandaVideoClient
         }
 
         throw new RuntimeException(
-            'Panda retornou 401 Unauthorized em todas as tentativas de autenticação. ' .
+            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de autenticação. ' .
             'Confira se a chave é uma API Key válida e se a API está liberada na conta. Última resposta: ' .
+            trim((string) $lastBody) . ' (status ' . $lastStatus . ')'
+        );
+    }
+
+    protected function postWithAuthFallback(string $path, array $payload = []): array
+    {
+        $apiKey = config('services.panda.api_key');
+
+        if (blank($apiKey)) {
+            throw new RuntimeException('Configure PANDA_API_KEY antes de usar a IA da aula.');
+        }
+
+        $attempts = $this->authAttempts((string) $apiKey);
+        $lastStatus = null;
+        $lastBody = null;
+
+        foreach ($attempts as $attempt) {
+            $requestPath = $attempt['query'] === []
+                ? $path
+                : $path . '?' . http_build_query($attempt['query']);
+            $response = $this->http($attempt['headers'])->post($requestPath, $payload);
+
+            if ($response->successful()) {
+                return $response->json() ?? [];
+            }
+
+            $lastStatus = $response->status();
+            $lastBody = $response->body();
+
+            if ($response->status() !== 401) {
+                $response->throw();
+            }
+        }
+
+        throw new RuntimeException(
+            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de autenticação da IA. ' .
+            'Confira a chave da API e permissões da conta. Última resposta: ' .
             trim((string) $lastBody) . ' (status ' . $lastStatus . ')'
         );
     }

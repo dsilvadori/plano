@@ -36,7 +36,7 @@ class CourseModulesTable
                 TextColumn::make('online_lessons_count')->label('Aulas online')->counts('onlineLessons'),
                 TextColumn::make('workload_minutes')->label('Minutos')->sortable(),
                 TextColumn::make('sort_order')->label('Ordem')->sortable(),
-                TextColumn::make('panda_folder_id')->label('Pasta Panda')->toggleable(),
+                TextColumn::make('panda_folder_id')->label('Pasta do provedor')->toggleable(),
                 IconColumn::make('is_active')->label('Ativo')->boolean(),
             ])
             ->filters([

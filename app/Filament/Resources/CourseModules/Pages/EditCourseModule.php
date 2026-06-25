@@ -20,13 +20,13 @@ class EditCourseModule extends EditRecord
     {
         return [
             Action::make('importPanda')
-                ->label('Importar Panda')
+                ->label('Importar vídeos')
                 ->icon('heroicon-o-video-camera')
-                ->modalHeading('Importar aulas do Panda para este módulo')
-                ->modalDescription('Informe a pasta do Panda. Cada vídeo será criado ou atualizado como aula reutilizável e vinculado a este módulo.')
+                ->modalHeading('Importar aulas da integração de vídeo')
+                ->modalDescription('Informe a pasta do provedor de vídeo. Cada vídeo será criado ou atualizado como aula reutilizável e vinculado a este módulo.')
                 ->form([
                     TextInput::make('panda_folder_id')
-                        ->label('ID da pasta no Panda')
+                        ->label('ID da pasta no provedor')
                         ->default(fn () => $this->record->panda_folder_id)
                         ->required(),
                     Select::make('module_type')
@@ -60,13 +60,13 @@ class EditCourseModule extends EditRecord
                         );
 
                         Notification::make()
-                            ->title('Aulas importadas do Panda.')
+                            ->title('Aulas importadas da integração de vídeo.')
                             ->body('Vídeos: ' . ($run->summary['videos'] ?? 0) . '. Criadas: ' . ($run->summary['created'] ?? 0) . '. Atualizadas: ' . ($run->summary['updated'] ?? 0) . '.')
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {
                         Notification::make()
-                            ->title('Não foi possível importar do Panda.')
+                            ->title('Não foi possível importar os vídeos.')
                             ->body($exception->getMessage())
                             ->danger()
                             ->send();

@@ -2,7 +2,11 @@
     $playerUrl = $lesson->player_url;
     $isCompleted = $progress->status === 'completed';
     $progressPercentage = (int) ($progressSummary['percentage'] ?? 0);
-    $visibleAiArtifacts = $aiArtifacts->where('artifact_type', '!=', 'panda_payload')->keyBy('artifact_type');
+    $providerPriority = ['panda' => 1, 'manual' => 2];
+    $visibleAiArtifacts = $aiArtifacts
+        ->where('artifact_type', '!=', 'panda_payload')
+        ->sortBy(fn ($artifact) => $providerPriority[$artifact->provider] ?? 0)
+        ->keyBy('artifact_type');
     $artifactContent = fn (string $type) => $visibleAiArtifacts->get($type)?->content;
 
     $contentToText = function (mixed $value) use (&$contentToText): string {
@@ -14,7 +18,7 @@
             return '';
         }
 
-        foreach (['text', 'content', 'summary', 'abstract', 'answer', 'description'] as $key) {
+        foreach (['text', 'content', 'summary', 'abstract', 'answer', 'description', 'enunciate', 'question', 'title', 'theme'] as $key) {
             if (isset($value[$key])) {
                 $text = $contentToText($value[$key]);
 
@@ -30,6 +34,50 @@
             ->join("\n\n");
     };
 
+    $summaryBlocks = function (string $markdown): array {
+        $markdown = trim(str_replace('```', '', $markdown));
+        $blocks = [];
+        $currentList = [];
+
+        foreach (preg_split('/\R/', $markdown) ?: [] as $line) {
+            $line = trim($line);
+
+            if ($line === '') {
+                if ($currentList !== []) {
+                    $blocks[] = ['type' => 'list', 'items' => $currentList];
+                    $currentList = [];
+                }
+
+                continue;
+            }
+
+            if (str_starts_with($line, '- ')) {
+                $currentList[] = trim(substr($line, 2));
+
+                continue;
+            }
+
+            if ($currentList !== []) {
+                $blocks[] = ['type' => 'list', 'items' => $currentList];
+                $currentList = [];
+            }
+
+            $level = str_starts_with($line, '#### ') ? 4 : (str_starts_with($line, '### ') ? 3 : (str_starts_with($line, '## ') ? 2 : (str_starts_with($line, '# ') ? 1 : 0)));
+
+            if ($level > 0) {
+                $blocks[] = ['type' => 'heading', 'level' => $level, 'text' => trim(preg_replace('/^#{1,4}\s+/', '', $line))];
+            } else {
+                $blocks[] = ['type' => 'paragraph', 'text' => $line];
+            }
+        }
+
+        if ($currentList !== []) {
+            $blocks[] = ['type' => 'list', 'items' => $currentList];
+        }
+
+        return $blocks;
+    };
+
     $normalizeQuizItems = function (mixed $value) use (&$normalizeQuizItems, $contentToText): array {
         if (! is_array($value)) {
             return [];
@@ -41,12 +89,13 @@
             return [];
         }
 
-        if (isset($items['question']) || isset($items['enunciado']) || isset($items['title'])) {
+        if (isset($items['question']) || isset($items['enunciado']) || isset($items['enunciate']) || isset($items['title'])) {
             $items = [$items];
         }
 
         return collect($items)
             ->filter(fn ($item) => is_array($item) || is_string($item))
+            ->values()
             ->map(function ($item, int $index) use ($contentToText) {
                 if (is_string($item)) {
                     return [
@@ -58,11 +107,39 @@
                 }
 
                 $options = $item['options'] ?? $item['alternatives'] ?? $item['alternativas'] ?? [];
+                $normalizedOptions = is_array($options)
+                    ? collect($options)
+                        ->map(fn ($option) => [
+                            'text' => is_array($option) ? $contentToText($option) : (string) $option,
+                            'correct' => is_array($option) ? (bool) ($option['correct'] ?? $option['is_correct'] ?? false) : false,
+                        ])
+                        ->filter(fn (array $option) => $option['text'] !== '')
+                        ->values()
+                        ->all()
+                    : [];
+                $correctOption = collect($normalizedOptions)->firstWhere('correct', true);
+                $rawAnswer = $item['answer'] ?? $item['correct_answer'] ?? $item['gabarito'] ?? null;
+                $answerBool = null;
+
+                if (is_bool($rawAnswer)) {
+                    $answerBool = $rawAnswer;
+                } elseif (is_string($rawAnswer)) {
+                    $normalizedAnswer = str($rawAnswer)->lower()->ascii()->trim()->toString();
+
+                    if (in_array($normalizedAnswer, ['certo', 'correto', 'true', 'verdadeiro'], true)) {
+                        $answerBool = true;
+                    } elseif (in_array($normalizedAnswer, ['errado', 'incorreto', 'false', 'falso'], true)) {
+                        $answerBool = false;
+                    }
+                }
 
                 return [
-                    'question' => $contentToText($item['question'] ?? $item['enunciado'] ?? $item['title'] ?? ('Questão ' . ($index + 1))),
-                    'options' => is_array($options) ? array_values($options) : [],
-                    'answer' => $contentToText($item['answer'] ?? $item['correct_answer'] ?? $item['gabarito'] ?? ''),
+                    'question' => $contentToText($item['question'] ?? $item['enunciado'] ?? $item['enunciate'] ?? $item['title'] ?? ('Questão ' . ($index + 1))),
+                    'options' => $normalizedOptions,
+                    'answer' => $answerBool === null
+                        ? $contentToText($rawAnswer ?? ($correctOption['text'] ?? ''))
+                        : ($answerBool ? 'Certo' : 'Errado'),
+                    'answer_bool' => $answerBool,
                     'comment' => $contentToText($item['comment'] ?? $item['comentario'] ?? $item['explanation'] ?? ''),
                 ];
             })
@@ -70,21 +147,48 @@
             ->all();
     };
 
-    $normalizeMindMapBranches = function (mixed $value) use (&$normalizeMindMapBranches, $contentToText): array {
+    $mindMapChildren = function (mixed $children) use (&$mindMapChildren, $contentToText): array {
+        if (! is_array($children)) {
+            return [];
+        }
+
+        return collect($children)
+            ->map(function ($child) use (&$mindMapChildren, $contentToText) {
+                if (is_string($child)) {
+                    return ['title' => $child, 'time' => null, 'children' => []];
+                }
+
+                if (! is_array($child)) {
+                    return null;
+                }
+
+                return [
+                    'title' => $contentToText($child['text'] ?? $child['title'] ?? $child['label'] ?? $child['name'] ?? ''),
+                    'time' => $child['time'] ?? null,
+                    'children' => $mindMapChildren($child['children'] ?? $child['items'] ?? $child['topics'] ?? $child['subtopics'] ?? []),
+                ];
+            })
+            ->filter(fn ($item) => is_array($item) && $item['title'] !== '')
+            ->values()
+            ->all();
+    };
+
+    $normalizeMindMapBranches = function (mixed $value) use ($mindMapChildren, $contentToText): array {
         if (! is_array($value)) {
             return [];
         }
 
-        $items = $value['nodes'] ?? $value['items'] ?? $value['topics'] ?? $value['mindmap'] ?? $value['mind_map'] ?? $value;
+        $root = $value['mindmap'] ?? $value['mind_map'] ?? $value;
+        $items = $root['children'] ?? $root['nodes'] ?? $root['items'] ?? $root['topics'] ?? $root;
 
         if (! is_array($items)) {
             return [];
         }
 
         return collect($items)
-            ->map(function ($item, $key) use ($contentToText) {
+            ->map(function ($item, $key) use ($mindMapChildren, $contentToText) {
                 if (is_string($item)) {
-                    return ['title' => $item, 'children' => []];
+                    return ['title' => $item, 'time' => null, 'children' => []];
                 }
 
                 if (! is_array($item)) {
@@ -94,36 +198,65 @@
                 $children = $item['children'] ?? $item['items'] ?? $item['topics'] ?? $item['subtopics'] ?? [];
 
                 return [
-                    'title' => $contentToText($item['title'] ?? $item['label'] ?? $item['name'] ?? (is_string($key) ? $key : 'Tópico')),
-                    'children' => is_array($children)
-                        ? collect($children)->map(fn ($child) => $contentToText($child))->filter()->take(4)->values()->all()
-                        : [],
+                    'title' => $contentToText($item['text'] ?? $item['title'] ?? $item['label'] ?? $item['name'] ?? (is_string($key) ? $key : 'Tópico')),
+                    'time' => $item['time'] ?? null,
+                    'children' => $mindMapChildren($children),
                 ];
             })
             ->filter(fn ($item) => is_array($item) && $item['title'] !== '')
-            ->take(8)
             ->values()
             ->all();
+    };
+
+    $timeToSeconds = function (mixed $time): ?float {
+        if (! is_string($time) || trim($time) === '') {
+            return null;
+        }
+
+        $parts = array_reverse(explode(':', trim($time)));
+        $seconds = 0.0;
+
+        foreach ($parts as $index => $part) {
+            if (! is_numeric($part)) {
+                return null;
+            }
+
+            $seconds += (float) $part * (60 ** $index);
+        }
+
+        return round($seconds, 3);
     };
 
     $summaryText = $contentToText($artifactContent('summary') ?? $artifactContent('abstract') ?? null);
     $transcriptText = $contentToText($artifactContent('transcript') ?? null);
     $quizItems = $normalizeQuizItems($artifactContent('quiz') ?? null);
-    $mindMapBranches = $normalizeMindMapBranches($artifactContent('mindmap') ?? $artifactContent('mind_map') ?? null);
+    $mindMapContent = $artifactContent('mindmap') ?? $artifactContent('mind_map') ?? null;
+    $mindMapTitle = is_array($mindMapContent) ? $contentToText($mindMapContent['theme'] ?? $mindMapContent['title'] ?? null) : '';
+    $mindMapBranches = $normalizeMindMapBranches($mindMapContent);
 
     if ($summaryText === '' && $lesson->description) {
         $summaryText = $lesson->description;
     }
+
+    $summaryBlocks = $summaryText !== '' ? $summaryBlocks($summaryText) : [];
+    $mindMapTitle = $mindMapTitle !== '' ? $mindMapTitle : $lesson->title;
 
     if ($mindMapBranches === [] && $summaryText !== '') {
         $mindMapBranches = collect(preg_split('/(?<=[.!?])\s+/', $summaryText) ?: [])
             ->map(fn ($sentence) => trim($sentence))
             ->filter()
             ->take(5)
-            ->map(fn ($sentence) => ['title' => $sentence, 'children' => []])
+            ->map(fn ($sentence) => ['title' => $sentence, 'time' => null, 'children' => []])
             ->values()
             ->all();
     }
+
+    $cachedAiTabs = [
+        'summary' => $summaryBlocks !== [],
+        'quiz' => $quizItems !== [],
+        'mindmap' => $mindMapBranches !== [],
+        'question' => (bool) $pandaTutorUrl,
+    ];
 @endphp
 
 <x-app-layout>
@@ -159,10 +292,16 @@
                     {{ session('status') }}
                 </div>
             @endif
+            @if (session('error'))
+                <div class="mb-6 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
+                    {{ session('error') }}
+                </div>
+            @endif
 
-            <div class="overflow-hidden rounded-3xl border border-white/10 bg-slate-950">
+            <div id="lesson-video-frame" class="overflow-hidden rounded-3xl border border-white/10 bg-slate-950">
                 @if ($playerUrl && in_array($lesson->type, ['video', 'mixed'], true))
                     <iframe
+                        id="lesson-player"
                         src="{{ $playerUrl }}"
                         title="{{ $lesson->title }}"
                         class="aspect-video w-full"
@@ -175,7 +314,7 @@
                     <div class="flex aspect-video flex-col items-center justify-center p-8 text-center">
                         <p class="text-sm uppercase tracking-[0.25em] text-amber-300">{{ ucfirst($lesson->type) }}</p>
                         <h2 class="mt-3 text-2xl font-semibold text-white">Conteúdo em preparação</h2>
-                        <p class="mt-3 max-w-lg text-sm text-slate-400">O player Panda, PDF ou material digital será exibido aqui assim que estiver cadastrado para esta aula.</p>
+                        <p class="mt-3 max-w-lg text-sm text-slate-400">O vídeo, PDF ou material digital será exibido aqui assim que estiver cadastrado para esta aula.</p>
                     </div>
                 @endif
             </div>
@@ -210,7 +349,51 @@
                 </form>
             </div>
 
-            <div class="lesson-ai-panel mt-6" x-data="{ activeTab: 'summary' }">
+            <div
+                class="lesson-ai-panel mt-6"
+                x-data="{
+                    activeTab: null,
+                    cachedTabs: @js($cachedAiTabs),
+                    readyTabs: {},
+                    loadingTabs: {},
+                    loadingTimers: {},
+                    openAiTab(tab) {
+                        this.activeTab = tab;
+
+                        if (this.readyTabs[tab]) {
+                            return;
+                        }
+
+                        if (! this.cachedTabs[tab] || tab === 'question') {
+                            this.readyTabs[tab] = true;
+                            return;
+                        }
+
+                        this.loadingTabs[tab] = true;
+                        clearTimeout(this.loadingTimers[tab]);
+                        this.loadingTimers[tab] = setTimeout(() => {
+                            this.readyTabs[tab] = true;
+                            this.loadingTabs[tab] = false;
+                        }, 2500);
+                    },
+                    isTabLoading(tab) {
+                        return this.activeTab === tab && this.loadingTabs[tab] && ! this.readyTabs[tab];
+                    },
+                    isTabReady(tab) {
+                        return this.activeTab === tab && this.readyTabs[tab];
+                    },
+                    seekLessonVideo(seconds) {
+                        const frame = document.getElementById('lesson-player');
+                        const wrapper = document.getElementById('lesson-video-frame');
+
+                        if (! frame?.contentWindow) return;
+
+                        frame.contentWindow.postMessage({ type: 'currentTime', parameter: seconds }, '*');
+                        frame.contentWindow.postMessage({ type: 'play' }, '*');
+                        wrapper?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    },
+                }"
+            >
                 <div class="flex flex-col gap-3 border-b border-white/10 p-5 lg:flex-row lg:items-center lg:justify-between">
                     <div>
                         <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Assistente da aula</p>
@@ -219,25 +402,46 @@
                 </div>
 
                 <div class="lesson-ai-tabs" role="tablist" aria-label="Recursos da aula">
-                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'summary' }" @click="activeTab = 'summary'">Resumo</button>
-                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'quiz' }" @click="activeTab = 'quiz'">Questões</button>
-                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'mindmap' }" @click="activeTab = 'mindmap'">Mapa mental</button>
-                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'question' }" @click="activeTab = 'question'">Tirar dúvidas</button>
+                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'summary' }" @click="openAiTab('summary')">Resumo</button>
+                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'quiz' }" @click="openAiTab('quiz')">Questões</button>
+                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'mindmap' }" @click="openAiTab('mindmap')">Mapa mental</button>
+                    @if ($pandaTutorUrl)
+                        <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'question' }" @click="openAiTab('question')">Tirar dúvidas</button>
+                    @endif
                 </div>
 
                 <div class="p-5">
-                    <div x-show="activeTab === 'summary'" x-cloak>
-                        @if ($summaryText !== '')
+                    <div x-show="isTabLoading('summary')" x-cloak class="lesson-ai-loading">
+                        <span></span>
+                        Gerando resumo da aula...
+                    </div>
+
+                    <div x-show="isTabReady('summary')" x-cloak>
+                        @if ($summaryBlocks !== [])
                             <div class="lesson-ai-prose">
-                                @foreach (preg_split('/\n{2,}/', $summaryText) ?: [] as $paragraph)
-                                    @if (trim($paragraph) !== '')
-                                        <p>{{ trim($paragraph) }}</p>
+                                @foreach ($summaryBlocks as $block)
+                                    @if ($block['type'] === 'heading')
+                                        @if ($block['level'] <= 1)
+                                            <h2>{{ $block['text'] }}</h2>
+                                        @elseif ($block['level'] === 2)
+                                            <h3>{{ $block['text'] }}</h3>
+                                        @else
+                                            <h4>{{ $block['text'] }}</h4>
+                                        @endif
+                                    @elseif ($block['type'] === 'list')
+                                        <ul>
+                                            @foreach ($block['items'] as $item)
+                                                <li>{{ $item }}</li>
+                                            @endforeach
+                                        </ul>
+                                    @else
+                                        <p>{{ $block['text'] }}</p>
                                     @endif
                                 @endforeach
                             </div>
                         @else
                             <div class="lesson-ai-empty">
-                                O resumo desta aula ainda não foi gerado. Quando o artefato `summary` vier do Panda ou da nossa IA, ele aparecerá aqui.
+                                O resumo desta aula ainda não foi gerado. Quando o artefato `summary` estiver disponível, ele aparecerá aqui.
                             </div>
                         @endif
 
@@ -251,35 +455,55 @@
                         @endif
                     </div>
 
-                    <div x-show="activeTab === 'quiz'" x-cloak>
+                    <div x-show="isTabLoading('quiz')" x-cloak class="lesson-ai-loading">
+                        <span></span>
+                        Gerando questões da aula...
+                    </div>
+
+                    <div x-show="isTabReady('quiz')" x-cloak>
                         @if ($quizItems !== [])
                             <div class="space-y-4">
                                 @foreach ($quizItems as $index => $item)
-                                    <article class="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                                    <article class="rounded-2xl border border-white/10 bg-slate-950/50 p-4" x-data="{ revealed: false, selected: null }">
                                         <p class="text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">Questão {{ $index + 1 }}</p>
                                         <h3 class="mt-2 text-base font-semibold leading-6 text-white">{{ $item['question'] }}</h3>
 
                                         @if ($item['options'] !== [])
                                             <div class="mt-4 grid gap-2">
                                                 @foreach ($item['options'] as $optionIndex => $option)
-                                                    <div class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
+                                                    <button
+                                                        type="button"
+                                                        @click="selected = {{ $optionIndex }}; revealed = true"
+                                                        class="w-full rounded-xl border px-3 py-2 text-left text-sm transition"
+                                                        :class="revealed && {{ $option['correct'] ? 'true' : 'false' }}
+                                                            ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100'
+                                                            : (selected === {{ $optionIndex }} ? 'border-rose-400/30 bg-rose-400/10 text-rose-100' : 'border-white/10 bg-white/5 text-slate-200 hover:border-sky-400/30 hover:bg-sky-400/10')"
+                                                    >
                                                         <span class="font-semibold text-sky-100">{{ chr(65 + $optionIndex) }}.</span>
-                                                        {{ is_array($option) ? $contentToText($option) : $option }}
-                                                    </div>
+                                                        {{ $option['text'] }}
+                                                    </button>
                                                 @endforeach
+                                            </div>
+                                        @elseif ($item['answer_bool'] !== null)
+                                            <div class="mt-4 grid grid-cols-2 gap-2 sm:max-w-sm">
+                                                <button type="button" @click="selected = true; revealed = true" class="rounded-xl border px-3 py-2 text-center text-sm font-semibold transition" :class="revealed && {{ $item['answer_bool'] ? 'true' : 'false' }} ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100' : (selected === true ? 'border-rose-400/30 bg-rose-400/10 text-rose-100' : 'border-white/10 bg-white/5 text-slate-300 hover:border-sky-400/30 hover:bg-sky-400/10')">
+                                                    Certo
+                                                </button>
+                                                <button type="button" @click="selected = false; revealed = true" class="rounded-xl border px-3 py-2 text-center text-sm font-semibold transition" :class="revealed && {{ ! $item['answer_bool'] ? 'true' : 'false' }} ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100' : (selected === false ? 'border-rose-400/30 bg-rose-400/10 text-rose-100' : 'border-white/10 bg-white/5 text-slate-300 hover:border-sky-400/30 hover:bg-sky-400/10')">
+                                                    Errado
+                                                </button>
                                             </div>
                                         @endif
 
                                         @if ($item['answer'] !== '' || $item['comment'] !== '')
-                                            <details class="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3">
-                                                <summary class="cursor-pointer text-sm font-semibold text-emerald-100">Ver gabarito e comentário</summary>
+                                            <div x-show="revealed" x-transition class="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3">
                                                 @if ($item['answer'] !== '')
                                                     <p class="mt-3 text-sm font-semibold text-emerald-100">Gabarito: {{ $item['answer'] }}</p>
                                                 @endif
                                                 @if ($item['comment'] !== '')
                                                     <p class="mt-2 text-sm leading-6 text-slate-200">{{ $item['comment'] }}</p>
                                                 @endif
-                                            </details>
+                                            </div>
                                         @endif
                                     </article>
                                 @endforeach
@@ -291,21 +515,64 @@
                         @endif
                     </div>
 
-                    <div x-show="activeTab === 'mindmap'" x-cloak>
+                    <div x-show="isTabLoading('mindmap')" x-cloak class="lesson-ai-loading">
+                        <span></span>
+                        Gerando mapa mental da aula...
+                    </div>
+
+                    <div x-show="isTabReady('mindmap')" x-cloak>
                         @if ($mindMapBranches !== [])
                             <div class="lesson-mindmap" aria-label="Mapa mental da aula">
                                 <div class="lesson-mindmap-center">
-                                    <span>Aula</span>
-                                    <strong>{{ $lesson->title }}</strong>
+                                    <span>Mapa mental</span>
+                                    <strong>{{ $mindMapTitle }}</strong>
                                 </div>
                                 <div class="lesson-mindmap-branches">
                                     @foreach ($mindMapBranches as $branch)
                                         <section class="lesson-mindmap-branch">
-                                            <h3>{{ $branch['title'] }}</h3>
+                                            <h3>
+                                                {{ $branch['title'] }}
+                                                @php
+                                                    $branchSeconds = $timeToSeconds($branch['time']);
+                                                @endphp
+                                                @if ($branch['time'] && $branchSeconds !== null)
+                                                    <button type="button" class="lesson-mindmap-time" @click="seekLessonVideo({{ $branchSeconds }})">{{ $branch['time'] }}</button>
+                                                @elseif ($branch['time'])
+                                                    <span>{{ $branch['time'] }}</span>
+                                                @endif
+                                            </h3>
                                             @if ($branch['children'] !== [])
                                                 <ul>
                                                     @foreach ($branch['children'] as $child)
-                                                        <li>{{ $child }}</li>
+                                                        <li>
+                                                            <strong>{{ $child['title'] }}</strong>
+                                                            @php
+                                                                $childSeconds = $timeToSeconds($child['time']);
+                                                            @endphp
+                                                            @if ($child['time'] && $childSeconds !== null)
+                                                                <button type="button" class="lesson-mindmap-time" @click="seekLessonVideo({{ $childSeconds }})">{{ $child['time'] }}</button>
+                                                            @elseif ($child['time'])
+                                                                <span>{{ $child['time'] }}</span>
+                                                            @endif
+                                                            @if ($child['children'] !== [])
+                                                                <small>
+                                                                    @foreach (collect($child['children'])->take(3) as $grandchild)
+                                                                        <span>{{ $grandchild['title'] }}</span>
+                                                                        @php
+                                                                            $grandchildSeconds = $timeToSeconds($grandchild['time']);
+                                                                        @endphp
+                                                                        @if ($grandchild['time'] && $grandchildSeconds !== null)
+                                                                            <button type="button" class="lesson-mindmap-time" @click="seekLessonVideo({{ $grandchildSeconds }})">{{ $grandchild['time'] }}</button>
+                                                                        @elseif ($grandchild['time'])
+                                                                            <em>{{ $grandchild['time'] }}</em>
+                                                                        @endif
+                                                                        @unless ($loop->last)
+                                                                            <span aria-hidden="true"> · </span>
+                                                                        @endunless
+                                                                    @endforeach
+                                                                </small>
+                                                            @endif
+                                                        </li>
                                                     @endforeach
                                                 </ul>
                                             @endif
@@ -315,22 +582,27 @@
                             </div>
                         @else
                             <div class="lesson-ai-empty">
-                                O mapa mental ainda não foi gerado. Assim que o artefato `mindmap` vier da IA, ele será apresentado aqui em formato visual.
+                                O mapa mental ainda não foi gerado. Assim que o artefato `mindmap` estiver disponível, ele será apresentado aqui em formato visual.
                             </div>
                         @endif
                     </div>
 
-                    <div x-show="activeTab === 'question'" x-cloak>
-                        <div class="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                            <label for="lesson-ai-question" class="text-sm font-semibold text-white">Sua dúvida sobre a aula</label>
-                            <textarea id="lesson-ai-question" rows="4" maxlength="700" class="mt-3 w-full rounded-2xl border-white/10 bg-slate-950/80 text-sm text-slate-100 placeholder:text-slate-500" placeholder="Digite uma pergunta objetiva sobre o conteúdo desta aula"></textarea>
-                            <div class="mt-4 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
-                                A interface está pronta para receber o tira-dúvidas. Falta conectar o endpoint de conversa com IA usando a transcrição/resumo desta aula como contexto.
+                    <div x-show="isTabReady('question')" x-cloak>
+                        @if ($pandaTutorUrl)
+                            <div class="lesson-tutor-frame">
+                                <iframe
+                                    src="{{ $pandaTutorUrl }}"
+                                    title="Tutor da aula"
+                                    class="h-full w-full"
+                                    allow="clipboard-write"
+                                    referrerpolicy="strict-origin-when-cross-origin"
+                                ></iframe>
                             </div>
-                            <button type="button" disabled class="mt-4 w-full rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-slate-400">
-                                Enviar pergunta
-                            </button>
-                        </div>
+                        @else
+                            <div class="lesson-ai-empty">
+                                O tutor desta aula ainda não está disponível para este vídeo.
+                            </div>
+                        @endif
                     </div>
                 </div>
             </div>

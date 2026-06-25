@@ -62,8 +62,8 @@ class CourseModuleForm
                     ->default(0)
                     ->required(),
                 TextInput::make('panda_folder_id')
-                    ->label('ID da pasta no Panda')
-                    ->helperText('Preparado para a sincronização futura com Panda Video.'),
+                    ->label('ID da pasta no provedor')
+                    ->helperText('Preparado para a sincronização futura com a integração de vídeo.'),
                 Toggle::make('is_active')
                     ->label('Ativo')
                     ->default(true),

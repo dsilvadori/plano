@@ -32,7 +32,7 @@ class PandaCourseImporter
             DB::transaction(function () use ($course, $folderId, $moduleName, $lessonStatus, $moduleType, $run, $videos): void {
                 $resolvedModuleName = $moduleName
                     ?: (string) ($videos->first()['folder_name'] ?? null)
-                    ?: 'Panda - Pasta ' . $folderId;
+                    ?: 'Pasta de vídeos ' . $folderId;
 
                 $module = CourseModule::updateOrCreate(
                     [
@@ -67,7 +67,7 @@ class PandaCourseImporter
                         'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
                         'title' => $video['title'],
                         'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($video['title'], $index + 1),
-                        'description' => $video['description'] ?: 'Aula importada do Panda Video.',
+                        'description' => $video['description'] ?: 'Aula importada da integração de vídeo.',
                         'type' => 'video',
                         'thumbnail_url' => $video['thumbnail_url'],
                         'duration_seconds' => $video['duration_seconds'],
@@ -167,7 +167,7 @@ class PandaCourseImporter
                         'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
                         'title' => $video['title'],
                         'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($video['title'], $index + 1),
-                        'description' => $video['description'] ?: 'Aula importada do Panda Video.',
+                        'description' => $video['description'] ?: 'Aula importada da integração de vídeo.',
                         'type' => 'video',
                         'thumbnail_url' => $video['thumbnail_url'],
                         'duration_seconds' => $video['duration_seconds'],
@@ -276,7 +276,7 @@ class PandaCourseImporter
         $minutes = (int) ceil(((int) ($video['duration_seconds'] ?? 0)) / 60);
 
         return [
-            'name' => trim((string) ($video['title'] ?? '')) ?: 'Aula Panda ' . ($index + 1),
+            'name' => trim((string) ($video['title'] ?? '')) ?: 'Aula importada ' . ($index + 1),
             'minutes' => max(1, $minutes),
         ];
     }

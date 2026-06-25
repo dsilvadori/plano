@@ -21,10 +21,10 @@ class ListCourseModules extends ListRecords
     {
         return [
             Action::make('importPanda')
-                ->label('Importar Panda')
+                ->label('Importar vídeos')
                 ->icon('heroicon-o-video-camera')
-                ->modalHeading('Importar módulo do Panda')
-                ->modalDescription('Informe o nome do módulo já cadastrado e a pasta do Panda. Se existir módulo com o mesmo nome, ele será atualizado; se não existir, será criado no curso de referência.')
+                ->modalHeading('Importar módulo da integração de vídeo')
+                ->modalDescription('Informe o nome do módulo já cadastrado e a pasta do provedor de vídeo. Se existir módulo com o mesmo nome, ele será atualizado; se não existir, será criado no curso de referência.')
                 ->form([
                     Select::make('course_id')
                         ->label('Curso de referência')
@@ -48,7 +48,7 @@ class ListCourseModules extends ListRecords
                         ->default('specific')
                         ->required(),
                     TextInput::make('panda_folder_id')
-                        ->label('ID da pasta no Panda')
+                        ->label('ID da pasta no provedor')
                         ->required(),
                     Select::make('lesson_status')
                         ->label('Status inicial das aulas')
@@ -71,13 +71,13 @@ class ListCourseModules extends ListRecords
                         );
 
                         Notification::make()
-                            ->title('Módulo importado do Panda.')
+                            ->title('Módulo importado da integração de vídeo.')
                             ->body('Vídeos: ' . ($run->summary['videos'] ?? 0) . '. Criadas: ' . ($run->summary['created'] ?? 0) . '. Atualizadas: ' . ($run->summary['updated'] ?? 0) . '.')
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {
                         Notification::make()
-                            ->title('Não foi possível importar do Panda.')
+                            ->title('Não foi possível importar os vídeos.')
                             ->body($exception->getMessage())
                             ->danger()
                             ->send();

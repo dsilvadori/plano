@@ -12,13 +12,13 @@ Unificar em uma mesma experiencia:
 - Materiais em PDF/livro digital.
 - Banco de questoes interativo.
 - Resumos, mapas mentais, questoes e tira-duvidas com IA.
-- Integracao com Panda Video para hospedagem, player, thumbnails e importacao de aulas.
+- Integracao com provedor de video para hospedagem, player, thumbnails e importacao de aulas.
 - Home customizavel pelo admin com cursos em destaque, categorias, esferas e niveis de escolaridade.
 
 ## Principios
 
 - A plataforma local e a fonte da verdade pedagogica: cursos, modulos, aulas, materiais, vinculos com plano, acesso dos alunos, progresso e conteudos gerados por IA.
-- O Panda Video e a fonte de midia: video, player, thumbnail, duracao, status de processamento e metadados tecnicos.
+- O provedor de video e a fonte de midia: video, player, thumbnail, duracao, status de processamento e metadados tecnicos.
 - O plano de estudos deve se vincular a aulas internas (`lessons`) e nunca depender diretamente do ID do Panda.
 - Aulas e modulos devem ser reutilizaveis. Cursos sao montados a partir de modulos existentes, e modulos apontam para aulas existentes. A mesma aula interna pode aparecer em varios modulos/cursos, principalmente quando vier do mesmo `panda_video_id`.
 - Tudo que for importado deve ser auditavel, reversivel quando possivel e revisavel pelo admin antes de publicar.
@@ -175,7 +175,7 @@ Unificar em uma mesma experiencia:
    - `payload`
    - `error_message`
 
-## Integracao com Panda Video
+## Integracao com Provedor de Video
 
 ### Estrategia
 
@@ -251,7 +251,7 @@ Se o Panda disponibilizar transcricao, resumo ou questoes por IA:
    - `source_type`: lesson, material, question, course, module
    - `source_id`
    - `artifact_type`: summary, mindmap, quiz, explanation, transcript, embeddings
-   - `provider`: panda, openai, manual, other
+   - `provider`: panda, manual, other
    - `status`: pending, processing, ready, failed, approved
    - `content`
    - `metadata`
@@ -749,7 +749,7 @@ Criterios de aceite:
 - Sistema mostra gabarito e comentario.
 - Resultado fica salvo no historico.
 
-### Fase 11 - Preparacao SaaS
+password### Fase 11 - Preparacao SaaS
 
 Objetivo: deixar arquitetura pronta para multiplas organizacoes.
 
@@ -1019,7 +1019,7 @@ Criterios de aceite:
 - [ ] Confirmar se `courses` atual do plano pode ser reaproveitada ou se precisa ser separada de `online_courses`.
 - [ ] Confirmar formato oficial da planilha.
 - [ ] Confirmar provider inicial de IA.
-- [ ] Confirmar endpoints reais do Panda Video.
+- [ ] Confirmar endpoints reais do provedor de video.
 - [ ] Confirmar onde thumbnails e PDFs serao armazenados.
 - [ ] Confirmar regra de matricula vinda de checkout/webhook.
 - [ ] Confirmar se curso bloqueado aparece para todos ou apenas por regras de catalogo.

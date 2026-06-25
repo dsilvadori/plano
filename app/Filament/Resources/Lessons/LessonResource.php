@@ -99,7 +99,7 @@ class LessonResource extends Resource
                         ->default(0)
                         ->required(),
                     TextInput::make('panda_folder_id')
-                        ->label('ID da pasta no Panda'),
+                        ->label('ID da pasta no provedor'),
                 ])
                 ->createOptionUsing(function (array $data): int {
                     return CourseModule::create([
@@ -155,7 +155,7 @@ class LessonResource extends Resource
                 ->label('URL da thumbnail')
                 ->url()
                 ->maxLength(2048)
-                ->helperText('Pode vir diretamente do Panda Video.'),
+                ->helperText('Pode vir diretamente da integração de vídeo.'),
             TextInput::make('duration_seconds')
                 ->label('Duração em segundos')
                 ->numeric()
@@ -167,18 +167,18 @@ class LessonResource extends Resource
                 ->default(0)
                 ->required(),
             TextInput::make('panda_video_id')
-                ->label('ID do vídeo no Panda')
-                ->helperText('Preparado para importação/sincronização com Panda Video.'),
+                ->label('ID do vídeo no provedor')
+                ->helperText('Preparado para importação/sincronização com a integração de vídeo.'),
             TextInput::make('panda_embed_url')
-                ->label('URL de embed Panda')
+                ->label('URL de embed')
                 ->url()
                 ->maxLength(2048),
             TextInput::make('panda_player_url')
-                ->label('URL do player Panda')
+                ->label('URL do player')
                 ->url()
                 ->maxLength(2048),
             TextInput::make('panda_status')
-                ->label('Status no Panda'),
+                ->label('Status no provedor'),
         ]);
     }
 
@@ -211,7 +211,7 @@ class LessonResource extends Resource
                     }),
                 TextColumn::make('duration_minutes')->label('Min')->sortable(query: fn ($query, $direction) => $query->orderBy('duration_seconds', $direction)),
                 TextColumn::make('sort_order')->label('Ordem')->sortable(),
-                TextColumn::make('panda_video_id')->label('Panda ID')->searchable()->toggleable(),
+                TextColumn::make('panda_video_id')->label('ID do provedor')->searchable()->toggleable(),
             ])
             ->filters([
                 SelectFilter::make('course_id')

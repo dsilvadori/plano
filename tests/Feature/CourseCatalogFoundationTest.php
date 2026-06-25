@@ -6,11 +6,13 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
+use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\LessonProgress;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\User;
+use App\Services\PandaVideoClient;
 use App\Services\StudyPlanGenerator;
 use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -292,5 +294,285 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('01 - Conceitos Iniciais')
             ->assertSee('02 - Terminologias')
             ->assertSeeInOrder(['01 - Conceitos Iniciais', '02 - Terminologias']);
+    }
+
+    public function test_lesson_page_renders_interactive_ai_questions(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'status' => 'published',
+        ]);
+
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'quiz',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'questions' => [[
+                    'enunciate' => 'Sobre classes de palavras, marque a alternativa correta.',
+                    'options' => [
+                        ['text' => 'Substantivo nomeia seres.', 'correct' => true],
+                        ['text' => 'Adjetivo sempre indica ação.', 'correct' => false],
+                    ],
+                    'explanation' => 'Substantivo e a classe que nomeia seres.',
+                ]],
+            ],
+        ]);
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'mindmap',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'theme' => 'Classes de palavras',
+                'children' => [[
+                    'text' => 'Substantivo',
+                    'time' => '00:02:48.075',
+                    'children' => [[
+                        'text' => 'Nomeia seres',
+                        'time' => '00:03:33.390',
+                    ]],
+                ]],
+            ],
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Sobre classes de palavras, marque a alternativa correta.')
+            ->assertSee('activeTab: null', false)
+            ->assertSee('@click="selected = 0; revealed = true"', false)
+            ->assertSee('Gabarito: Substantivo nomeia seres.')
+            ->assertSee('seekLessonVideo(168.075)', false)
+            ->assertSee('00:02:48.075')
+            ->assertDontSee('Tirar dúvidas')
+            ->assertDontSee('Sincronizar IA da aula');
+    }
+
+    public function test_cached_lesson_ai_artifacts_skip_provider_sync(): void
+    {
+        config([
+            'services.panda.ai_auto_sync' => true,
+            'services.panda.api_key' => 'testing-key',
+        ]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'panda_video_id' => 'video-123',
+            'status' => 'published',
+        ]);
+
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'summary',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => ['text' => 'Resumo em cache compartilhado.'],
+        ]);
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'quiz',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'questions' => [
+                    ['question' => 'Pergunta em cache?', 'answer' => true],
+                ],
+            ],
+        ]);
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'mindmap',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'theme' => 'Mapa em cache',
+                'children' => [['text' => 'Topico em cache']],
+            ],
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldNotReceive('createAiPackage');
+            $mock->shouldNotReceive('aiPackage');
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Resumo em cache compartilhado.')
+            ->assertSee('Gerando resumo da aula...');
+    }
+
+    public function test_lesson_page_auto_syncs_missing_ai_artifacts_by_default(): void
+    {
+        config([
+            'services.panda.ai_auto_sync' => true,
+            'services.panda.api_key' => 'testing-key',
+        ]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'panda_video_id' => 'video-123',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-123',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-123',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-123',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldReceive('createAiPackage')
+                ->once()
+                ->with('video-123')
+                ->andReturn(['status' => 'requested']);
+
+            $mock->shouldReceive('aiPackage')
+                ->once()
+                ->with('vz-abc12345-abc', 'external-123')
+                ->andReturn([
+                    'summary' => 'Resumo compartilhado da aula.',
+                    'questions' => [
+                        ['question' => 'Classes de palavras nomeiam seres?', 'answer' => true],
+                    ],
+                    'mindmap' => [
+                        'theme' => 'Classes de palavras',
+                        'children' => [['text' => 'Substantivo']],
+                    ],
+                ]);
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Resumo compartilhado da aula.')
+            ->assertSee('Classes de palavras nomeiam seres?')
+            ->assertSee('Substantivo');
+
+        foreach (['summary', 'quiz', 'mindmap'] as $type) {
+            $this->assertDatabaseHas('ai_artifacts', [
+                'source_type' => Lesson::class,
+                'source_id' => $lesson->id,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+                'status' => 'ready',
+            ]);
+        }
+    }
+
+    public function test_lesson_page_embeds_panda_tutor_when_video_metadata_is_available(): void
+    {
+        config(['services.panda.tutor_auto_detect' => true]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'panda_video_id' => 'video-123',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-123',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-123',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-123',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldReceive('playerConfig')
+                ->once()
+                ->with('vz-abc12345-abc', 'external-123')
+                ->andReturn(['assistant_id' => 'assistant-123']);
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('assist_chat.html?v=external-123&amp;l=vz-abc12345-abc', false)
+            ->assertSee('Tutor da aula');
+
+        $lesson->refresh();
+
+        $this->assertTrue((bool) data_get($lesson->metadata, 'panda_ai.tutor_available'));
+        $this->assertSame('assistant-123', data_get($lesson->metadata, 'panda_ai.tutor_assistant_id'));
+    }
+
+    public function test_lesson_page_hides_tutor_tab_when_tutor_is_not_enabled(): void
+    {
+        config(['services.panda.tutor_auto_detect' => true]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras sem tutor',
+            'panda_video_id' => 'video-456',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-456',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldReceive('playerConfig')
+                ->once()
+                ->with('vz-abc12345-abc', 'external-456')
+                ->andReturn(['ai' => ['questions' => true, 'mindmap' => true]]);
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertDontSee('Tirar dúvidas')
+            ->assertDontSee('assist_chat.html', false)
+            ->assertDontSee('Tutor da aula');
+
+        $lesson->refresh();
+
+        $this->assertFalse((bool) data_get($lesson->metadata, 'panda_ai.tutor_available'));
+        $this->assertNotEmpty(data_get($lesson->metadata, 'panda_ai.tutor_checked_at'));
     }
 }

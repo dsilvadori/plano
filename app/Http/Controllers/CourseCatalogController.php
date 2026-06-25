@@ -5,19 +5,26 @@ namespace App\Http\Controllers;
 use App\Models\Course;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
+use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\LessonProgress;
 use App\Models\StudyPlanItem;
 use App\Models\User;
+use App\Services\PandaVideoClient;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class CourseCatalogController extends Controller
 {
+    protected const LESSON_AI_ARTIFACT_TYPES = ['summary', 'quiz', 'mindmap'];
+
     public function index(): View
     {
         $user = request()->user();
@@ -135,7 +142,7 @@ class CourseCatalogController extends Controller
         ]);
     }
 
-    public function lesson(Course $course, Lesson $lesson): View
+    public function lesson(Course $course, Lesson $lesson, PandaVideoClient $panda): View
     {
         $user = request()->user();
 
@@ -144,7 +151,12 @@ class CourseCatalogController extends Controller
         abort_unless($lesson->status === 'published' && $this->lessonBelongsToCourse($lesson, $course), 404);
         abort_unless($this->userCanAccessCourse($user, $course), 403);
 
-        $lesson->load(['course', 'module', 'aiArtifacts']);
+        $lesson->load(['course', 'module']);
+
+        $this->ensureLessonAiArtifactsAreCached($lesson, $panda);
+        $this->ensurePandaTutorAvailabilityIsCached($lesson, $panda);
+
+        $lesson->load('aiArtifacts');
 
         $progress = LessonProgress::query()
             ->firstOrCreate([
@@ -172,6 +184,7 @@ class CourseCatalogController extends Controller
             'progressSummary' => $this->progressForCourse($course, $user),
             'aiArtifacts' => $lesson->aiArtifacts,
             'planLessonContext' => $this->planLessonContextForLesson($user, $course, $lesson),
+            'pandaTutorUrl' => $this->pandaTutorUrlForLesson($lesson),
         ]);
     }
 
@@ -197,6 +210,70 @@ class CourseCatalogController extends Controller
         $this->markLinkedPlanItemsIfReady($user, $lesson);
 
         return back()->with('status', 'Aula marcada como concluída.');
+    }
+
+    public function syncPandaAi(Course $course, Lesson $lesson, PandaVideoClient $panda): RedirectResponse
+    {
+        $user = request()->user();
+
+        abort_unless($user->isAdmin(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($lesson->status === 'published' && $this->lessonBelongsToCourse($lesson, $course), 404);
+
+        if ($this->missingLessonAiArtifactTypes($lesson) === []) {
+            return back()->with('status', 'A IA desta aula já está em cache para todos os alunos.');
+        }
+
+        $pandaVideoId = $lesson->panda_video_id ?: (string) data_get($lesson->metadata, 'payload.id');
+
+        if (! $pandaVideoId) {
+            return back()->with('error', 'Esta aula não tem ID de vídeo para gerar IA.');
+        }
+
+        try {
+            $metadata = $lesson->metadata ?? [];
+
+            if (blank(data_get($metadata, 'panda_ai.requested_at'))) {
+                $metadata = array_replace_recursive($metadata, [
+                    'panda_ai' => [
+                        'requested_at' => now()->toIso8601String(),
+                        'workflow_response' => $panda->createAiPackage($pandaVideoId),
+                    ],
+                ]);
+            }
+
+            $aiPayload = null;
+            $pullzoneName = $this->pandaPullzoneName($lesson);
+            $videoExternalId = $this->pandaVideoExternalId($lesson);
+
+            if ($pullzoneName && $videoExternalId) {
+                $aiPayload = $panda->aiPackage($pullzoneName, $videoExternalId);
+            }
+
+            $metadata = array_replace_recursive($metadata, [
+                'panda_ai' => [
+                    'pullzone_name' => $pullzoneName,
+                    'video_external_id' => $videoExternalId,
+                    'last_synced_at' => now()->toIso8601String(),
+                ],
+            ]);
+
+            $lesson->forceFill(['metadata' => $metadata])->save();
+
+            if (! $aiPayload) {
+                return back()->with('status', 'Pacote de IA solicitado. O resultado ainda não está disponível; tente sincronizar novamente em alguns minutos.');
+            }
+
+            $createdArtifacts = $this->syncPandaAiArtifactsFromPayload($lesson, $aiPayload);
+
+            return back()->with('status', $createdArtifacts > 0
+                ? 'IA da aula sincronizada com sucesso.'
+                : 'A IA retornou dados, mas ainda não encontrei resumo, questões ou mapa mental no payload.');
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return back()->with('error', 'Não foi possível sincronizar a IA da aula: ' . $exception->getMessage());
+        }
     }
 
     protected function publishedCourses(?Builder $query = null): Builder
@@ -375,4 +452,316 @@ class CourseCatalogController extends Controller
             }
         }
     }
+
+    protected function syncPandaAiArtifactsFromPayload(Lesson $lesson, array $payload): int
+    {
+        $artifacts = [
+            'summary' => $this->firstAiPayloadValue($payload, ['summary', 'abstract', 'ebook', 'eBook', 'data.summary', 'data.abstract']),
+            'quiz' => $this->firstAiPayloadValue($payload, ['quiz', 'questions', 'data.quiz', 'data.questions']),
+            'mindmap' => $this->firstAiPayloadValue($payload, ['mindmap', 'mind_map', 'mindMap', 'data.mindmap', 'data.mind_map', 'data.mindMap']),
+        ];
+
+        $created = 0;
+
+        foreach ($artifacts as $type => $content) {
+            if (blank($content)) {
+                continue;
+            }
+
+            AiArtifact::query()->updateOrCreate([
+                'source_type' => Lesson::class,
+                'source_id' => $lesson->id,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+            ], [
+                'status' => 'ready',
+                'content' => is_array($content) ? $content : ['text' => (string) $content],
+                'metadata' => [
+                    'panda_video_id' => $lesson->panda_video_id,
+                    'video_external_id' => $this->pandaVideoExternalId($lesson),
+                    'imported_at' => now()->toIso8601String(),
+                ],
+            ]);
+
+            $created++;
+        }
+
+        AiArtifact::query()->updateOrCreate([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'panda_payload',
+            'provider' => 'panda',
+        ], [
+            'status' => 'ready',
+            'content' => $payload,
+            'metadata' => [
+                'panda_video_id' => $lesson->panda_video_id,
+                'video_external_id' => $this->pandaVideoExternalId($lesson),
+                'imported_at' => now()->toIso8601String(),
+            ],
+        ]);
+
+        return $created;
+    }
+
+    protected function ensureLessonAiArtifactsAreCached(Lesson $lesson, PandaVideoClient $panda): void
+    {
+        if (! config('services.panda.ai_auto_sync', true) || ! $this->lessonAiAutoSyncEnabled($lesson) || blank(config('services.panda.api_key'))) {
+            return;
+        }
+
+        if ($this->missingLessonAiArtifactTypes($lesson) === []) {
+            return;
+        }
+
+        $pandaVideoId = $lesson->panda_video_id ?: (string) data_get($lesson->metadata, 'payload.id');
+
+        if (! $pandaVideoId) {
+            return;
+        }
+
+        Cache::lock("lesson:{$lesson->id}:ai-sync", 30)->get(function () use ($lesson, $panda, $pandaVideoId): void {
+            $lesson->refresh();
+
+            if ($this->missingLessonAiArtifactTypes($lesson) === []) {
+                return;
+            }
+
+            $metadata = $lesson->metadata ?? [];
+            $metadata = array_replace_recursive($metadata, [
+                'panda_ai' => [
+                    'auto_sync_enabled' => true,
+                ],
+            ]);
+
+            try {
+                if (blank(data_get($metadata, 'panda_ai.requested_at'))) {
+                    $metadata = array_replace_recursive($metadata, [
+                        'panda_ai' => [
+                            'requested_at' => now()->toIso8601String(),
+                            'workflow_response' => $panda->createAiPackage($pandaVideoId),
+                        ],
+                    ]);
+                }
+
+                if ($this->shouldPollLessonAiPackage($metadata)) {
+                    $pullzoneName = $this->pandaPullzoneName($lesson);
+                    $videoExternalId = $this->pandaVideoExternalId($lesson);
+                    $aiPayload = null;
+
+                    if ($pullzoneName && $videoExternalId) {
+                        $aiPayload = $panda->aiPackage($pullzoneName, $videoExternalId);
+                    }
+
+                    $metadata = array_replace_recursive($metadata, [
+                        'panda_ai' => [
+                            'pullzone_name' => $pullzoneName,
+                            'video_external_id' => $videoExternalId,
+                            'last_auto_sync_attempt_at' => now()->toIso8601String(),
+                            'last_synced_at' => now()->toIso8601String(),
+                        ],
+                    ]);
+
+                    if ($aiPayload) {
+                        $this->syncPandaAiArtifactsFromPayload($lesson, $aiPayload);
+                    }
+                }
+
+                $lesson->forceFill(['metadata' => $metadata])->save();
+            } catch (Throwable $exception) {
+                report($exception);
+
+                $metadata = array_replace_recursive($metadata, [
+                    'panda_ai' => [
+                        'last_auto_sync_attempt_at' => now()->toIso8601String(),
+                        'last_auto_sync_error' => $exception->getMessage(),
+                    ],
+                ]);
+
+                $lesson->forceFill(['metadata' => $metadata])->save();
+            }
+        });
+    }
+
+    protected function lessonAiAutoSyncEnabled(Lesson $lesson): bool
+    {
+        return (bool) data_get($lesson->metadata, 'panda_ai.auto_sync_enabled', true);
+    }
+
+    protected function missingLessonAiArtifactTypes(Lesson $lesson): array
+    {
+        $readyTypes = AiArtifact::query()
+            ->where('source_type', Lesson::class)
+            ->where('source_id', $lesson->id)
+            ->where('provider', 'panda')
+            ->where('status', 'ready')
+            ->whereIn('artifact_type', self::LESSON_AI_ARTIFACT_TYPES)
+            ->pluck('artifact_type')
+            ->all();
+
+        return array_values(array_diff(self::LESSON_AI_ARTIFACT_TYPES, $readyTypes));
+    }
+
+    protected function shouldPollLessonAiPackage(array $metadata): bool
+    {
+        $lastAttempt = data_get($metadata, 'panda_ai.last_auto_sync_attempt_at');
+
+        if (blank($lastAttempt)) {
+            return true;
+        }
+
+        return now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastAttempt)) >= 10;
+    }
+
+    protected function ensurePandaTutorAvailabilityIsCached(Lesson $lesson, PandaVideoClient $panda): void
+    {
+        if (! config('services.panda.tutor_auto_detect', true)) {
+            return;
+        }
+
+        $pullzoneName = $this->pandaPullzoneName($lesson);
+        $videoExternalId = $this->pandaVideoExternalId($lesson);
+
+        if (! $pullzoneName || ! $videoExternalId) {
+            return;
+        }
+
+        $lastCheckedAt = data_get($lesson->metadata, 'panda_ai.tutor_checked_at');
+
+        if (filled($lastCheckedAt) && now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastCheckedAt)) < 10) {
+            return;
+        }
+
+        Cache::lock("lesson:{$lesson->id}:panda-tutor-detect", 30)->get(function () use ($lesson, $panda, $pullzoneName, $videoExternalId): void {
+            $lesson->refresh();
+
+            $lastCheckedAt = data_get($lesson->metadata, 'panda_ai.tutor_checked_at');
+
+            if (filled($lastCheckedAt) && now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastCheckedAt)) < 10) {
+                return;
+            }
+
+            $metadata = $lesson->metadata ?? [];
+
+            try {
+                $config = $panda->playerConfig($pullzoneName, $videoExternalId) ?? [];
+                $assistantId = data_get($config, 'assistant_id');
+                $available = filled($assistantId);
+
+                $metadata = array_replace_recursive($metadata, [
+                    'panda_ai' => [
+                        'tutor_available' => $available,
+                        'tutor_assistant_id' => $available ? (string) $assistantId : null,
+                        'tutor_checked_at' => now()->toIso8601String(),
+                    ],
+                ]);
+            } catch (Throwable $exception) {
+                report($exception);
+
+                $metadata = array_replace_recursive($metadata, [
+                    'panda_ai' => [
+                        'tutor_available' => (bool) data_get($metadata, 'panda_ai.tutor_available', false),
+                        'tutor_checked_at' => now()->toIso8601String(),
+                        'tutor_last_error' => $exception->getMessage(),
+                    ],
+                ]);
+            }
+
+            $lesson->forceFill(['metadata' => $metadata])->save();
+        });
+    }
+
+    protected function pandaTutorUrlForLesson(Lesson $lesson): ?string
+    {
+        if (! (bool) data_get($lesson->metadata, 'panda_ai.tutor_available', false)) {
+            return null;
+        }
+
+        $playerUrl = $lesson->player_url;
+        $pullzoneName = $this->pandaPullzoneName($lesson);
+        $videoExternalId = $this->pandaVideoExternalId($lesson);
+
+        if (! $playerUrl || ! $pullzoneName || ! $videoExternalId) {
+            return null;
+        }
+
+        $playerEmbedBase = preg_replace('/\?.*$/', '', $playerUrl);
+        $playerEmbedBase = rtrim(str_ends_with($playerEmbedBase, '/embed/') ? $playerEmbedBase : dirname($playerEmbedBase), '/');
+
+        return $playerEmbedBase . '/assist_chat.html?' . http_build_query(['v' => $videoExternalId, 'l' => $pullzoneName]);
+    }
+
+    protected function firstAiPayloadValue(array $payload, array $paths): mixed
+    {
+        foreach ($paths as $path) {
+            $value = Arr::get($payload, $path);
+
+            if (filled($value)) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    protected function pandaVideoExternalId(Lesson $lesson): ?string
+    {
+        $payload = (array) data_get($lesson->metadata, 'payload', []);
+        $externalId = data_get($payload, 'video_external_id')
+            ?? data_get($payload, 'external_id');
+
+        if (filled($externalId)) {
+            return (string) $externalId;
+        }
+
+        foreach ([$lesson->panda_embed_url, $lesson->panda_player_url, data_get($payload, 'video_player')] as $url) {
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            $query = parse_url($url, PHP_URL_QUERY);
+            parse_str((string) $query, $params);
+
+            if (filled($params['v'] ?? null)) {
+                return (string) $params['v'];
+            }
+        }
+
+        return null;
+    }
+
+    protected function pandaPullzoneName(Lesson $lesson): ?string
+    {
+        $payload = (array) data_get($lesson->metadata, 'payload', []);
+
+        foreach ([
+            data_get($payload, 'pullzone_name'),
+            data_get($payload, 'pullzone'),
+        ] as $pullzoneName) {
+            if (filled($pullzoneName)) {
+                return (string) $pullzoneName;
+            }
+        }
+
+        foreach ([
+            data_get($payload, 'video_player'),
+            data_get($payload, 'video_hls'),
+            data_get($payload, 'thumbnail'),
+            data_get($payload, 'preview'),
+            $lesson->panda_embed_url,
+            $lesson->panda_player_url,
+            $lesson->thumbnail_url,
+        ] as $url) {
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            if (preg_match('/(?:^|[.\/-])(vz-[a-z0-9-]+)/i', $url, $matches)) {
+                return $matches[1];
+            }
+        }
+
+        return null;
+    }
+
 }
