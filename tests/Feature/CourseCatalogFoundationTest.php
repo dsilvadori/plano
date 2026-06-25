@@ -376,7 +376,7 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('Gabarito: Substantivo nomeia seres.')
             ->assertSee('seekLessonVideo(168.075)', false)
             ->assertSee('00:02:48.075')
-            ->assertDontSee('Tirar dúvidas')
+            ->assertSee('tutorTabVisible: false', false)
             ->assertDontSee('Sincronizar IA da aula');
     }
 
@@ -544,7 +544,8 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
-            ->assertSee('assist_chat.html?v=external-123&amp;l=vz-abc12345-abc', false)
+            ->assertSee('assist_chat.html?v=external-123', false)
+            ->assertSee('tutorTabVisible: true', false)
             ->assertSee('Tutor da aula');
 
         $lesson->refresh();
@@ -587,9 +588,9 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
-            ->assertDontSee('Tirar dúvidas')
-            ->assertDontSee('assist_chat.html', false)
-            ->assertDontSee('Tutor da aula');
+            ->assertSee('tutorTabVisible: false', false)
+            ->assertSee('tutorConfigUrl:', false)
+            ->assertSee('tutorCandidateUrl:', false);
 
         $lesson->refresh();
 

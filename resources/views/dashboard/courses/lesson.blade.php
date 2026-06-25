@@ -357,6 +357,28 @@
                     readyTabs: {},
                     loadingTabs: {},
                     loadingTimers: {},
+                    tutorTabVisible: @js((bool) $pandaTutorUrl),
+                    tutorUrl: @js($pandaTutorUrl),
+                    tutorCandidateUrl: @js($pandaTutorCandidateUrl),
+                    tutorConfigUrl: @js($pandaTutorConfigUrl),
+                    init() {
+                        this.detectTutorAvailability();
+                    },
+                    detectTutorAvailability() {
+                        if (this.tutorTabVisible || ! this.tutorConfigUrl || ! this.tutorCandidateUrl) {
+                            return;
+                        }
+
+                        fetch(this.tutorConfigUrl, { method: 'GET' })
+                            .then((response) => response.ok ? response.json() : null)
+                            .then((config) => {
+                                if (config?.assistant_id) {
+                                    this.tutorUrl = this.tutorCandidateUrl;
+                                    this.tutorTabVisible = true;
+                                }
+                            })
+                            .catch(() => {});
+                    },
                     openAiTab(tab) {
                         this.activeTab = tab;
 
@@ -405,9 +427,7 @@
                     <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'summary' }" @click="openAiTab('summary')">Resumo</button>
                     <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'quiz' }" @click="openAiTab('quiz')">Questões</button>
                     <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'mindmap' }" @click="openAiTab('mindmap')">Mapa mental</button>
-                    @if ($pandaTutorUrl)
-                        <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'question' }" @click="openAiTab('question')">Tirar dúvidas</button>
-                    @endif
+                    <button x-show="tutorTabVisible" x-cloak type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'question' }" @click="openAiTab('question')">Tirar dúvidas</button>
                 </div>
 
                 <div class="p-5">
@@ -588,21 +608,15 @@
                     </div>
 
                     <div x-show="isTabReady('question')" x-cloak>
-                        @if ($pandaTutorUrl)
-                            <div class="lesson-tutor-frame">
-                                <iframe
-                                    src="{{ $pandaTutorUrl }}"
-                                    title="Tutor da aula"
-                                    class="h-full w-full"
-                                    allow="clipboard-write"
-                                    referrerpolicy="strict-origin-when-cross-origin"
-                                ></iframe>
-                            </div>
-                        @else
-                            <div class="lesson-ai-empty">
-                                O tutor desta aula ainda não está disponível para este vídeo.
-                            </div>
-                        @endif
+                        <div x-show="tutorUrl" class="lesson-tutor-frame">
+                            <iframe
+                                :src="tutorUrl || 'about:blank'"
+                                title="Tutor da aula"
+                                class="h-full w-full"
+                                allow="clipboard-write"
+                                referrerpolicy="strict-origin-when-cross-origin"
+                            ></iframe>
+                        </div>
                     </div>
                 </div>
             </div>

@@ -185,6 +185,8 @@ class CourseCatalogController extends Controller
             'aiArtifacts' => $lesson->aiArtifacts,
             'planLessonContext' => $this->planLessonContextForLesson($user, $course, $lesson),
             'pandaTutorUrl' => $this->pandaTutorUrlForLesson($lesson),
+            'pandaTutorCandidateUrl' => $this->pandaTutorCandidateUrlForLesson($lesson),
+            'pandaTutorConfigUrl' => $this->pandaTutorConfigUrlForLesson($lesson),
         ]);
     }
 
@@ -628,7 +630,9 @@ class CourseCatalogController extends Controller
 
         $lastCheckedAt = data_get($lesson->metadata, 'panda_ai.tutor_checked_at');
 
-        if (filled($lastCheckedAt) && now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastCheckedAt)) < 10) {
+        $cacheMinutes = (bool) data_get($lesson->metadata, 'panda_ai.tutor_available', false) ? 10 : 1;
+
+        if (filled($lastCheckedAt) && now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastCheckedAt)) < $cacheMinutes) {
             return;
         }
 
@@ -636,8 +640,9 @@ class CourseCatalogController extends Controller
             $lesson->refresh();
 
             $lastCheckedAt = data_get($lesson->metadata, 'panda_ai.tutor_checked_at');
+            $cacheMinutes = (bool) data_get($lesson->metadata, 'panda_ai.tutor_available', false) ? 10 : 1;
 
-            if (filled($lastCheckedAt) && now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastCheckedAt)) < 10) {
+            if (filled($lastCheckedAt) && now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastCheckedAt)) < $cacheMinutes) {
                 return;
             }
 
@@ -677,6 +682,11 @@ class CourseCatalogController extends Controller
             return null;
         }
 
+        return $this->pandaTutorCandidateUrlForLesson($lesson);
+    }
+
+    protected function pandaTutorCandidateUrlForLesson(Lesson $lesson): ?string
+    {
         $playerUrl = $lesson->player_url;
         $pullzoneName = $this->pandaPullzoneName($lesson);
         $videoExternalId = $this->pandaVideoExternalId($lesson);
@@ -689,6 +699,21 @@ class CourseCatalogController extends Controller
         $playerEmbedBase = rtrim(str_ends_with($playerEmbedBase, '/embed/') ? $playerEmbedBase : dirname($playerEmbedBase), '/');
 
         return $playerEmbedBase . '/assist_chat.html?' . http_build_query(['v' => $videoExternalId, 'l' => $pullzoneName]);
+    }
+
+    protected function pandaTutorConfigUrlForLesson(Lesson $lesson): ?string
+    {
+        $pullzoneName = $this->pandaPullzoneName($lesson);
+        $videoExternalId = $this->pandaVideoExternalId($lesson);
+
+        if (! $pullzoneName || ! $videoExternalId) {
+            return null;
+        }
+
+        return rtrim((string) config('services.panda.ai_config_base_url'), '/')
+            . '/' . trim($pullzoneName, '/')
+            . '/' . $videoExternalId
+            . '.json';
     }
 
     protected function firstAiPayloadValue(array $payload, array $paths): mixed
