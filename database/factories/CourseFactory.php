@@ -24,6 +24,7 @@ class CourseFactory extends Factory
             'description' => fake()->paragraph(),
             'short_description' => fake()->sentence(),
             'thumbnail_url' => fake()->imageUrl(),
+            'thumbnail_path' => null,
             'checkout_url' => fake()->url(),
             'tutory_product_id' => Str::slug(fake()->unique()->sentence(2)),
             'combo_name' => null,

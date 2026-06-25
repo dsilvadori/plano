@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Courses\Schemas;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -39,7 +40,20 @@ class CourseForm
                 TextInput::make('thumbnail_url')
                     ->label('URL da thumbnail')
                     ->url()
-                    ->maxLength(2048),
+                    ->maxLength(2048)
+                    ->helperText('Usada como fallback quando nenhum arquivo for enviado.'),
+                FileUpload::make('thumbnail_path')
+                    ->label('Thumbnail por arquivo')
+                    ->image()
+                    ->imageEditor()
+                    ->imagePreviewHeight('180')
+                    ->disk('public')
+                    ->directory('course-thumbnails')
+                    ->visibility('public')
+                    ->maxSize(4096)
+                    ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp'])
+                    ->helperText('Ao enviar um arquivo, ele tem prioridade sobre a URL da thumbnail.')
+                    ->columnSpanFull(),
                 TextInput::make('checkout_url')
                     ->label('URL do checkout')
                     ->url()

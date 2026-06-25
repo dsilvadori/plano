@@ -2,7 +2,7 @@
     $hasAccess = $hasAccess ?? false;
     $progress = $progress ?? null;
     $progressPercentage = (int) ($progress['percentage'] ?? 0);
-    $thumbnail = $course->thumbnail_url ?: 'https://vencendoconcursos.com.br/wp-content/uploads/2026/04/logo-vc-transparente.png';
+    $thumbnail = $course->thumbnail_display_url;
 @endphp
 
 <article class="card-subtle flex h-full flex-col overflow-hidden p-0">

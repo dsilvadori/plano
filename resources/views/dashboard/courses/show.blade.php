@@ -1,5 +1,5 @@
 @php
-    $thumbnail = $course->thumbnail_url ?: 'https://vencendoconcursos.com.br/wp-content/uploads/2026/04/logo-vc-transparente.png';
+    $thumbnail = $course->thumbnail_display_url;
     $progressPercentage = (int) ($progressSummary['percentage'] ?? 0);
 @endphp
 

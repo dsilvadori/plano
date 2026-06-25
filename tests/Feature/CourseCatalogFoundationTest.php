@@ -16,6 +16,7 @@ use App\Services\PandaVideoClient;
 use App\Services\StudyPlanGenerator;
 use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class CourseCatalogFoundationTest extends TestCase
@@ -89,6 +90,26 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertOk()
             ->assertSee('Acesso bloqueado')
             ->assertSee('Comprar acesso');
+    }
+
+    public function test_course_catalog_uses_uploaded_thumbnail_before_external_url(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com thumbnail enviada',
+            'status' => 'published',
+            'is_featured' => true,
+            'thumbnail_url' => 'https://example.com/external-thumbnail.jpg',
+            'thumbnail_path' => 'course-thumbnails/curso-upload.webp',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.index'))
+            ->assertOk()
+            ->assertSee(Storage::disk('public')->url('course-thumbnails/curso-upload.webp'), false)
+            ->assertDontSee('https://example.com/external-thumbnail.jpg', false);
     }
 
     public function test_enrolled_student_can_watch_and_complete_lesson(): void
