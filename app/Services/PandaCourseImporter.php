@@ -7,6 +7,7 @@ use App\Models\CourseModule;
 use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\PandaImportRun;
+use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -57,6 +58,7 @@ class PandaCourseImporter
                 $planningLessons = [];
 
                 foreach ($videos->values() as $index => $video) {
+                    $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $index + 1);
                     $lesson = Lesson::query()->firstOrNew([
                         'panda_video_id' => $video['panda_video_id'],
                     ]);
@@ -65,9 +67,9 @@ class PandaCourseImporter
                     $lesson->fill([
                         'course_id' => $lesson->exists ? $lesson->course_id : $course->id,
                         'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
-                        'title' => $video['title'],
-                        'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($video['title'], $index + 1),
-                        'description' => $video['description'] ?: 'Aula importada da integração de vídeo.',
+                        'title' => $normalizedTitle,
+                        'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $index + 1),
+                        'description' => $video['description'] ?: 'Aula em vídeo.',
                         'type' => 'video',
                         'thumbnail_url' => $video['thumbnail_url'],
                         'duration_seconds' => $video['duration_seconds'],
@@ -88,7 +90,7 @@ class PandaCourseImporter
                         $module->id => ['sort_order' => $index + 1],
                     ]);
                     $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
-                    $planningLessons[] = $this->planningLessonFromVideo($video, $index);
+                    $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
 
                     $run->items()->create([
                         'external_type' => 'video',
@@ -157,6 +159,7 @@ class PandaCourseImporter
                 $planningLessons = [];
 
                 foreach ($videos->values() as $index => $video) {
+                    $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $index + 1);
                     $lesson = Lesson::query()->firstOrNew([
                         'panda_video_id' => $video['panda_video_id'],
                     ]);
@@ -165,9 +168,9 @@ class PandaCourseImporter
                     $lesson->fill([
                         'course_id' => $lesson->exists ? $lesson->course_id : $module->course_id,
                         'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
-                        'title' => $video['title'],
-                        'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($video['title'], $index + 1),
-                        'description' => $video['description'] ?: 'Aula importada da integração de vídeo.',
+                        'title' => $normalizedTitle,
+                        'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $index + 1),
+                        'description' => $video['description'] ?: 'Aula em vídeo.',
                         'type' => 'video',
                         'thumbnail_url' => $video['thumbnail_url'],
                         'duration_seconds' => $video['duration_seconds'],
@@ -188,7 +191,7 @@ class PandaCourseImporter
                         $module->id => ['sort_order' => $index + 1],
                     ]);
                     $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
-                    $planningLessons[] = $this->planningLessonFromVideo($video, $index);
+                    $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
 
                     $run->items()->create([
                         'external_type' => 'video',
@@ -271,12 +274,12 @@ class PandaCourseImporter
         return in_array($type, ['basic', 'specific', 'complementary', 'review', 'questions', 'other'], true) ? $type : 'specific';
     }
 
-    protected function planningLessonFromVideo(array $video, int $index): array
+    protected function planningLessonFromVideo(array $video, int $index, ?string $normalizedTitle = null): array
     {
         $minutes = (int) ceil(((int) ($video['duration_seconds'] ?? 0)) / 60);
 
         return [
-            'name' => trim((string) ($video['title'] ?? '')) ?: 'Aula importada ' . ($index + 1),
+            'name' => $normalizedTitle ?: (trim((string) ($video['title'] ?? '')) ?: 'Aula importada ' . ($index + 1)),
             'minutes' => max(1, $minutes),
         ];
     }

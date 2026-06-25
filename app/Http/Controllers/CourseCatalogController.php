@@ -24,6 +24,7 @@ use Throwable;
 class CourseCatalogController extends Controller
 {
     protected const LESSON_AI_ARTIFACT_TYPES = ['summary', 'quiz', 'mindmap'];
+    protected const PANDA_AI_REQUEST_RETRY_MINUTES = 60;
 
     public function index(): View
     {
@@ -233,40 +234,11 @@ class CourseCatalogController extends Controller
         }
 
         try {
-            $metadata = $lesson->metadata ?? [];
+            $createdArtifacts = $this->syncMissingLessonAiArtifacts($lesson, $panda, $pandaVideoId, forceRequest: true);
 
-            if (blank(data_get($metadata, 'panda_ai.requested_at'))) {
-                $metadata = array_replace_recursive($metadata, [
-                    'panda_ai' => [
-                        'requested_at' => now()->toIso8601String(),
-                        'workflow_response' => $panda->createAiPackage($pandaVideoId),
-                    ],
-                ]);
-            }
-
-            $aiPayload = null;
-            $pullzoneName = $this->pandaPullzoneName($lesson);
-            $videoExternalId = $this->pandaVideoExternalId($lesson);
-
-            if ($pullzoneName && $videoExternalId) {
-                $aiPayload = $panda->aiPackage($pullzoneName, $videoExternalId);
-            }
-
-            $metadata = array_replace_recursive($metadata, [
-                'panda_ai' => [
-                    'pullzone_name' => $pullzoneName,
-                    'video_external_id' => $videoExternalId,
-                    'last_synced_at' => now()->toIso8601String(),
-                ],
-            ]);
-
-            $lesson->forceFill(['metadata' => $metadata])->save();
-
-            if (! $aiPayload) {
+            if ($createdArtifacts === 0) {
                 return back()->with('status', 'Pacote de IA solicitado. O resultado ainda não está disponível; tente sincronizar novamente em alguns minutos.');
             }
-
-            $createdArtifacts = $this->syncPandaAiArtifactsFromPayload($lesson, $aiPayload);
 
             return back()->with('status', $createdArtifacts > 0
                 ? 'IA da aula sincronizada com sucesso.'
@@ -529,50 +501,12 @@ class CourseCatalogController extends Controller
                 return;
             }
 
-            $metadata = $lesson->metadata ?? [];
-            $metadata = array_replace_recursive($metadata, [
-                'panda_ai' => [
-                    'auto_sync_enabled' => true,
-                ],
-            ]);
-
             try {
-                if (blank(data_get($metadata, 'panda_ai.requested_at'))) {
-                    $metadata = array_replace_recursive($metadata, [
-                        'panda_ai' => [
-                            'requested_at' => now()->toIso8601String(),
-                            'workflow_response' => $panda->createAiPackage($pandaVideoId),
-                        ],
-                    ]);
-                }
-
-                if ($this->shouldPollLessonAiPackage($metadata)) {
-                    $pullzoneName = $this->pandaPullzoneName($lesson);
-                    $videoExternalId = $this->pandaVideoExternalId($lesson);
-                    $aiPayload = null;
-
-                    if ($pullzoneName && $videoExternalId) {
-                        $aiPayload = $panda->aiPackage($pullzoneName, $videoExternalId);
-                    }
-
-                    $metadata = array_replace_recursive($metadata, [
-                        'panda_ai' => [
-                            'pullzone_name' => $pullzoneName,
-                            'video_external_id' => $videoExternalId,
-                            'last_auto_sync_attempt_at' => now()->toIso8601String(),
-                            'last_synced_at' => now()->toIso8601String(),
-                        ],
-                    ]);
-
-                    if ($aiPayload) {
-                        $this->syncPandaAiArtifactsFromPayload($lesson, $aiPayload);
-                    }
-                }
-
-                $lesson->forceFill(['metadata' => $metadata])->save();
+                $this->syncMissingLessonAiArtifacts($lesson, $panda, $pandaVideoId);
             } catch (Throwable $exception) {
                 report($exception);
 
+                $metadata = $lesson->metadata ?? [];
                 $metadata = array_replace_recursive($metadata, [
                     'panda_ai' => [
                         'last_auto_sync_attempt_at' => now()->toIso8601String(),
@@ -583,6 +517,53 @@ class CourseCatalogController extends Controller
                 $lesson->forceFill(['metadata' => $metadata])->save();
             }
         });
+    }
+
+    protected function syncMissingLessonAiArtifacts(Lesson $lesson, PandaVideoClient $panda, string $pandaVideoId, bool $forceRequest = false): int
+    {
+        if ($this->missingLessonAiArtifactTypes($lesson) === []) {
+            return -1;
+        }
+
+        $metadata = $lesson->metadata ?? [];
+        $pullzoneName = $this->pandaPullzoneName($lesson);
+        $videoExternalId = $this->pandaVideoExternalId($lesson);
+        $createdArtifacts = 0;
+
+        if ($pullzoneName && $videoExternalId && $this->shouldPollLessonAiPackage($metadata)) {
+            $aiPayload = $panda->aiPackage($pullzoneName, $videoExternalId);
+
+            $metadata = array_replace_recursive($metadata, [
+                'panda_ai' => [
+                    'auto_sync_enabled' => true,
+                    'pullzone_name' => $pullzoneName,
+                    'video_external_id' => $videoExternalId,
+                    'last_auto_sync_attempt_at' => now()->toIso8601String(),
+                    'last_synced_at' => now()->toIso8601String(),
+                    'last_payload_status' => $aiPayload ? 'ready' : 'not_ready',
+                ],
+            ]);
+
+            if ($aiPayload) {
+                $createdArtifacts = $this->syncPandaAiArtifactsFromPayload($lesson, $aiPayload);
+                $lesson->refresh();
+            }
+        }
+
+        if ($this->missingLessonAiArtifactTypes($lesson) !== [] && $this->shouldRequestLessonAiPackage($metadata, $forceRequest)) {
+            $metadata = array_replace_recursive($metadata, [
+                'panda_ai' => [
+                    'auto_sync_enabled' => true,
+                    'requested_at' => now()->toIso8601String(),
+                    'workflow_response' => $panda->createAiPackage($pandaVideoId),
+                    'request_count' => ((int) data_get($metadata, 'panda_ai.request_count', 0)) + 1,
+                ],
+            ]);
+        }
+
+        $lesson->forceFill(['metadata' => $metadata])->save();
+
+        return $createdArtifacts;
     }
 
     protected function lessonAiAutoSyncEnabled(Lesson $lesson): bool
@@ -613,6 +594,21 @@ class CourseCatalogController extends Controller
         }
 
         return now()->diffInMinutes(\Illuminate\Support\Carbon::parse($lastAttempt)) >= 1;
+    }
+
+    protected function shouldRequestLessonAiPackage(array $metadata, bool $forceRequest = false): bool
+    {
+        $requestedAt = data_get($metadata, 'panda_ai.requested_at');
+
+        if (blank($requestedAt)) {
+            return true;
+        }
+
+        if (! $forceRequest) {
+            return now()->diffInMinutes(\Illuminate\Support\Carbon::parse($requestedAt)) >= self::PANDA_AI_REQUEST_RETRY_MINUTES;
+        }
+
+        return now()->diffInMinutes(\Illuminate\Support\Carbon::parse($requestedAt)) >= 1;
     }
 
     protected function ensurePandaTutorAvailabilityIsCached(Lesson $lesson, PandaVideoClient $panda): void

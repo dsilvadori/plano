@@ -3,7 +3,10 @@
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use App\Models\Course;
+use App\Models\CourseModule;
 use App\Services\CourseAccessResolver;
+use App\Support\LessonTitleNormalizer;
+use Illuminate\Support\Facades\DB;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
@@ -57,3 +60,59 @@ Artisan::command('courses:expand-santos-combo', function () {
         'comboName' => 'Gabaritando Prefeitura de Santos',
     ]);
 })->purpose('Vincula alunos do combo Gabaritando Prefeitura de Santos aos cursos ativos marcados com esse combo');
+
+Artisan::command('lessons:normalize-titles {--dry-run}', function () {
+    $changed = 0;
+
+    $normalize = function () use (&$changed): void {
+        CourseModule::query()
+            ->with('onlineLessons')
+            ->orderBy('id')
+            ->get()
+            ->each(function (CourseModule $module) use (&$changed): void {
+                $planningLessons = [];
+
+                foreach ($module->onlineLessons as $index => $lesson) {
+                    $position = $index + 1;
+                    $title = LessonTitleNormalizer::normalize($lesson->title, $position);
+
+                    if ($lesson->title !== $title || (int) $lesson->sort_order !== $position) {
+                        $changed++;
+                    }
+
+                    $lesson->forceFill([
+                        'title' => $title,
+                        'sort_order' => $position,
+                    ])->save();
+
+                    $lesson->modules()->updateExistingPivot($module->id, [
+                        'sort_order' => $position,
+                    ]);
+
+                    $planningLessons[] = [
+                        'name' => $title,
+                        'minutes' => max(1, (int) ceil(((int) $lesson->duration_seconds) / 60)),
+                    ];
+                }
+
+                if ($planningLessons !== []) {
+                    $module->forceFill(['lessons' => $planningLessons])->save();
+                }
+            });
+    };
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+        $normalize();
+        DB::rollBack();
+        $this->info("{$changed} aula(s) seriam normalizada(s).");
+
+        return 0;
+    }
+
+    DB::transaction($normalize);
+
+    $this->info("{$changed} aula(s) normalizada(s).");
+
+    return 0;
+})->purpose('Normaliza nomes e numeração das aulas importadas');

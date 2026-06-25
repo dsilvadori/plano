@@ -268,22 +268,8 @@
     $mindMapTitle = is_array($mindMapContent) ? $contentToText($mindMapContent['theme'] ?? $mindMapContent['title'] ?? null) : '';
     $mindMapBranches = $normalizeMindMapBranches($mindMapContent);
 
-    if ($summaryText === '' && $lesson->description) {
-        $summaryText = $lesson->description;
-    }
-
     $summaryBlocks = $summaryText !== '' ? $summaryBlocks($summaryText) : [];
     $mindMapTitle = $mindMapTitle !== '' ? $mindMapTitle : $lesson->title;
-
-    if ($mindMapBranches === [] && $summaryText !== '') {
-        $mindMapBranches = collect(preg_split('/(?<=[.!?])\s+/', $summaryText) ?: [])
-            ->map(fn ($sentence) => trim($sentence))
-            ->filter()
-            ->take(5)
-            ->map(fn ($sentence) => ['title' => $sentence, 'time' => null, 'children' => []])
-            ->values()
-            ->all();
-    }
 
     $summaryTimeline = [];
     $appendTimelineItem = function (array $item, int $depth = 0) use (&$appendTimelineItem, &$summaryTimeline, $timeToSeconds): void {
@@ -636,7 +622,7 @@
                             </div>
                         @else
                             <div class="lesson-ai-empty">
-                                O resumo desta aula ainda não foi gerado. Quando o artefato `summary` estiver disponível, ele aparecerá aqui.
+                                Estamos preparando o resumo desta aula. Tente novamente em alguns minutos.
                             </div>
                         @endif
 
@@ -705,7 +691,7 @@
                             </div>
                         @else
                             <div class="lesson-ai-empty">
-                                As questões desta aula ainda não foram geradas. Quando o artefato `quiz` estiver disponível, elas entram nesta aba com gabarito e comentário.
+                                As questões desta aula ainda estão sendo preparadas. Em breve elas aparecerão aqui com gabarito e comentário.
                             </div>
                         @endif
                     </div>
@@ -751,7 +737,7 @@
                             </div>
                         @else
                             <div class="lesson-ai-empty">
-                                O mapa mental ainda não foi gerado. Assim que o artefato `mindmap` estiver disponível, ele será apresentado aqui em formato visual.
+                                O mapa mental desta aula ainda está sendo preparado. Tente novamente em alguns minutos.
                             </div>
                         @endif
                     </div>

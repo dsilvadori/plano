@@ -484,10 +484,7 @@ class CourseCatalogFoundationTest extends TestCase
         ]);
 
         $this->mock(PandaVideoClient::class, function ($mock): void {
-            $mock->shouldReceive('createAiPackage')
-                ->once()
-                ->with('video-123')
-                ->andReturn(['status' => 'requested']);
+            $mock->shouldNotReceive('createAiPackage');
 
             $mock->shouldReceive('aiPackage')
                 ->once()
@@ -522,6 +519,57 @@ class CourseCatalogFoundationTest extends TestCase
                 'status' => 'ready',
             ]);
         }
+    }
+
+    public function test_lesson_page_requests_panda_ai_only_when_published_package_is_not_ready(): void
+    {
+        config([
+            'services.panda.ai_auto_sync' => true,
+            'services.panda.api_key' => 'testing-key',
+        ]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Administração geral',
+            'panda_video_id' => 'video-456',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-456',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldReceive('aiPackage')
+                ->once()
+                ->with('vz-abc12345-abc', 'external-456')
+                ->andReturn(null);
+
+            $mock->shouldReceive('createAiPackage')
+                ->once()
+                ->with('video-456')
+                ->andReturn(['status' => 'requested']);
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Estamos preparando o resumo desta aula.');
+
+        $lesson->refresh();
+
+        $this->assertNotNull(data_get($lesson->metadata, 'panda_ai.requested_at'));
+        $this->assertSame('not_ready', data_get($lesson->metadata, 'panda_ai.last_payload_status'));
+        $this->assertSame(1, data_get($lesson->metadata, 'panda_ai.request_count'));
     }
 
     public function test_lesson_page_embeds_panda_tutor_when_video_metadata_is_available(): void

@@ -55,17 +55,17 @@ class PandaImportTest extends TestCase
         $this->assertSame('Português', $module->name);
         $this->assertSame([
             [
-                'name' => 'Aula Panda',
+                'name' => '01 - Aula Panda',
                 'minutes' => 21,
             ],
         ], $module->fresh()->lessons);
         $this->assertSame([
             [
-                'name' => 'Aula Panda',
+                'name' => '01 - Aula Panda',
                 'minutes' => 21,
             ],
         ], $module->fresh()->planning_lessons);
-        $this->assertSame('Aula Panda', $lesson->title);
+        $this->assertSame('01 - Aula Panda', $lesson->title);
         $this->assertSame(1234, $lesson->duration_seconds);
         $this->assertSame('https://cdn.test/thumb.jpg', $lesson->thumbnail_url);
         $this->assertSame('https://player.test/embed/panda-video-1', $lesson->panda_embed_url);
@@ -141,7 +141,7 @@ class PandaImportTest extends TestCase
                 'data' => [
                     [
                         'id' => 'video-03',
-                        'title' => '03 - Princípios Arquivísticos.mp4',
+                        'title' => '03 - Principios Arquivisticos.mp4',
                         'duration_seconds' => 1800,
                     ],
                     [
@@ -151,7 +151,7 @@ class PandaImportTest extends TestCase
                     ],
                     [
                         'id' => 'video-02',
-                        'title' => '02 - Terminologias Arquivísticas.mp4',
+                        'title' => '02_-_Terminologias_Arquivísticas.mp4',
                         'duration_seconds' => 1440,
                     ],
                 ],
@@ -165,15 +165,15 @@ class PandaImportTest extends TestCase
         $module = $course->modules()->where('panda_folder_id', 'folder-order')->firstOrFail();
 
         $this->assertSame([
-            '01 - Conceitos Iniciais de Arquivologia.mp4',
-            '02 - Terminologias Arquivísticas.mp4',
-            '03 - Princípios Arquivísticos.mp4',
+            '01 - Conceitos Iniciais de Arquivologia',
+            '02 - Terminologias Arquivísticas',
+            '03 - Princípios Arquivísticos',
         ], collect($module->fresh()->lessons)->pluck('name')->all());
 
         $this->assertSame([
-            '01 - Conceitos Iniciais de Arquivologia.mp4',
-            '02 - Terminologias Arquivísticas.mp4',
-            '03 - Princípios Arquivísticos.mp4',
+            '01 - Conceitos Iniciais de Arquivologia',
+            '02 - Terminologias Arquivísticas',
+            '03 - Princípios Arquivísticos',
         ], $module->fresh()->onlineLessons()->pluck('title')->all());
     }
 
@@ -212,7 +212,7 @@ class PandaImportTest extends TestCase
         $this->assertSame('folder-module', $module->fresh()->panda_folder_id);
         $this->assertSame([
             [
-                'name' => 'Aula no módulo',
+                'name' => '01 - Aula no Módulo',
                 'minutes' => 15,
             ],
         ], $module->fresh()->lessons);
