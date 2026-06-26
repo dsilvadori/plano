@@ -1087,6 +1087,16 @@ html[data-theme="light"] .lesson-ai-panel details {
     margin-top: 1.25rem;
 }
 
+.question-image {
+    display: block;
+    max-height: 32rem;
+    max-width: 100%;
+    width: auto;
+    border: 1px solid rgba(255, 255, 255, .14);
+    border-radius: .75rem;
+    background: rgba(255, 255, 255, .06);
+}
+
 .question-rich-text mark,
 [data-question-card] button mark {
     border-radius: .35rem;

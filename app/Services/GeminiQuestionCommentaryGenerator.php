@@ -32,9 +32,13 @@ class GeminiQuestionCommentaryGenerator
 
         $prompt = implode("\n\n", [
             'Você é um professor de concursos públicos.',
-            'Explique o gabarito da questão abaixo em português do Brasil, de forma objetiva, didática e sem inventar informações.',
-            'Não comece com frases como "A alternativa correta é", "O gabarito é" ou "A resposta correta é". Vá direto à justificativa e ao conceito cobrado.',
-            'Use no máximo 2 parágrafos.',
+            'Gere um comentário explicativo em português do Brasil para a questão abaixo.',
+            'Comece indicando o gabarito informado e explique por que essa alternativa está correta.',
+            'Depois, quando houver informação suficiente no enunciado e nas alternativas, explique brevemente por que as alternativas incorretas estão erradas.',
+            'Seja claro, didático e objetivo, com linguagem adequada para estudante de concurso público.',
+            'Não invente fatos, normas, conceitos ou contexto que não estejam no enunciado, nas alternativas ou no conhecimento gramatical/jurídico/técnico necessário para resolver a questão.',
+            'Use no máximo 3 parágrafos curtos.',
+            'Pode usar Markdown para destacar termos importantes com **negrito**.',
             'Se a questão estiver incompleta ou o gabarito não estiver claro, diga que é necessário revisar o gabarito antes de comentar.',
             'Enunciado:',
             $question->statement,
@@ -58,7 +62,7 @@ class GeminiQuestionCommentaryGenerator
                         ]],
                         'generationConfig' => [
                             'temperature' => 0.2,
-                            'maxOutputTokens' => 500,
+                            'maxOutputTokens' => 900,
                         ],
                     ]);
 

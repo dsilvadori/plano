@@ -17,6 +17,23 @@ use Throwable;
 
 class QuestionPdfImporter
 {
+    protected const PDF_TO_XLSX_PROMPT = <<<'PROMPT'
+Converta questões para uma estrutura de dados.
+Campos obrigatórios: numero, disciplina, assunto, subassunto, enunciado, alternativa_a, alternativa_b, alternativa_c, alternativa_d, alternativa_e, gabarito, referencia_origem, observacoes_revisao, imagem_descricao.
+
+Regras:
+1. Cada linha representa exatamente uma questão.
+2. O enunciado deve conter apenas o texto da questão, sem alternativas dentro dele.
+3. As alternativas devem ficar separadas nas colunas alternativa_a, alternativa_b, alternativa_c, alternativa_d e alternativa_e.
+4. Preserve negrito, grifos e destaques usando Markdown: **texto em negrito** e ==texto destacado==.
+5. Se houver imagens, tabelas ou trechos que não possam ser convertidos bem, descreva em observacoes_revisao e, quando a imagem for necessária para resolver a questão, descreva objetivamente seu conteúdo em imagem_descricao.
+6. Se uma alternativa parecer quebrada em várias linhas, junte em uma única célula.
+7. Se houver gabarito no final, associe cada resposta à questão correspondente usando apenas A, B, C, D ou E.
+8. Se não encontrar o gabarito, deixe gabarito vazio e escreva "gabarito não encontrado" em observacoes_revisao.
+9. Não gere comentários explicativos nesta etapa.
+10. Valide que nenhuma alternativa ficou no enunciado, todas as questões têm número, alternativas estão nos campos corretos e todo gabarito é letra válida.
+PROMPT;
+
     public function import(QuestionBank $bank, ?int $userId = null): QuestionImportBatch
     {
         if (! $bank->source_file_path) {
@@ -31,8 +48,36 @@ class QuestionPdfImporter
             throw new RuntimeException('Arquivo PDF não encontrado.');
         }
 
+        $localText = trim($this->extractTextWithPdftotext($pdfPath));
+
+        if ($localText !== '') {
+            $locallyParsedQuestions = $this->parseText($localText);
+
+            if ($locallyParsedQuestions !== []) {
+                return app(QuestionSpreadsheetImporter::class)->importParsedQuestions(
+                    $bank,
+                    $this->normalizeTextParsedQuestions($locallyParsedQuestions),
+                    $userId,
+                    'pdf',
+                    $bank->source_file_path,
+                );
+            }
+        }
+
+        $structuredQuestions = $this->extractStructuredQuestionsWithGemini($pdfPath);
+
+        if ($structuredQuestions !== []) {
+            return app(QuestionSpreadsheetImporter::class)->importParsedQuestions(
+                $bank,
+                $structuredQuestions,
+                $userId,
+                'pdf',
+                $bank->source_file_path,
+            );
+        }
+
         $batch = QuestionImportBatch::query()->create([
-            'course_id' => $bank->course_id,
+            'course_id' => null,
             'question_bank_id' => $bank->id,
             'created_by' => $userId,
             'source_type' => 'pdf',
@@ -47,20 +92,14 @@ class QuestionPdfImporter
 
             DB::transaction(function () use ($bank, $batch, $parsedQuestions, $text): void {
                 $importedNumbers = collect($parsedQuestions)->pluck('number')->filter()->all();
-                $removedQuestions = 0;
-
-                if ($importedNumbers !== []) {
-                    $removedQuestions = $bank->questions()
-                        ->whereNotIn('number', $importedNumbers)
-                        ->delete();
-                }
+                $removedQuestions = $bank->questions()->count();
+                $bank->questions()->delete();
 
                 foreach ($parsedQuestions as $parsedQuestion) {
-                    $question = Question::query()->updateOrCreate([
+                    $question = Question::query()->create([
                         'question_bank_id' => $bank->id,
+                        'course_id' => null,
                         'number' => $parsedQuestion['number'],
-                    ], [
-                        'course_id' => $bank->course_id,
                         'subject' => $parsedQuestion['subject'],
                         'topic' => $parsedQuestion['topic'],
                         'statement' => $parsedQuestion['statement'],
@@ -74,9 +113,7 @@ class QuestionPdfImporter
                         ],
                     ]);
 
-                    $question->options()->delete();
-
-                    foreach ($parsedQuestion['options'] as $sortOrder => $option) {
+                    foreach ($this->normalizeOptionLabels($parsedQuestion['options']) as $sortOrder => $option) {
                         $question->options()->create([
                             'label' => $option['label'],
                             'text' => $option['text'],
@@ -99,6 +136,7 @@ class QuestionPdfImporter
                 ])->save();
 
                 $bank->forceFill([
+                    'course_id' => null,
                     'status' => collect($parsedQuestions)->contains(fn (array $question): bool => filled($question['answer_key'])) ? 'published' : 'draft',
                     'metadata' => array_replace($bank->metadata ?? [], [
                         'last_import_batch_id' => $batch->id,
@@ -107,16 +145,6 @@ class QuestionPdfImporter
                     ]),
                 ])->save();
             });
-
-            if ($bank->course_id) {
-                $linkedQuestions = app(QuestionLessonLinker::class)->linkBank($bank->fresh());
-
-                $batch->forceFill([
-                    'summary' => array_replace($batch->summary ?? [], [
-                        'linked_questions' => $linkedQuestions,
-                    ]),
-                ])->save();
-            }
         } catch (Throwable $exception) {
             $batch->forceFill([
                 'status' => 'failed',
@@ -127,6 +155,300 @@ class QuestionPdfImporter
         }
 
         return $batch->fresh();
+    }
+
+    protected function normalizeOptionLabels(array $options): array
+    {
+        $availableLabels = ['a', 'b', 'c', 'd', 'e'];
+        $usedLabels = [];
+
+        return collect($options)
+            ->map(function (array $option) use ($availableLabels, &$usedLabels): ?array {
+                $text = trim((string) ($option['text'] ?? ''));
+
+                if ($text === '') {
+                    return null;
+                }
+
+                $label = Str::of((string) ($option['label'] ?? ''))->lower()->ascii()->value();
+
+                if (! in_array($label, $availableLabels, true) || in_array($label, $usedLabels, true)) {
+                    $label = collect($availableLabels)
+                        ->first(fn (string $candidate): bool => ! in_array($candidate, $usedLabels, true));
+                }
+
+                if (! is_string($label)) {
+                    return null;
+                }
+
+                $usedLabels[] = $label;
+
+                return [
+                    'label' => $label,
+                    'text' => $text,
+                ];
+            })
+            ->filter()
+            ->take(5)
+            ->values()
+            ->all();
+    }
+
+    protected function normalizeTextParsedQuestions(array $parsedQuestions): array
+    {
+        return collect($parsedQuestions)
+            ->map(fn (array $question): array => [
+                'number' => $question['number'],
+                'subject' => $question['subject'] ?? null,
+                'topic' => $question['topic'] ?? null,
+                'subtopic' => null,
+                'statement' => $question['statement'],
+                'options' => $question['options'],
+                'answer_key' => $question['answer_key'] ?? null,
+                'commentary' => null,
+                'source_reference' => $question['source_reference'] ?? null,
+                'review_notes' => null,
+            ])
+            ->values()
+            ->all();
+    }
+
+    protected function extractStructuredQuestionsWithGemini(string $pdfPath): array
+    {
+        $apiKey = config('services.gemini.api_key');
+
+        if (blank($apiKey)) {
+            return [];
+        }
+
+        $text = trim($this->extractTextWithPdftotext($pdfPath));
+
+        if ($text !== '') {
+            $questions = $this->extractStructuredQuestionsFromText($text);
+
+            if ($questions !== []) {
+                return $questions;
+            }
+        }
+
+        $contents = file_get_contents($pdfPath);
+
+        if ($contents === false) {
+            return [];
+        }
+
+        $prompt = $this->structuredJsonPrompt()."\n\nLeia o PDF anexo e retorne as questões estruturadas.";
+
+        foreach ($this->geminiModelsToTry(forPdfImport: true) as $model) {
+            try {
+                $response = Http::baseUrl(rtrim((string) config('services.gemini.base_url'), '/'))
+                    ->acceptJson()
+                    ->timeout(120)
+                    ->post("/v1beta/models/{$model}:generateContent?key={$apiKey}", [
+                        'contents' => [[
+                            'parts' => [
+                                ['text' => $prompt],
+                                [
+                                    'inline_data' => [
+                                        'mime_type' => 'application/pdf',
+                                        'data' => base64_encode($contents),
+                                    ],
+                                ],
+                            ],
+                        ]],
+                        'generationConfig' => [
+                            'temperature' => 0,
+                            'maxOutputTokens' => 64000,
+                        ],
+                    ]);
+
+                $response->throw();
+
+                $questions = $this->parseStructuredQuestionsJson(
+                    trim((string) data_get($response->json(), 'candidates.0.content.parts.0.text', '')),
+                );
+
+                if ($questions !== []) {
+                    return $questions;
+                }
+            } catch (RequestException $exception) {
+                if (in_array($exception->response->status(), [404, 429, 503], true)) {
+                    continue;
+                }
+
+                throw $exception;
+            } catch (ConnectionException) {
+                continue;
+            }
+        }
+
+        return [];
+    }
+
+    protected function extractStructuredQuestionsFromText(string $text): array
+    {
+        $prompt = $this->structuredJsonPrompt()."\n\nTexto extraído do PDF:\n\n".$text;
+
+        foreach ($this->geminiModelsToTry(forPdfImport: true) as $model) {
+            try {
+                $response = Http::baseUrl(rtrim((string) config('services.gemini.base_url'), '/'))
+                    ->acceptJson()
+                    ->timeout(90)
+                    ->post("/v1beta/models/{$model}:generateContent?key=".config('services.gemini.api_key'), [
+                        'contents' => [[
+                            'parts' => [
+                                ['text' => $prompt],
+                            ],
+                        ]],
+                        'generationConfig' => [
+                            'temperature' => 0,
+                            'maxOutputTokens' => 64000,
+                        ],
+                    ]);
+
+                $response->throw();
+
+                $questions = $this->parseStructuredQuestionsJson(
+                    trim((string) data_get($response->json(), 'candidates.0.content.parts.0.text', '')),
+                );
+
+                if ($questions !== []) {
+                    return $questions;
+                }
+            } catch (RequestException $exception) {
+                if (in_array($exception->response->status(), [404, 429, 503], true)) {
+                    continue;
+                }
+
+                throw $exception;
+            } catch (ConnectionException) {
+                continue;
+            }
+        }
+
+        return [];
+    }
+
+    protected function structuredJsonPrompt(): string
+    {
+        return self::PDF_TO_XLSX_PROMPT."\n\n".
+            'Para esta integração, não gere arquivo XLSX para download. Retorne somente JSON válido, sem markdown, no formato: '.
+            '{"questions":[{"numero":1,"disciplina":"","assunto":"","subassunto":"","enunciado":"","alternativa_a":"","alternativa_b":"","alternativa_c":"","alternativa_d":"","alternativa_e":"","gabarito":"A","referencia_origem":"","observacoes_revisao":"","imagem_descricao":""}]}.';
+    }
+
+    protected function parseStructuredQuestionsJson(string $text): array
+    {
+        $text = preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($text)) ?? $text;
+        $decoded = json_decode($text, true);
+
+        if (! is_array($decoded)) {
+            return [];
+        }
+
+        $rows = isset($decoded['numero']) || isset($decoded['number'])
+            ? [$decoded]
+            : ($decoded['questions'] ?? $decoded);
+
+        if (! is_array($rows)) {
+            return [];
+        }
+
+        return collect($rows)
+            ->map(fn (mixed $row): ?array => is_array($row) ? $this->normalizeStructuredQuestion($row) : null)
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    protected function normalizeStructuredQuestion(array $row): ?array
+    {
+        $number = (int) ($row['numero'] ?? $row['number'] ?? 0);
+        $statement = trim((string) ($row['enunciado'] ?? $row['statement'] ?? ''));
+
+        if ($number <= 0 || $statement === '') {
+            return null;
+        }
+
+        $options = collect(['a', 'b', 'c', 'd', 'e'])
+            ->map(function (string $label) use ($row): ?array {
+                $text = trim((string) ($row["alternativa_{$label}"] ?? $row["alternativa {$label}"] ?? $row[$label] ?? ''));
+
+                if ($text === '') {
+                    return null;
+                }
+
+                return [
+                    'label' => $label,
+                    'text' => $text,
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+
+        if ($options === []) {
+            return null;
+        }
+
+        $answerKey = Str::of((string) ($row['gabarito'] ?? $row['answer_key'] ?? ''))->trim()->lower()->ascii()->value();
+
+        return [
+            'number' => $number,
+            'subject' => trim((string) ($row['disciplina'] ?? '')) ?: null,
+            'topic' => trim((string) ($row['assunto'] ?? '')) ?: null,
+            'subtopic' => trim((string) ($row['subassunto'] ?? '')) ?: null,
+            'statement' => $statement,
+            'options' => $options,
+            'answer_key' => in_array($answerKey, ['a', 'b', 'c', 'd', 'e'], true) ? $answerKey : null,
+            'commentary' => null,
+            'source_reference' => trim((string) ($row['referencia_origem'] ?? '')) ?: null,
+            'review_notes' => trim((string) ($row['observacoes_revisao'] ?? '')) ?: null,
+            'image_urls' => $this->imageUrlsFromStructuredQuestion($row),
+            'image_description' => trim((string) ($row['imagem_descricao'] ?? $row['descricao_imagem'] ?? '')) ?: null,
+        ];
+    }
+
+    protected function imageUrlsFromStructuredQuestion(array $row): array
+    {
+        $values = [
+            $row['imagem_url'] ?? null,
+            $row['imagem'] ?? null,
+            $row['imagem_1'] ?? null,
+            $row['imagem_2'] ?? null,
+            $row['imagem_3'] ?? null,
+        ];
+
+        if (isset($row['imagens']) && is_array($row['imagens'])) {
+            $values = array_merge($values, $row['imagens']);
+        }
+
+        return collect($values)
+            ->filter(fn ($value): bool => is_string($value) && trim($value) !== '')
+            ->flatMap(fn (string $value): array => preg_split('/[\n;,|]+/', $value) ?: [])
+            ->map(fn (string $value): ?string => $this->normalizeImageUrl($value))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    protected function normalizeImageUrl(string $value): ?string
+    {
+        $value = trim($value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        if (Str::startsWith($value, ['http://', 'https://', '//', '/'])) {
+            return $value;
+        }
+
+        if (Str::startsWith($value, 'storage/')) {
+            return '/'.$value;
+        }
+
+        return '/storage/'.ltrim($value, '/');
     }
 
     public function applyAnswerKey(QuestionBank $bank, string $answerKeyText): int

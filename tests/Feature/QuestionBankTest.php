@@ -133,6 +133,8 @@ TXT;
                 'comentario',
                 'referencia_origem',
                 'observacoes_revisao',
+                'imagem_url',
+                'imagem_descricao',
             ],
             [
                 '1',
@@ -149,6 +151,8 @@ TXT;
                 'Casa nomeia um ser, por isso é substantivo.',
                 'VUNESP - Cargo/2026',
                 '',
+                'question-images/substantivo.png',
+                'Imagem com uma casa usada como exemplo de substantivo.',
             ],
         ]);
 
@@ -169,10 +173,51 @@ TXT;
             'source_reference' => 'VUNESP - Cargo/2026',
             'status' => 'published',
         ]);
+        $question = $bank->questions()->firstOrFail();
+
+        $this->assertSame(['/storage/question-images/substantivo.png'], data_get($question->metadata, 'image_urls'));
+        $this->assertSame('Imagem com uma casa usada como exemplo de substantivo.', data_get($question->metadata, 'image_description'));
         $this->assertDatabaseHas('question_options', [
             'label' => 'b',
             'text' => 'Casa',
             'is_correct' => true,
+        ]);
+    }
+
+    public function test_question_import_relabels_duplicate_option_letters(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco com alternativa duplicada',
+            'source_type' => 'pdf',
+            'status' => 'draft',
+        ]);
+
+        app(QuestionSpreadsheetImporter::class)->importParsedQuestions($bank, [[
+            'number' => 1,
+            'subject' => null,
+            'topic' => null,
+            'subtopic' => null,
+            'statement' => 'Assinale a correta.',
+            'options' => [
+                ['label' => 'a', 'text' => 'Alternativa A'],
+                ['label' => 'b', 'text' => 'Alternativa B'],
+                ['label' => 'c', 'text' => 'Alternativa C'],
+                ['label' => 'd', 'text' => 'Alternativa D'],
+                ['label' => 'd', 'text' => 'Alternativa que deveria ser E'],
+            ],
+            'answer_key' => 'e',
+            'commentary' => null,
+            'source_reference' => null,
+            'review_notes' => null,
+        ]]);
+
+        $question = $bank->questions()->firstOrFail();
+
+        $this->assertSame(['a', 'b', 'c', 'd', 'e'], $question->options()->pluck('label')->all());
+        $this->assertDatabaseHas('question_options', [
+            'question_id' => $question->id,
+            'label' => 'e',
+            'text' => 'Alternativa que deveria ser E',
         ]);
     }
 
@@ -190,19 +235,20 @@ TXT;
                 'candidates' => [[
                     'content' => [
                         'parts' => [[
-                            'text' => <<<'TXT'
-VUNESP - Cargo/Org/2026
-Língua Portuguesa (Português) - Substantivo
-1)
-Assinale a alternativa correta.
-a) primeira alternativa.
-b) segunda alternativa.
-c) terceira alternativa.
-d) quarta alternativa.
-
-1 - Gabarito
-1 c
-TXT,
+                            'text' => json_encode([
+                                'questions' => [[
+                                    'numero' => 1,
+                                    'disciplina' => 'Língua Portuguesa',
+                                    'assunto' => 'Substantivo',
+                                    'enunciado' => 'Assinale a alternativa correta.',
+                                    'alternativa_a' => 'primeira alternativa.',
+                                    'alternativa_b' => 'segunda alternativa.',
+                                    'alternativa_c' => 'terceira alternativa.',
+                                    'alternativa_d' => 'quarta alternativa.',
+                                    'gabarito' => 'C',
+                                    'comentario' => 'A alternativa C está correta.',
+                                ]],
+                            ]),
                         ]],
                     ],
                 ]],
@@ -299,51 +345,32 @@ XML);
 
         Storage::disk('local')->put('question-banks/reimport.pdf', 'not a text pdf');
 
-        $course = Course::factory()->create(['status' => 'published']);
-        $module = CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'name' => 'Português',
-            'type' => 'basic',
-        ]);
-        $lesson = Lesson::factory()->create([
-            'course_id' => $course->id,
-            'course_module_id' => $module->id,
-            'title' => '01 - Substantivo',
-        ]);
-
         Http::fake([
-            '*gemini-2.5-flash-lite*' => Http::sequence()
-                ->push([
-                    'candidates' => [[
-                        'content' => [
-                            'parts' => [[
-                                'text' => <<<'TXT'
-VUNESP - Cargo/Org/2026
-Língua Portuguesa (Português) - Substantivo
-1)
-Assinale a alternativa correta.
-a) primeira alternativa.
-b) segunda alternativa.
-c) terceira alternativa.
-d) quarta alternativa.
-TXT,
-                            ]],
-                        ],
-                    ]],
-                ])
-                ->push([
-                    'candidates' => [[
-                        'content' => [
-                            'parts' => [[
-                                'text' => '1:C',
-                            ]],
-                        ],
-                    ]],
-                ]),
+            '*gemini-2.5-flash-lite*' => Http::response([
+                'candidates' => [[
+                    'content' => [
+                        'parts' => [[
+                            'text' => json_encode([
+                                'questions' => [[
+                                    'numero' => 1,
+                                    'disciplina' => 'Língua Portuguesa',
+                                    'assunto' => 'Substantivo',
+                                    'enunciado' => 'Assinale a alternativa correta.',
+                                    'alternativa_a' => 'primeira alternativa.',
+                                    'alternativa_b' => 'segunda alternativa.',
+                                    'alternativa_c' => 'terceira alternativa.',
+                                    'alternativa_d' => 'quarta alternativa.',
+                                    'gabarito' => 'C',
+                                    'comentario' => 'A alternativa C está correta.',
+                                ]],
+                            ]),
+                        ]],
+                    ],
+                ]],
+            ]),
         ]);
 
         $bank = QuestionBank::query()->create([
-            'course_id' => $course->id,
             'title' => 'Banco reimportado',
             'source_type' => 'pdf',
             'source_file_path' => 'question-banks/reimport.pdf',
@@ -369,8 +396,6 @@ TXT,
             'question_bank_id' => $bank->id,
             'number' => 1,
             'answer_key' => 'c',
-            'course_module_id' => $module->id,
-            'lesson_id' => $lesson->id,
             'status' => 'published',
         ]);
     }
@@ -382,7 +407,6 @@ TXT,
         $student->courses()->attach($course, ['source' => 'manual']);
 
         $bank = QuestionBank::query()->create([
-            'course_id' => $course->id,
             'title' => 'Substantivo e adjetivo',
             'source_type' => 'pdf',
             'status' => 'published',
@@ -554,7 +578,7 @@ TXT,
         $this->assertSame('gemini:gemini-2.5-flash-lite', $question->fresh()->commentary_provider);
     }
 
-    public function test_question_bank_questions_can_be_linked_to_matching_lesson_subjects(): void
+    public function test_question_bank_is_global_and_not_linked_to_course_lessons(): void
     {
         $course = Course::factory()->create(['status' => 'published']);
         $module = CourseModule::factory()->create([
@@ -586,11 +610,12 @@ TXT,
             'status' => 'published',
         ]);
 
-        $this->assertSame(1, app(QuestionLessonLinker::class)->linkBank($bank));
+        $this->assertNull($bank->fresh()->course_id);
+        $this->assertSame(0, app(QuestionLessonLinker::class)->linkBank($bank->fresh()));
 
-        $this->assertSame($course->id, $question->fresh()->course_id);
-        $this->assertSame($module->id, $question->fresh()->course_module_id);
-        $this->assertSame($lesson->id, $question->fresh()->lesson_id);
+        $this->assertNull($question->fresh()->course_id);
+        $this->assertNull($question->fresh()->course_module_id);
+        $this->assertNull($question->fresh()->lesson_id);
     }
 
     public function test_study_plan_links_to_related_questions_and_question_page_links_back_to_plan(): void

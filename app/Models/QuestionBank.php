@@ -26,6 +26,13 @@ class QuestionBank extends Model
         'metadata' => 'array',
     ];
 
+    protected static function booted(): void
+    {
+        static::saving(function (QuestionBank $bank): void {
+            $bank->course_id = null;
+        });
+    }
+
     public function course(): BelongsTo
     {
         return $this->belongsTo(Course::class);
