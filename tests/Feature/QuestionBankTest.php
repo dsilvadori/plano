@@ -141,6 +141,18 @@ TXT,
 
         Storage::disk('local')->put('question-banks/reimport.pdf', 'not a text pdf');
 
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '01 - Substantivo',
+        ]);
+
         Http::fake([
             '*gemini-2.5-flash-lite*' => Http::sequence()
                 ->push([
@@ -173,6 +185,7 @@ TXT,
         ]);
 
         $bank = QuestionBank::query()->create([
+            'course_id' => $course->id,
             'title' => 'Banco reimportado',
             'source_type' => 'pdf',
             'source_file_path' => 'question-banks/reimport.pdf',
@@ -198,6 +211,8 @@ TXT,
             'question_bank_id' => $bank->id,
             'number' => 1,
             'answer_key' => 'c',
+            'course_module_id' => $module->id,
+            'lesson_id' => $lesson->id,
             'status' => 'published',
         ]);
     }

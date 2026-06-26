@@ -107,6 +107,16 @@ class QuestionPdfImporter
                     ]),
                 ])->save();
             });
+
+            if ($bank->course_id) {
+                $linkedQuestions = app(QuestionLessonLinker::class)->linkBank($bank->fresh());
+
+                $batch->forceFill([
+                    'summary' => array_replace($batch->summary ?? [], [
+                        'linked_questions' => $linkedQuestions,
+                    ]),
+                ])->save();
+            }
         } catch (Throwable $exception) {
             $batch->forceFill([
                 'status' => 'failed',
