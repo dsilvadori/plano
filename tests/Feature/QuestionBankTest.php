@@ -132,6 +132,76 @@ TXT,
         ]);
     }
 
+    public function test_pdf_reimport_replaces_existing_questions_and_reads_answer_key_from_final_page(): void
+    {
+        config([
+            'services.gemini.api_key' => 'testing-key',
+            'services.gemini.model' => 'gemini-2.5-flash-lite',
+        ]);
+
+        Storage::disk('local')->put('question-banks/reimport.pdf', 'not a text pdf');
+
+        Http::fake([
+            '*gemini-2.5-flash-lite*' => Http::sequence()
+                ->push([
+                    'candidates' => [[
+                        'content' => [
+                            'parts' => [[
+                                'text' => <<<'TXT'
+VUNESP - Cargo/Org/2026
+Língua Portuguesa (Português) - Substantivo
+1)
+Assinale a alternativa correta.
+a) primeira alternativa.
+b) segunda alternativa.
+c) terceira alternativa.
+d) quarta alternativa.
+TXT,
+                            ]],
+                        ],
+                    ]],
+                ])
+                ->push([
+                    'candidates' => [[
+                        'content' => [
+                            'parts' => [[
+                                'text' => '1:C',
+                            ]],
+                        ],
+                    ]],
+                ]),
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco reimportado',
+            'source_type' => 'pdf',
+            'source_file_path' => 'question-banks/reimport.pdf',
+            'status' => 'published',
+        ]);
+
+        $staleQuestion = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 99,
+            'statement' => 'Questão antiga que deve sair.',
+            'type' => 'multiple_choice',
+            'status' => 'published',
+        ]);
+
+        $batch = app(QuestionPdfImporter::class)->import($bank);
+
+        $this->assertSame(1, $batch->questions_imported);
+        $this->assertSame(1, data_get($batch->summary, 'removed_questions'));
+        $this->assertDatabaseMissing('questions', [
+            'id' => $staleQuestion->id,
+        ]);
+        $this->assertDatabaseHas('questions', [
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'answer_key' => 'c',
+            'status' => 'published',
+        ]);
+    }
+
     public function test_student_can_open_question_bank_answer_and_see_commentary(): void
     {
         $student = User::factory()->create(['role' => 'student']);

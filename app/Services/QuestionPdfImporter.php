@@ -42,8 +42,18 @@ class QuestionPdfImporter
         try {
             $text = $this->extractText($pdfPath);
             $parsedQuestions = $this->parseText($text);
+            $parsedQuestions = $this->fillMissingAnswerKeys($parsedQuestions, $pdfPath);
 
             DB::transaction(function () use ($bank, $batch, $parsedQuestions, $text): void {
+                $importedNumbers = collect($parsedQuestions)->pluck('number')->filter()->all();
+                $removedQuestions = 0;
+
+                if ($importedNumbers !== []) {
+                    $removedQuestions = $bank->questions()
+                        ->whereNotIn('number', $importedNumbers)
+                        ->delete();
+                }
+
                 foreach ($parsedQuestions as $parsedQuestion) {
                     $question = Question::query()->updateOrCreate([
                         'question_bank_id' => $bank->id,
@@ -82,6 +92,8 @@ class QuestionPdfImporter
                     'summary' => [
                         'text_length' => mb_strlen($text),
                         'without_answer_key' => collect($parsedQuestions)->whereNull('answer_key')->count(),
+                        'imported_numbers' => $importedNumbers,
+                        'removed_questions' => $removedQuestions,
                     ],
                 ])->save();
 
@@ -221,7 +233,7 @@ class QuestionPdfImporter
                         ]],
                         'generationConfig' => [
                             'temperature' => 0,
-                            'maxOutputTokens' => 16000,
+                            'maxOutputTokens' => 32000,
                         ],
                     ]);
 
@@ -355,6 +367,90 @@ class QuestionPdfImporter
         return collect($matches)
             ->mapWithKeys(fn (array $match): array => [(int) $match[1] => strtolower($match[2])])
             ->all();
+    }
+
+    protected function fillMissingAnswerKeys(array $parsedQuestions, string $pdfPath): array
+    {
+        if ($parsedQuestions === [] || collect($parsedQuestions)->every(fn (array $question): bool => filled($question['answer_key']))) {
+            return $parsedQuestions;
+        }
+
+        $answerKey = $this->extractAnswerKeyWithGemini($pdfPath);
+
+        if ($answerKey === []) {
+            return $parsedQuestions;
+        }
+
+        return collect($parsedQuestions)
+            ->map(function (array $question) use ($answerKey): array {
+                $question['answer_key'] = $question['answer_key'] ?: ($answerKey[$question['number']] ?? null);
+
+                return $question;
+            })
+            ->all();
+    }
+
+    protected function extractAnswerKeyWithGemini(string $pdfPath): array
+    {
+        $apiKey = config('services.gemini.api_key');
+
+        if (blank($apiKey)) {
+            return [];
+        }
+
+        $contents = file_get_contents($pdfPath);
+
+        if ($contents === false) {
+            return [];
+        }
+
+        $prompt = implode("\n", [
+            'Leia este PDF de questões de concurso e extraia somente o gabarito final.',
+            'O gabarito normalmente fica na última página ou no final do arquivo.',
+            'Retorne apenas pares no formato "1:A,2:B,3:C".',
+            'Não explique nada e não inclua texto fora dos pares número:alternativa.',
+        ]);
+
+        foreach ($this->geminiModelsToTry() as $model) {
+            try {
+                $response = Http::baseUrl(rtrim((string) config('services.gemini.base_url'), '/'))
+                    ->acceptJson()
+                    ->timeout(90)
+                    ->post("/v1beta/models/{$model}:generateContent?key={$apiKey}", [
+                        'contents' => [[
+                            'parts' => [
+                                ['text' => $prompt],
+                                [
+                                    'inline_data' => [
+                                        'mime_type' => 'application/pdf',
+                                        'data' => base64_encode($contents),
+                                    ],
+                                ],
+                            ],
+                        ]],
+                        'generationConfig' => [
+                            'temperature' => 0,
+                            'maxOutputTokens' => 2048,
+                        ],
+                    ]);
+
+                $response->throw();
+
+                $answerKey = $this->parseInlineAnswerKey(trim((string) data_get($response->json(), 'candidates.0.content.parts.0.text', '')));
+
+                if ($answerKey !== []) {
+                    return $answerKey;
+                }
+            } catch (RequestException $exception) {
+                if (in_array($exception->response->status(), [404, 429, 503], true)) {
+                    continue;
+                }
+
+                throw $exception;
+            }
+        }
+
+        return [];
     }
 
     protected function parseInlineAnswerKey(string $answerKeyText): array
