@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Question;
 use App\Models\QuestionBank;
 use App\Models\QuestionImportBatch;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -214,7 +215,7 @@ class QuestionPdfImporter
         ]);
         $lastException = null;
 
-        foreach ($this->geminiModelsToTry() as $model) {
+        foreach ($this->geminiModelsToTry(forPdfImport: true) as $model) {
             try {
                 $response = Http::baseUrl(rtrim((string) config('services.gemini.base_url'), '/'))
                     ->acceptJson()
@@ -248,6 +249,10 @@ class QuestionPdfImporter
                 }
 
                 throw $exception;
+            } catch (ConnectionException $exception) {
+                $lastException = $exception;
+
+                continue;
             }
         }
 
@@ -261,17 +266,24 @@ class QuestionPdfImporter
     /**
      * @return array<int, string>
      */
-    protected function geminiModelsToTry(): array
+    protected function geminiModelsToTry(bool $forPdfImport = false): array
     {
         $configuredModel = trim((string) config('services.gemini.model'), '/');
 
-        return collect([
+        $models = $forPdfImport ? [
+            $configuredModel,
+            'gemini-2.5-flash-lite',
+            'gemini-2.5-flash',
+            'gemini-flash-latest',
+        ] : [
             $configuredModel,
             'gemini-2.5-flash-lite',
             'gemini-3.5-flash',
             'gemini-2.5-flash',
             'gemini-flash-latest',
-        ])
+        ];
+
+        return collect($models)
             ->filter()
             ->unique()
             ->values()
@@ -411,7 +423,7 @@ class QuestionPdfImporter
             'Não explique nada e não inclua texto fora dos pares número:alternativa.',
         ]);
 
-        foreach ($this->geminiModelsToTry() as $model) {
+        foreach ($this->geminiModelsToTry(forPdfImport: true) as $model) {
             try {
                 $response = Http::baseUrl(rtrim((string) config('services.gemini.base_url'), '/'))
                     ->acceptJson()
@@ -447,6 +459,8 @@ class QuestionPdfImporter
                 }
 
                 throw $exception;
+            } catch (ConnectionException) {
+                continue;
             }
         }
 
