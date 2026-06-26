@@ -1072,6 +1072,39 @@ html[data-theme="light"] .lesson-ai-panel details {
     }
 }
 
+.question-rich-text strong,
+[data-question-card] button strong {
+    color: rgb(255 255 255);
+    font-weight: 800;
+}
+
+.question-rich-text p {
+    margin: 0;
+    max-width: none;
+}
+
+.question-rich-text p + p {
+    margin-top: 1.25rem;
+}
+
+.question-rich-text mark,
+[data-question-card] button mark {
+    border-radius: .35rem;
+    background: rgba(246, 215, 25, .24);
+    color: inherit;
+    padding: .05rem .22rem;
+}
+
+html[data-theme="light"] .question-rich-text strong,
+html[data-theme="light"] [data-question-card] button strong {
+    color: var(--vc-heading);
+}
+
+html[data-theme="light"] .question-rich-text mark,
+html[data-theme="light"] [data-question-card] button mark {
+    background: rgba(246, 215, 25, .34);
+}
+
 @keyframes lesson-ai-pulse {
     0%,
     100% {

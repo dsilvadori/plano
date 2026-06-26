@@ -14,10 +14,12 @@ use App\Models\User;
 use App\Services\GeminiQuestionCommentaryGenerator;
 use App\Services\QuestionLessonLinker;
 use App\Services\QuestionPdfImporter;
+use App\Services\QuestionSpreadsheetImporter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
+use ZipArchive;
 
 class QuestionBankTest extends TestCase
 {
@@ -54,6 +56,24 @@ TXT;
         $this->assertSame('quarta alternativa.', $questions[0]['options'][3]['text']);
     }
 
+    public function test_pdf_parser_splits_inline_options_out_of_statement(): void
+    {
+        $text = <<<'TXT'
+VUNESP - Cargo/Org/2026
+Língua Portuguesa (Português) - Interpretação de texto
+1)
+No trecho apresentado, assinale a alternativa correta. a) primeira alternativa. b) segunda alternativa. c) terceira alternativa. d) quarta alternativa.
+TXT;
+
+        $questions = app(QuestionPdfImporter::class)->parseText($text);
+
+        $this->assertCount(1, $questions);
+        $this->assertSame('No trecho apresentado, assinale a alternativa correta.', $questions[0]['statement']);
+        $this->assertCount(4, $questions[0]['options']);
+        $this->assertSame('primeira alternativa.', $questions[0]['options'][0]['text']);
+        $this->assertSame('quarta alternativa.', $questions[0]['options'][3]['text']);
+    }
+
     public function test_answer_key_can_be_applied_after_pdf_import(): void
     {
         $bank = QuestionBank::query()->create([
@@ -79,6 +99,81 @@ TXT;
         $this->assertSame('published', $bank->fresh()->status);
         $this->assertSame('c', $question->fresh()->answer_key);
         $this->assertTrue($correct->fresh()->is_correct);
+    }
+
+    public function test_xlsx_import_replaces_existing_questions_and_imports_commentary(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco XLSX',
+            'source_type' => 'xlsx',
+            'status' => 'draft',
+        ]);
+
+        $oldQuestion = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 99,
+            'statement' => 'Questão antiga.',
+            'type' => 'multiple_choice',
+            'status' => 'published',
+        ]);
+
+        $path = $this->createQuestionSpreadsheet([
+            [
+                'numero',
+                'disciplina',
+                'assunto',
+                'subassunto',
+                'enunciado',
+                'alternativa_a',
+                'alternativa_b',
+                'alternativa_c',
+                'alternativa_d',
+                'alternativa_e',
+                'gabarito',
+                'comentario',
+                'referencia_origem',
+                'observacoes_revisao',
+            ],
+            [
+                '1',
+                'Língua Portuguesa',
+                'Substantivo',
+                '',
+                'Qual alternativa apresenta um **substantivo**?',
+                'Rapidamente',
+                'Casa',
+                'Ontem',
+                'Muito',
+                '',
+                'B',
+                'Casa nomeia um ser, por isso é substantivo.',
+                'VUNESP - Cargo/2026',
+                '',
+            ],
+        ]);
+
+        $batch = app(QuestionSpreadsheetImporter::class)->import($bank, $path);
+
+        $this->assertSame('imported', $batch->status);
+        $this->assertSame(1, $batch->questions_imported);
+        $this->assertDatabaseMissing('questions', ['id' => $oldQuestion->id]);
+        $this->assertDatabaseHas('questions', [
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'subject' => 'Língua Portuguesa',
+            'topic' => 'Substantivo',
+            'statement' => 'Qual alternativa apresenta um **substantivo**?',
+            'answer_key' => 'b',
+            'commentary' => 'Casa nomeia um ser, por isso é substantivo.',
+            'commentary_provider' => 'xlsx',
+            'source_reference' => 'VUNESP - Cargo/2026',
+            'status' => 'published',
+        ]);
+        $this->assertDatabaseHas('question_options', [
+            'label' => 'b',
+            'text' => 'Casa',
+            'is_correct' => true,
+        ]);
     }
 
     public function test_pdf_importer_uses_gemini_fallback_when_local_text_extraction_fails(): void
@@ -130,6 +225,69 @@ TXT,
             'number' => 1,
             'answer_key' => 'c',
         ]);
+    }
+
+    protected function createQuestionSpreadsheet(array $rows): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'questions-xlsx-');
+
+        $archive = new ZipArchive();
+        $archive->open($path, ZipArchive::OVERWRITE);
+        $archive->addFromString('[Content_Types].xml', <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+    <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+    <Default Extension="xml" ContentType="application/xml"/>
+    <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+    <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>
+XML);
+        $archive->addFromString('_rels/.rels', <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>
+XML);
+        $archive->addFromString('xl/workbook.xml', <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+    <sheets>
+        <sheet name="Questões" sheetId="1" r:id="rId1"/>
+    </sheets>
+</workbook>
+XML);
+        $archive->addFromString('xl/_rels/workbook.xml.rels', <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>
+XML);
+
+        $sheetRows = collect($rows)
+            ->map(function (array $row, int $rowIndex): string {
+                $rowNumber = $rowIndex + 1;
+                $cells = collect($row)
+                    ->map(function (string $value, int $columnIndex) use ($rowNumber): string {
+                        $column = chr(65 + $columnIndex);
+                        $escaped = htmlspecialchars($value, ENT_XML1);
+
+                        return "<c r=\"{$column}{$rowNumber}\" t=\"inlineStr\"><is><t>{$escaped}</t></is></c>";
+                    })
+                    ->implode('');
+
+                return "<row r=\"{$rowNumber}\">{$cells}</row>";
+            })
+            ->implode('');
+
+        $archive->addFromString('xl/worksheets/sheet1.xml', <<<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+    <sheetData>{$sheetRows}</sheetData>
+</worksheet>
+XML);
+        $archive->close();
+
+        return $path;
     }
 
     public function test_pdf_reimport_replaces_existing_questions_and_reads_answer_key_from_final_page(): void

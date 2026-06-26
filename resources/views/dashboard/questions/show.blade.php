@@ -35,9 +35,11 @@
                     </span>
                 </div>
 
-                <div class="mt-4 whitespace-pre-line text-sm leading-7 text-slate-200">{{ $question->statement }}</div>
+                <div class="question-rich-text mt-5 text-base leading-8 text-slate-100">
+                    {{ \App\Support\QuestionTextRenderer::render($question->statement) }}
+                </div>
 
-                <div class="mt-5 grid gap-2">
+                <div class="mt-6 grid gap-3">
                     @foreach ($question->options as $option)
                         @php
                             $isSelected = $attempt?->question_option_id === $option->id;
@@ -51,14 +53,14 @@
                                 type="submit"
                                 data-option-id="{{ $option->id }}"
                                 @class([
-                                    'w-full rounded-2xl border px-4 py-3 text-left text-sm transition',
+                                    'w-full rounded-2xl border px-4 py-4 text-left text-base leading-7 transition',
                                     'border-emerald-400/30 bg-emerald-400/10 text-emerald-100' => $showResult && $option->is_correct,
                                     'border-rose-400/30 bg-rose-400/10 text-rose-100' => $showResult && $isSelected && ! $option->is_correct,
                                     'border-white/10 bg-white/5 text-slate-200 hover:border-sky-400/30 hover:bg-sky-400/10' => ! ($showResult && ($option->is_correct || $isSelected)),
                                 ])
                             >
                                 <span class="font-semibold text-sky-100">{{ strtoupper($option->label) }}.</span>
-                                {{ $option->text }}
+                                <span>{{ \App\Support\QuestionTextRenderer::renderInline($option->text) }}</span>
                             </button>
                         </form>
                     @endforeach
@@ -73,9 +75,11 @@
                             Gabarito: {{ strtoupper($question->answer_key) }}
                         @endif
                     </p>
-                    <p id="comentario-{{ $question->id }}" class="mt-2 text-sm leading-6 text-slate-200">
-                        {{ $attempt ? ($question->commentary ?: 'Comentário em preparação.') : '' }}
-                    </p>
+                    <div id="comentario-{{ $question->id }}" class="question-rich-text mt-2 text-sm leading-6 text-slate-200">
+                        @if ($attempt)
+                            {{ \App\Support\QuestionTextRenderer::render($question->commentary ?: 'Comentário em preparação.') }}
+                        @endif
+                    </div>
                 </div>
             </article>
         @empty
@@ -87,7 +91,7 @@
 
     <script>
         (() => {
-            const baseClass = 'w-full rounded-2xl border px-4 py-3 text-left text-sm transition';
+            const baseClass = 'w-full rounded-2xl border px-4 py-4 text-left text-base leading-7 transition';
             const neutralClass = `${baseClass} border-white/10 bg-white/5 text-slate-200 hover:border-sky-400/30 hover:bg-sky-400/10`;
             const correctClass = `${baseClass} border-emerald-400/30 bg-emerald-400/10 text-emerald-100`;
             const wrongClass = `${baseClass} border-rose-400/30 bg-rose-400/10 text-rose-100`;
@@ -155,7 +159,7 @@
                         }
 
                         if (commentary) {
-                            commentary.textContent = payload.commentary || 'Comentário em preparação.';
+                            commentary.innerHTML = payload.commentary_html || payload.commentary || 'Comentário em preparação.';
                         }
                     } catch (error) {
                         form.submit();

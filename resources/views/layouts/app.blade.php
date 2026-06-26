@@ -33,15 +33,20 @@
         @include('layouts.navigation')
 
         <div class="lg:pl-72">
+            @php
+                $isWidePage = request()->routeIs('questions.show');
+                $pageWidthClass = $isWidePage ? 'max-w-none' : 'max-w-7xl';
+            @endphp
+
             @isset($header)
                 <header class="border-b border-white/10 bg-white/5 backdrop-blur">
-                    <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+                    <div class="mx-auto {{ $pageWidthClass }} px-4 py-6 sm:px-6 lg:px-8">
                         {{ $header }}
                     </div>
                 </header>
             @endisset
 
-            <main class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+            <main class="mx-auto {{ $pageWidthClass }} px-4 py-8 sm:px-6 lg:px-8">
                 {{ $slot }}
             </main>
         </div>

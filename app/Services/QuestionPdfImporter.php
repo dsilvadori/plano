@@ -220,6 +220,7 @@ class QuestionPdfImporter
         $prompt = implode("\n", [
             'Extraia o texto deste PDF de questões de concurso.',
             'Preserve a numeração das questões no formato "1)" e preserve as alternativas no formato "a)", "b)", "c)", "d)" e "e)".',
+            'Quando houver texto em negrito, destaque ou grifo, represente como Markdown: **negrito** e ==destaque==.',
             'Preserve também a seção de gabarito, se existir.',
             'Retorne apenas o texto extraído, sem comentários adicionais.',
         ]);
@@ -350,6 +351,7 @@ class QuestionPdfImporter
 
     protected function parseQuestionBlock(string $raw): array
     {
+        $raw = $this->normalizeOptionMarkers($raw);
         preg_match_all('/^\s*([a-e])\)\s*(.*?)(?=^\s*[a-e]\)\s*|\z)/ims', $raw, $matches, PREG_OFFSET_CAPTURE);
 
         if ($matches[0] === []) {
@@ -530,5 +532,13 @@ class QuestionPdfImporter
         $parts = preg_split('/\n\s*(?:VUNESP|FGV|CEBRASPE|FCC|IBFC|AOCP|CESGRANRIO)\s+-/iu', $text);
 
         return trim($parts[0] ?? $text);
+    }
+
+    protected function normalizeOptionMarkers(string $text): string
+    {
+        $text = preg_replace('/(?<!^)(?<!\n)(?<=\S)\s+([a-e])\)\s+/i', "\n$1) ", $text) ?? $text;
+        $text = preg_replace('/^\s*([a-e])[\.\-]\s+/mi', '$1) ', $text) ?? $text;
+
+        return $text;
     }
 }

@@ -6,6 +6,7 @@ use App\Models\Question;
 use App\Models\QuestionAttempt;
 use App\Models\QuestionBank;
 use App\Models\StudyPlan;
+use App\Support\QuestionTextRenderer;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -112,6 +113,7 @@ class QuestionBankController extends Controller
                 'is_correct' => (bool) $option->is_correct,
                 'answer_key' => $question->answer_key ? strtoupper($question->answer_key) : null,
                 'commentary' => $question->commentary ?: 'Comentário em preparação.',
+                'commentary_html' => (string) QuestionTextRenderer::render($question->commentary ?: 'Comentário em preparação.'),
                 'correct_option_ids' => $question->options
                     ->where('is_correct', true)
                     ->pluck('id')

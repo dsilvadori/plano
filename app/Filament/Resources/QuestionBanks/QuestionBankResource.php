@@ -58,19 +58,23 @@ class QuestionBankResource extends Resource
                 ->label('Origem')
                 ->options([
                     'pdf' => 'PDF',
+                    'xlsx' => 'XLSX',
                     'manual' => 'Manual',
                     'ai' => 'IA',
                 ])
                 ->default('pdf')
                 ->required(),
             FileUpload::make('source_file_path')
-                ->label('PDF de questões')
+                ->label('Arquivo de questões')
                 ->disk('local')
                 ->directory('question-banks')
                 ->preserveFilenames()
-                ->acceptedFileTypes(['application/pdf'])
+                ->acceptedFileTypes([
+                    'application/pdf',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                ])
                 ->maxSize(20480)
-                ->helperText('Envie o caderno de questões em PDF. Depois de salvar, use a ação "Importar PDF".')
+                ->helperText('Envie o caderno em PDF ou a planilha .xlsx. Depois de salvar, use a ação de importação correspondente.')
                 ->columnSpanFull(),
         ]);
     }

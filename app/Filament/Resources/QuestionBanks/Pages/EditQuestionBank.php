@@ -5,10 +5,14 @@ namespace App\Filament\Resources\QuestionBanks\Pages;
 use App\Filament\Resources\QuestionBanks\QuestionBankResource;
 use App\Services\QuestionLessonLinker;
 use App\Services\QuestionPdfImporter;
+use App\Services\QuestionSpreadsheetImporter;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
+use Filament\Forms\Components\FileUpload;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Storage;
 use Throwable;
 
 class EditQuestionBank extends EditRecord
@@ -41,6 +45,56 @@ class EditQuestionBank extends EditRecord
                             ->send();
                     }
                 }),
+            Action::make('importXlsx')
+                ->label('Importar XLSX')
+                ->icon('heroicon-o-table-cells')
+                ->requiresConfirmation()
+                ->modalHeading('Substituir questões por XLSX')
+                ->modalDescription('A planilha substituirá todas as questões atuais deste banco. Use colunas como numero, enunciado, alternativa_a, alternativa_b, gabarito e comentario.')
+                ->form([
+                    FileUpload::make('spreadsheet')
+                        ->label('Planilha de questões')
+                        ->acceptedFileTypes([
+                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        ])
+                        ->disk('local')
+                        ->directory('imports/questions')
+                        ->preserveFilenames()
+                        ->required(),
+                ])
+                ->action(function (array $data, QuestionSpreadsheetImporter $importer): void {
+                    $path = self::resolveUploadedSpreadsheetPath($data['spreadsheet'] ?? null);
+
+                    if ($path === null) {
+                        Notification::make()
+                            ->title('Selecione uma planilha válida.')
+                            ->danger()
+                            ->send();
+
+                        return;
+                    }
+
+                    try {
+                        $this->record->forceFill([
+                            'source_type' => 'xlsx',
+                            'source_file_path' => $path,
+                        ])->save();
+
+                        $batch = $importer->import($this->record->fresh(), Storage::disk('local')->path($path), auth()->id());
+
+                        Notification::make()
+                            ->title('XLSX importado.')
+                            ->body("Questões substituídas: {$batch->questions_imported}.")
+                            ->success()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->title('Não foi possível importar o XLSX.')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
+                }),
             Action::make('linkQuestions')
                 ->label('Vincular questões ao curso')
                 ->icon('heroicon-o-link')
@@ -58,5 +112,20 @@ class EditQuestionBank extends EditRecord
                 }),
             DeleteAction::make(),
         ];
+    }
+
+    protected static function resolveUploadedSpreadsheetPath(mixed $state): ?string
+    {
+        if (is_string($state) && $state !== '') {
+            return $state;
+        }
+
+        if (is_array($state)) {
+            $first = Arr::first($state, fn ($value) => is_string($value) && $value !== '');
+
+            return is_string($first) ? $first : null;
+        }
+
+        return null;
     }
 }
