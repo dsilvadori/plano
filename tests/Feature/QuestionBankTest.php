@@ -15,6 +15,7 @@ use App\Services\GeminiQuestionCommentaryGenerator;
 use App\Services\QuestionLessonLinker;
 use App\Services\QuestionPdfImporter;
 use App\Services\QuestionSpreadsheetImporter;
+use App\Support\QuestionTextRenderer;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -219,6 +220,20 @@ TXT;
             'label' => 'e',
             'text' => 'Alternativa que deveria ser E',
         ]);
+    }
+
+    public function test_commentary_renderer_breaks_each_option_explanation_into_its_own_line(): void
+    {
+        $html = (string) QuestionTextRenderer::renderCommentary(
+            'A - Está incorreta. B - Está incorreta. C - Está correta porque é **substantivo**. D - Está incorreta. E - Está incorreta.'
+        );
+
+        $this->assertSame(5, substr_count($html, '<p>'));
+        $this->assertStringContainsString('<p>A - Está incorreta.</p>', $html);
+        $this->assertStringContainsString('<p>B - Está incorreta.</p>', $html);
+        $this->assertStringContainsString('<p>C - Está correta porque é <strong>substantivo</strong>.</p>', $html);
+        $this->assertStringContainsString('<p>D - Está incorreta.</p>', $html);
+        $this->assertStringContainsString('<p>E - Está incorreta.</p>', $html);
     }
 
     public function test_pdf_importer_uses_gemini_fallback_when_local_text_extraction_fails(): void

@@ -113,7 +113,7 @@ class QuestionBankController extends Controller
                 'is_correct' => (bool) $option->is_correct,
                 'answer_key' => $question->answer_key ? strtoupper($question->answer_key) : null,
                 'commentary' => $question->commentary ?: 'Comentário em preparação.',
-                'commentary_html' => (string) QuestionTextRenderer::render($question->commentary ?: 'Comentário em preparação.'),
+                'commentary_html' => (string) QuestionTextRenderer::renderCommentary($question->commentary ?: 'Comentário em preparação.'),
                 'correct_option_ids' => $question->options
                     ->where('is_correct', true)
                     ->pluck('id')

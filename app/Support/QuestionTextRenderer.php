@@ -29,6 +29,21 @@ class QuestionTextRenderer
         return new HtmlString(self::formatInline($text));
     }
 
+    public static function renderCommentary(?string $text): HtmlString
+    {
+        $paragraphs = self::commentaryParagraphs((string) $text);
+
+        if ($paragraphs === []) {
+            return new HtmlString('');
+        }
+
+        $html = collect($paragraphs)
+            ->map(fn (string $paragraph): string => '<p>' . self::formatInline($paragraph) . '</p>')
+            ->implode('');
+
+        return new HtmlString($html);
+    }
+
     protected static function paragraphs(string $text): array
     {
         $text = str_replace(["\r\n", "\r"], "\n", trim($text));
@@ -40,6 +55,29 @@ class QuestionTextRenderer
         return collect(preg_split("/\n{2,}/", $text) ?: [])
             ->map(fn (string $paragraph): string => preg_replace('/[ \t]*\n[ \t]*/', ' ', trim($paragraph)) ?? $paragraph)
             ->map(fn (string $paragraph): string => preg_replace('/[ \t]{2,}/', ' ', $paragraph) ?? $paragraph)
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    protected static function commentaryParagraphs(string $text): array
+    {
+        $text = str_replace(["\r\n", "\r"], "\n", trim($text));
+
+        if ($text === '') {
+            return [];
+        }
+
+        $text = preg_replace('/[ \t]*\n[ \t]*/', ' ', $text) ?? $text;
+        $text = preg_replace('/[ \t]{2,}/', ' ', $text) ?? $text;
+        $text = preg_replace(
+            '/(?<!^)(?<!\w)\s+(?=(?:Alternativa|Letra)?\s*[A-Ea-e]\s*[-).:])/u',
+            "\n",
+            $text
+        ) ?? $text;
+
+        return collect(preg_split('/\n+/', $text) ?: [])
+            ->map(fn (string $paragraph): string => trim($paragraph))
             ->filter()
             ->values()
             ->all();

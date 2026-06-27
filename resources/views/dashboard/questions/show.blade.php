@@ -96,9 +96,9 @@
                             Gabarito: {{ strtoupper($question->answer_key) }}
                         @endif
                     </p>
-                    <div id="comentario-{{ $question->id }}" class="question-rich-text mt-2 text-sm leading-6 text-slate-200">
+                    <div id="comentario-{{ $question->id }}" class="question-rich-text question-commentary mt-2 text-sm leading-6 text-slate-200">
                         @if ($attempt)
-                            {{ \App\Support\QuestionTextRenderer::render($question->commentary ?: 'Comentário em preparação.') }}
+                            {{ \App\Support\QuestionTextRenderer::renderCommentary($question->commentary ?: 'Comentário em preparação.') }}
                         @endif
                     </div>
                 </div>
