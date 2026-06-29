@@ -14,6 +14,7 @@ Unificar em uma mesma experiencia:
 - Resumos, mapas mentais, questoes e tira-duvidas com IA.
 - Integracao com provedor de video para hospedagem, player, thumbnails e importacao de aulas.
 - Home customizavel pelo admin com cursos em destaque, categorias, esferas e niveis de escolaridade.
+- Comunidade/rede social para progresso dos alunos, grupos de estudo, forum e atualizacoes editoriais da Vencendo Concursos.
 
 ## Principios
 
@@ -24,6 +25,7 @@ Unificar em uma mesma experiencia:
 - Tudo que for importado deve ser auditavel, reversivel quando possivel e revisavel pelo admin antes de publicar.
 - Preparar multi-tenant sem implementar SaaS completo no inicio: usar nomes e estruturas que permitam futura tabela `organizations` ou `tenants`.
 - Nenhuma integracao externa deve bloquear a experiencia principal. Se IA/Panda falhar, curso, plano e aulas continuam acessiveis.
+- Comunidade deve ter moderacao, privacidade e controles de denuncia desde o desenho inicial, pois posts, curtidas e grupos expõem dados de comportamento de estudo.
 
 ## Glossario Inicial
 
@@ -35,6 +37,9 @@ Unificar em uma mesma experiencia:
 - **Plano de estudos**: agenda de tarefas que pode apontar para aulas, materiais e questoes.
 - **Matricula**: relacao do aluno com curso liberado.
 - **Catalogo/Home**: area publica/logada que destaca cursos, bloqueia cursos sem acesso e leva ao checkout.
+- **Comunidade**: area social da plataforma com feed, posts de progresso, curtidas, comentarios, grupos de estudo, forum e atualizacoes editoriais.
+- **Grupo de estudos**: espaco colaborativo vinculado a curso, concurso, disciplina ou assunto, com membros, posts e regras proprias.
+- **Forum**: area estruturada por categorias/topicos para duvidas, debates e respostas mais permanentes que o feed.
 
 ## Arquitetura Recomendada
 
@@ -136,6 +141,96 @@ Unificar em uma mesma experiencia:
 
 13. `home_section_items`
     - Cursos ligados a cada secao, com ordem e regras de exibicao.
+
+14. `community_posts`
+    - `id`
+    - `user_id`
+    - `course_id`
+    - `study_group_id`
+    - `type`: progress, text, question, editorial_share, system
+    - `body`
+    - `visibility`: public, enrolled_students, group, private
+    - `status`: draft, published, hidden, removed
+    - `metadata`
+
+15. `community_reactions`
+    - `id`
+    - `user_id`
+    - `reactable_type`: post, comment, forum_reply, feed_item
+    - `reactable_id`
+    - `type`: like
+
+16. `community_comments`
+    - `id`
+    - `user_id`
+    - `community_post_id`
+    - `parent_id`
+    - `body`
+    - `status`: published, hidden, removed
+
+17. `community_feed_items`
+    - `id`
+    - `source`: internal_post, progress_event, vencendo_concursos_site, system
+    - `source_id`
+    - `title`
+    - `excerpt`
+    - `url`
+    - `thumbnail_url`
+    - `published_at`
+    - `status`
+    - `metadata`
+
+18. `study_groups`
+    - `id`
+    - `course_id`
+    - `title`
+    - `description`
+    - `visibility`: public, enrolled_students, invite_only
+    - `status`: active, archived
+    - `created_by`
+    - `metadata`
+
+19. `study_group_members`
+    - `id`
+    - `study_group_id`
+    - `user_id`
+    - `role`: owner, moderator, member
+    - `status`: active, invited, blocked, left
+
+20. `forum_categories`
+    - `id`
+    - `course_id`
+    - `title`
+    - `description`
+    - `sort_order`
+    - `status`
+
+21. `forum_topics`
+    - `id`
+    - `forum_category_id`
+    - `user_id`
+    - `title`
+    - `body`
+    - `status`: open, solved, closed, hidden
+    - `is_pinned`
+    - `last_activity_at`
+
+22. `forum_replies`
+    - `id`
+    - `forum_topic_id`
+    - `user_id`
+    - `body`
+    - `is_solution`
+    - `status`: published, hidden, removed
+
+23. `community_reports`
+    - `id`
+    - `reporter_user_id`
+    - `target_type`: post, comment, forum_topic, forum_reply, user
+    - `target_id`
+    - `reason`
+    - `status`: pending, reviewed, dismissed, action_taken
+    - `metadata`
 
 ### Entidades de Integracao Panda
 
@@ -302,7 +397,7 @@ Se o Panda disponibilizar transcricao, resumo ou questoes por IA:
 
 ## Banco de Questoes
 
-Objetivo: criar uma area propria de banco de questoes, capaz de importar questoes a partir de PDFs e transformar o conteudo em exercicios interativos, organizados por curso, disciplina, assunto e relacao com as aulas estudadas.
+Objetivo: criar uma area propria de banco de questoes, capaz de importar questoes a partir de PDFs e transformar o conteudo em exercicios interativos, organizados por curso, disciplina, assunto, banca, ano, prova/concurso e relacao com as aulas estudadas.
 
 ### Fontes
 
@@ -318,9 +413,12 @@ Objetivo: criar uma area propria de banco de questoes, capaz de importar questoe
 1. `question_banks`
    - `id`
    - `course_id`
+   - `exam_board_id`
+   - `exam_id`
    - `title`
    - `source_type`
    - `source_file_path`
+   - `year`
    - `status`
    - `metadata`
 
@@ -330,6 +428,15 @@ Objetivo: criar uma area propria de banco de questoes, capaz de importar questoe
    - `course_id`
    - `course_module_id`
    - `lesson_id`
+   - `exam_board_id`
+   - `exam_id`
+   - `exam_year`
+   - `exam_name`
+   - `institution`
+   - `position`
+   - `education_level_id`
+   - `exam_area`
+   - `source_question_number`
    - `subject`
    - `topic`
    - `subtopic`
@@ -388,15 +495,41 @@ Objetivo: criar uma area propria de banco de questoes, capaz de importar questoe
    - `parent_id`
    - `metadata`
 
-8. `question_sets`
+8. `exam_boards`
+   - `id`
+   - `name`: Vunesp, Cebraspe/Cespe, FGV, FCC, Instituto AOCP, Quadrix, etc.
+   - `normalized_name`
+   - `acronym`
+   - `aliases`
+   - `status`
+   - `metadata`
+
+9. `exams`
+   - `id`
+   - `exam_board_id`
+   - `title`
+   - `year`
+   - `institution`
+   - `position`
+   - `exam_area`
+   - `notice_reference`
+   - `sphere_id`
+   - `education_level_id`
+   - `status`
+   - `metadata`
+
+10. `question_sets`
    - `id`
    - `course_id`
    - `title`
    - `type`: manual, lesson_related, study_plan_task, review, simulation
+   - `exam_board_id`
+   - `exam_id`
+   - `year`
    - `status`
    - `metadata`
 
-9. `question_set_items`
+11. `question_set_items`
    - `id`
    - `question_set_id`
    - `question_id`
@@ -410,16 +543,21 @@ Objetivo: criar uma area propria de banco de questoes, capaz de importar questoe
 4. Sistema extrai texto do PDF em background.
 5. Parser identifica questoes, alternativas, gabarito e comentarios quando houver.
 6. Quando comentario nao existir, sistema pode gerar comentario com IA usando Gemini.
-7. IA classifica cada questao por disciplina, assunto, subassunto, modulo e possivel aula relacionada.
+7. Parser/IA tenta identificar banca, ano, concurso/prova, orgao, cargo, disciplina, assunto, subassunto, modulo e possivel aula relacionada.
 8. Admin revisa uma tela de pre-importacao.
-9. Admin ajusta enunciado, alternativas, gabarito, comentario e assunto quando necessario.
+9. Admin ajusta enunciado, alternativas, gabarito, comentario, banca, ano, concurso/prova, orgao, cargo e assunto quando necessario.
 10. Admin pode editar comentarios gerados por IA antes e depois da publicacao.
 11. Sistema salva questoes revisadas.
-12. Questoes podem ser vinculadas a curso, modulo, aula, plano ou conjunto de questoes.
+12. Questoes podem ser vinculadas a curso, modulo, aula, plano, prova/concurso ou conjunto de questoes.
 
-### Organizacao por Assunto e Trilha
+### Taxonomia, Prova e Trilha
 
 - Cada questao deve ter assunto normalizado para permitir busca, filtro e recomendacao.
+- Cada questao deve poder guardar banca e ano. Concurso/prova, orgao e cargo sao recomendados, mas podem ficar vazios quando a origem nao trouxer esses dados.
+- Banca deve ser entidade normalizada para evitar duplicidade entre nomes como `Cespe`, `Cebraspe` e `CESPE/CEBRASPE`, ou erros comuns de digitacao como `Venesp` para `Vunesp`.
+- Prova/concurso deve ser entidade separada quando houver informacao suficiente: exemplo `TJ SP - Escrevente Tecnico Judiciario - 2023 - Vunesp`.
+- Campos de prova relevantes: banca, ano, orgao/instituicao, cargo, esfera, escolaridade, edital/prova e area.
+- O banco de questoes pode ter banca/ano/prova padrao, mas cada questao deve poder sobrescrever esses dados quando um arquivo trouxer questoes de origens diferentes.
 - A IA deve comparar o texto da questao com titulos de aulas, resumos, transcricoes, mapas mentais e metadados do modulo.
 - O sistema deve sugerir vinculo com aula/modulo, mas o admin pode revisar.
 - Questoes exibidas no plano de estudos devem ter relacao com o conteudo estudado naquele dia ou naquela semana.
@@ -434,11 +572,11 @@ Objetivo: criar uma area propria de banco de questoes, capaz de importar questoe
 ### Experiencia do Aluno
 
 - Menu separado para `Banco de Questoes`.
-- Filtros por curso, disciplina, assunto, banca, dificuldade, status e questoes erradas.
+- Filtros por curso, disciplina, assunto, banca, ano, concurso/prova, orgao, cargo, dificuldade, status e questoes erradas.
 - Resolucao interativa com clique na alternativa.
 - Exibicao de gabarito e comentario apos resposta.
 - Historico de tentativas.
-- Percentual de acertos por assunto.
+- Percentual de acertos por assunto, banca, ano e prova.
 - Recomendacao de novas questoes com base nas aulas estudadas e erros anteriores.
 - Possibilidade de abrir um conjunto de questoes a partir da tarefa do plano.
 
@@ -451,6 +589,70 @@ Objetivo: criar uma area propria de banco de questoes, capaz de importar questoe
 - Registrar falhas por questao sem interromper o lote inteiro.
 - Permitir edicao manual do comentario gerado por IA no admin.
 - Permitir regerar comentario apenas para questoes selecionadas.
+
+## Comunidade, Rede Social e Forum
+
+Objetivo: criar uma camada social dentro da plataforma para aumentar engajamento, pertencimento e troca entre alunos, sem misturar a organizacao pedagogica dos cursos com conversas livres.
+
+### Componentes
+
+- Feed da comunidade com posts de alunos, progresso de estudo e atualizacoes editoriais.
+- Posts de progresso gerados pelo aluno ao concluir aulas, bater metas, finalizar modulos ou resolver questoes.
+- Curtidas em posts, comentarios, respostas de forum e atualizacoes editoriais.
+- Comentarios em posts do feed.
+- Compartilhamento interno de novas postagens do site `vencendoconcursos.com.br`.
+- Grupos de estudo por curso, concurso, disciplina, assunto ou turma.
+- Forum estruturado por categorias, topicos e respostas.
+- Marcacao de resposta como solucao em topicos de duvida.
+- Denuncia de conteudo e fila de moderacao.
+
+### Feed da Comunidade
+
+- Feed deve combinar:
+  - posts manuais dos alunos;
+  - eventos de progresso permitidos pelo aluno;
+  - posts de grupos dos quais o aluno participa;
+  - topicos recentes ou populares do forum;
+  - novas postagens editoriais do site `vencendoconcursos.com.br`.
+- Aluno deve poder publicar texto curto sobre seu progresso, duvida, meta ou conquista.
+- Ao concluir uma aula, modulo, simulado ou bloco do plano, o sistema pode sugerir um post de progresso, mas nao deve publicar automaticamente sem consentimento do aluno.
+- Feed deve respeitar permissao de acesso: aluno nao deve ver posts de grupo privado nem conteudo de curso ao qual nao tem acesso.
+- Atualizacoes editoriais do site devem entrar como itens curtiveis e clicaveis, levando ao post original quando necessario.
+
+### Grupos de Estudo
+
+- Grupo pode ser criado pelo admin, professor/moderador ou aluno, conforme regra definida.
+- Grupo pode ser publico, restrito a alunos matriculados ou por convite.
+- Grupo deve permitir posts, comentarios, membros, moderadores e regras de entrada.
+- Grupos podem ser vinculados a curso, concurso, disciplina, assunto ou turma.
+- Aluno pode encontrar grupos recomendados com base nos cursos em que esta matriculado e assuntos do plano.
+
+### Forum
+
+- Forum deve ser mais organizado que o feed, com categorias, topicos e respostas.
+- Categorias podem ser globais ou vinculadas a cursos.
+- Topico pode ser marcado como resolvido.
+- Respostas podem receber curtidas.
+- Admin/moderador pode fixar, fechar, ocultar ou remover topicos.
+- Futuramente, IA pode sugerir topicos relacionados, mas nao deve responder como autoridade sem revisao quando a resposta for publica.
+
+### Moderacao e Privacidade
+
+- Todo conteudo publicado por aluno deve ter status moderavel.
+- Alunos devem poder denunciar posts, comentarios, topicos, respostas e usuarios.
+- Admin/moderador deve ter fila de denuncias.
+- Remocao deve ser logica, preservando auditoria.
+- Dados de progresso compartilhados devem depender de consentimento do aluno.
+- Perfis podem exibir apenas informacoes essenciais: nome, avatar, cursos em comum e conquistas que o aluno autorizou compartilhar.
+
+### Integracao com `vencendoconcursos.com.br`
+
+- Criar fonte editorial para importar ou sincronizar novas postagens do site.
+- Priorizar RSS/feed oficial, API ou WordPress REST API se disponivel.
+- Cada item importado deve gerar `community_feed_item` com titulo, resumo, URL, thumb e data.
+- Evitar duplicidade por URL/canonical ID.
+- Se a integracao falhar, o feed social continua funcionando normalmente.
+- Admin pode destacar, ocultar ou fixar atualizacoes editoriais.
 
 ## Planilha do Plano de Estudos
 
@@ -540,6 +742,17 @@ Usar a mesma planilha do plano para montar cursos, modulos e aulas.
   - revisao.
 - Ao concluir aula, avaliar se tarefa do plano pode ser marcada como concluida ou parcialmente concluida.
 
+### Comunidade
+
+- Feed com posts de alunos, progresso compartilhado, grupos, topicos recentes e novidades da Vencendo Concursos.
+- Botao para postar progresso a partir de aula concluida, modulo concluido, meta batida ou simulado finalizado.
+- Curtir posts, comentarios, respostas e atualizacoes editoriais.
+- Comentar posts do feed.
+- Entrar em grupos de estudo recomendados.
+- Criar ou participar de topicos no forum.
+- Denunciar conteudo inadequado.
+- Controlar privacidade do progresso compartilhado.
+
 ## Admin
 
 ### Cursos
@@ -570,6 +783,16 @@ Usar a mesma planilha do plano para montar cursos, modulos e aulas.
 - Ordenacao.
 - Gerar/resincronizar IA.
 
+### Banco de Questoes
+
+- CRUD de bancos de questoes.
+- Cadastro e normalizacao de bancas.
+- Cadastro opcional de provas/concursos.
+- Campos de ano, orgao, cargo, esfera e escolaridade.
+- Revisao de banca/ano/prova sugeridos por parser ou IA.
+- Mesclagem de bancas duplicadas ou equivalentes.
+- Filtros administrativos por banca, ano, prova, orgao, cargo, disciplina e assunto.
+
 ### Home
 
 - CRUD de secoes.
@@ -581,6 +804,17 @@ Usar a mesma planilha do plano para montar cursos, modulos e aulas.
   - por escolaridade.
 - Ordenacao.
 - Publicar/despublicar secao.
+
+### Comunidade
+
+- Moderar posts, comentarios, topicos e respostas.
+- Gerenciar denuncias.
+- Criar e destacar grupos de estudo.
+- Definir quem pode criar grupos: admin, moderador, professor ou aluno.
+- Criar categorias do forum.
+- Fixar, fechar, ocultar ou remover topicos.
+- Configurar fonte editorial do site `vencendoconcursos.com.br`.
+- Destacar ou ocultar atualizacoes editoriais no feed.
 
 ### Integracoes
 
@@ -776,37 +1010,41 @@ Implementacao inicial:
 
 ### Fase 7 - Banco de Questoes
 
-Objetivo: iniciar uma nova frente de desenvolvimento antes da preparacao SaaS, criando um banco de questoes capaz de receber PDFs por upload, extrair questoes, organizar por assunto e transformar o conteudo em exercicios interativos com gabarito comentado.
+Objetivo: iniciar uma nova frente de desenvolvimento antes da preparacao SaaS, criando um banco de questoes capaz de receber PDFs por upload, extrair questoes, organizar por assunto, banca, ano e prova/concurso, e transformar o conteudo em exercicios interativos com gabarito comentado.
 
 Status: proxima fase de desenvolvimento.
 
 Escopo principal:
 
 - Criar menu separado `Banco de Questoes`.
-- Criar estrutura de bancos, lotes de importacao, questoes, alternativas, assuntos, conjuntos e tentativas.
+- Criar estrutura de bancos, lotes de importacao, questoes, alternativas, assuntos, bancas, provas/concursos, conjuntos e tentativas.
 - Upload de PDF pelo admin.
 - Armazenar PDF original como fonte/auditoria.
 - Extrair texto do PDF em background.
 - Parser inicial para identificar enunciado, alternativas e gabarito.
+- Cadastro/normalizacao de bancas como Vunesp, Cebraspe/Cespe, FGV, FCC, Instituto AOCP e Quadrix.
+- Campos de ano, concurso/prova, orgao e cargo no banco e/ou na questao.
 - Tela de revisao antes de publicar questoes.
 - Questoes interativas para o aluno, com clique na alternativa.
 - Exibir gabarito e comentario apos resposta.
 - Salvar tentativas e historico do aluno.
-- Estatisticas por questao, assunto e aluno.
+- Estatisticas por questao, assunto, banca, ano, prova e aluno.
 
 IA e Gemini:
 
 - Usar API do Gemini para gerar comentario quando o PDF nao trouxer comentario.
-- Usar IA para sugerir disciplina, assunto, subassunto, modulo e aula relacionada.
+- Usar IA para sugerir banca, ano, concurso/prova, orgao, cargo, disciplina, assunto, subassunto, modulo e aula relacionada.
 - Guardar comentarios gerados em cache para nao repetir chamadas de IA.
 - Permitir que o admin edite comentarios gerados por IA antes e depois da publicacao.
 - Permitir regerar comentario apenas por acao explicita do admin.
 - Registrar provider, prompt version, data e status da geracao.
 - Questao com classificacao incerta deve ficar em revisao.
 
-Organizacao por assunto e plano:
+Organizacao por prova, assunto e plano:
 
 - Questoes devem ser organizadas por assunto normalizado.
+- Questoes devem permitir filtros por banca, ano, prova/concurso, orgao e cargo.
+- Concurso/prova deve ser opcional para nao travar importacoes incompletas.
 - Sistema deve relacionar questoes com aulas, modulos e resumos/transcricoes quando disponiveis.
 - Plano de estudos deve poder incluir tarefas de questoes.
 - Questoes da trilha devem ter relacao com o conteudo estudado pelo aluno.
@@ -821,7 +1059,7 @@ Fluxo inicial:
 4. Sistema extrai texto e tenta separar as questoes.
 5. Sistema identifica alternativas e gabarito quando possivel.
 6. Sistema gera comentario com IA quando necessario.
-7. Sistema sugere assunto e vinculo com aula/modulo.
+7. Sistema sugere banca, ano, prova/concurso, assunto e vinculo com aula/modulo.
 8. Admin revisa e corrige.
 9. Admin publica questoes.
 10. Aluno resolve questoes interativas.
@@ -832,11 +1070,14 @@ Criterios de aceite:
 - Admin sobe PDF com questoes.
 - Sistema cria lote de importacao.
 - Sistema extrai e apresenta questoes em tela de revisao.
+- Admin informa ou corrige banca, ano, prova/concurso, orgao e cargo.
+- Sistema normaliza bancas e evita duplicar nomes equivalentes.
 - Admin publica questoes revisadas.
 - Aluno responde questoes.
 - Sistema mostra gabarito e comentario.
 - Resultado fica salvo no historico.
 - Questoes aparecem em menu separado.
+- Aluno filtra questoes por banca, ano e concurso/prova.
 - Plano de estudos pode apontar para conjunto de questoes relacionado ao assunto estudado.
 - Comentario gerado por IA fica cacheado e nao gera nova chamada automaticamente.
 - Admin consegue editar o comentario gerado por IA sem perder historico da origem.
@@ -929,6 +1170,7 @@ Criterios de aceite:
 - Progresso: separar progresso de aula, progresso de curso e progresso do plano.
 - Checkout: curso bloqueado deve ter URL de compra configuravel.
 - LGPD: conversas de IA e progresso do aluno sao dados sensiveis de comportamento de estudo.
+- Comunidade: exigir moderacao, denuncia, remocao logica e consentimento antes de compartilhar progresso publicamente.
 
 ## Pagamentos, Assinaturas e Matriculas
 
@@ -1158,6 +1400,52 @@ Criterios de aceite:
 - Admin matricula aluno manualmente.
 - Admin importa alunos da Tutory/Hotmart sem duplicar usuarios/matriculas.
 
+## Comunidade e Rede Social
+
+Esta etapa deve entrar depois que cursos, progresso, matriculas e experiencia principal do aluno estiverem estaveis. A comunidade depende dessas bases para gerar posts de progresso confiaveis, controlar acesso por curso e recomendar grupos relevantes.
+
+### Fase 13 - Comunidade, Grupos de Estudo e Forum
+
+Objetivo: criar uma rede social interna para alunos acompanharem progresso, interagirem com novidades da Vencendo Concursos, formarem grupos de estudo e discutirem duvidas em forum.
+
+Escopo principal:
+
+- Criar feed da comunidade.
+- Criar posts de texto e posts de progresso.
+- Permitir curtidas em posts, comentarios, respostas e atualizacoes editoriais.
+- Permitir comentarios em posts.
+- Criar grupos de estudo com membros, regras de visibilidade e moderadores.
+- Criar forum com categorias, topicos, respostas e marcacao de solucao.
+- Criar denuncias e fila basica de moderacao.
+- Criar privacidade/consentimento para compartilhamento de progresso.
+- Integrar novas postagens do site `vencendoconcursos.com.br` ao feed.
+- Permitir que admin destaque, oculte ou fixe itens editoriais.
+
+Fluxo inicial:
+
+1. Aluno conclui uma aula, modulo ou meta.
+2. Plataforma sugere compartilhar progresso no feed.
+3. Aluno revisa texto e escolhe visibilidade.
+4. Post aparece para usuarios autorizados.
+5. Outros alunos podem curtir e comentar.
+6. Aluno entra em grupo de estudo recomendado.
+7. Aluno cria topico no forum para duvida mais estruturada.
+8. Moderador/admin acompanha denuncias e conteudos sinalizados.
+9. Novas postagens do site aparecem no feed como atualizacoes curtiveis e clicaveis.
+
+Criterios de aceite:
+
+- Aluno cria post manual no feed.
+- Aluno compartilha progresso apenas apos confirmar.
+- Alunos autorizados conseguem curtir e comentar.
+- Feed exibe novidades importadas do site `vencendoconcursos.com.br`.
+- Aluno cria ou participa de grupo de estudo conforme regras de acesso.
+- Aluno cria topico e responde no forum.
+- Topico pode ser marcado como resolvido.
+- Conteudo pode ser denunciado.
+- Admin/moderador consegue ocultar ou remover conteudo sem apagar historico.
+- Privacidade impede acesso a posts de grupos privados ou cursos nao liberados.
+
 ## Checklist de Decisoes Pendentes
 
 - [ ] Confirmar nomes finais das tabelas.
@@ -1166,6 +1454,9 @@ Criterios de aceite:
 - [ ] Confirmar provider inicial de IA.
 - [ ] Confirmar endpoints reais do provedor de video.
 - [ ] Confirmar onde thumbnails e PDFs serao armazenados.
+- [ ] Confirmar taxonomia oficial do banco de questoes: banca, ano, prova/concurso, orgao, cargo, esfera e escolaridade.
+- [ ] Confirmar lista inicial de bancas e aliases: Vunesp, Cebraspe/Cespe, FGV, FCC, Instituto AOCP, Quadrix, etc.
+- [ ] Confirmar se concurso/prova sera obrigatorio apenas em simulados ou sempre opcional.
 - [ ] Confirmar regra de matricula vinda de checkout/webhook.
 - [ ] Confirmar se curso bloqueado aparece para todos ou apenas por regras de catalogo.
 - [ ] Confirmar se aulas importadas do Panda entram publicadas ou como rascunho.
@@ -1173,3 +1464,8 @@ Criterios de aceite:
 - [ ] Confirmar regra comercial do assinante com acesso total.
 - [ ] Confirmar formato dos arquivos de importacao Tutory e Hotmart.
 - [ ] Confirmar quais cursos entram ou nao no plano de assinatura.
+- [ ] Confirmar regras de privacidade para compartilhamento de progresso na comunidade.
+- [ ] Confirmar quem pode criar grupos de estudo.
+- [ ] Confirmar se o forum sera global, por curso ou hibrido.
+- [ ] Confirmar fonte tecnica para novidades do `vencendoconcursos.com.br`: RSS, API, WordPress REST API ou cadastro manual.
+- [ ] Confirmar politica de moderacao, denuncia e remocao logica de conteudo social.
