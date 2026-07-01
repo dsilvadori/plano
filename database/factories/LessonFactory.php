@@ -21,6 +21,7 @@ class LessonFactory extends Factory
         return [
             'course_id' => $course,
             'course_module_id' => CourseModule::factory(['course_id' => $course]),
+            'course_module_track_id' => null,
             'title' => $title,
             'slug' => Str::slug($title),
             'description' => fake()->paragraph(),
@@ -33,6 +34,8 @@ class LessonFactory extends Factory
             'panda_embed_url' => null,
             'panda_player_url' => null,
             'panda_status' => null,
+            'google_doc_url' => null,
+            'source_status' => 'media_ready',
             'metadata' => null,
         ];
     }

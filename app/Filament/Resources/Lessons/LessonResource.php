@@ -7,6 +7,7 @@ use App\Filament\Resources\Lessons\Pages\EditLesson;
 use App\Filament\Resources\Lessons\Pages\ListLessons;
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use BackedEnum;
 use Filament\Actions\BulkActionGroup;
@@ -48,7 +49,10 @@ class LessonResource extends Resource
                 ->searchable()
                 ->preload()
                 ->live()
-                ->afterStateUpdated(fn (Set $set) => $set('course_module_id', null))
+                ->afterStateUpdated(function (Set $set): void {
+                    $set('course_module_id', null);
+                    $set('course_module_track_id', null);
+                })
                 ->required(),
             Select::make('course_module_id')
                 ->label('Módulo')
@@ -108,6 +112,8 @@ class LessonResource extends Resource
                     ])->getKey();
                 })
                 ->afterStateUpdated(function ($state, Set $set): void {
+                    $set('course_module_track_id', null);
+
                     if (blank($state)) {
                         return;
                     }
@@ -119,6 +125,18 @@ class LessonResource extends Resource
                     }
                 })
                 ->required(),
+            Select::make('course_module_track_id')
+                ->label('Trilha')
+                ->options(fn (Get $get): array => filled($get('course_module_id'))
+                    ? CourseModuleTrack::query()
+                        ->where('course_module_id', $get('course_module_id'))
+                        ->orderBy('sort_order')
+                        ->orderBy('name')
+                        ->pluck('name', 'id')
+                        ->all()
+                    : [])
+                ->searchable()
+                ->preload(),
             TextInput::make('title')
                 ->label('Título')
                 ->required()
@@ -146,6 +164,16 @@ class LessonResource extends Resource
                     'archived' => 'Arquivado',
                 ])
                 ->default('draft')
+                ->required(),
+            Select::make('source_status')
+                ->label('Status da mídia')
+                ->options([
+                    'structure_only' => 'Somente estrutura',
+                    'awaiting_media' => 'Aguardando mídia',
+                    'media_ready' => 'Mídia pronta',
+                    'published' => 'Publicado',
+                ])
+                ->default('media_ready')
                 ->required(),
             Textarea::make('description')
                 ->label('Descrição')
@@ -189,6 +217,7 @@ class LessonResource extends Resource
                 TextColumn::make('title')->label('Aula')->searchable()->sortable(),
                 TextColumn::make('course.name')->label('Curso')->searchable()->sortable(),
                 TextColumn::make('module.name')->label('Módulo')->searchable()->sortable(),
+                TextColumn::make('track.name')->label('Trilha')->searchable()->sortable(),
                 TextColumn::make('type')
                     ->label('Tipo')
                     ->badge()
@@ -208,6 +237,16 @@ class LessonResource extends Resource
                         'published' => 'Publicado',
                         'archived' => 'Arquivado',
                         default => $state,
+                    }),
+                TextColumn::make('source_status')
+                    ->label('Mídia')
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
+                        'structure_only' => 'Somente estrutura',
+                        'awaiting_media' => 'Aguardando mídia',
+                        'media_ready' => 'Mídia pronta',
+                        'published' => 'Publicado',
+                        default => (string) $state,
                     }),
                 TextColumn::make('duration_minutes')->label('Min')->sortable(query: fn ($query, $direction) => $query->orderBy('duration_seconds', $direction)),
                 TextColumn::make('sort_order')->label('Ordem')->sortable(),
@@ -230,6 +269,14 @@ class LessonResource extends Resource
                         'draft' => 'Rascunho',
                         'published' => 'Publicado',
                         'archived' => 'Arquivado',
+                    ]),
+                SelectFilter::make('source_status')
+                    ->label('Mídia')
+                    ->options([
+                        'structure_only' => 'Somente estrutura',
+                        'awaiting_media' => 'Aguardando mídia',
+                        'media_ready' => 'Mídia pronta',
+                        'published' => 'Publicado',
                     ]),
             ])
             ->recordActions([

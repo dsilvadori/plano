@@ -82,6 +82,16 @@ class Course extends Model
             ->orderBy('course_modules.name');
     }
 
+    public function moduleTracks(): BelongsToMany
+    {
+        return $this->belongsToMany(CourseModuleTrack::class, 'course_module_track_course')
+            ->withPivot('sort_order')
+            ->withTimestamps()
+            ->orderByPivot('sort_order')
+            ->orderBy('course_module_tracks.sort_order')
+            ->orderBy('course_module_tracks.name');
+    }
+
     public function lessons(): HasMany
     {
         return $this->hasMany(Lesson::class)->orderBy('sort_order');

@@ -20,15 +20,51 @@ class Lesson extends Model
                 return;
             }
 
+            if (! $lesson->course_module_track_id) {
+                $track = CourseModuleTrack::query()->firstOrCreate(
+                    [
+                        'course_module_id' => $lesson->course_module_id,
+                        'slug' => 'aulas',
+                    ],
+                    [
+                        'name' => 'Aulas',
+                        'sort_order' => 1,
+                        'status' => 'published',
+                        'metadata' => ['source' => 'legacy_module'],
+                    ],
+                );
+
+                $lesson->forceFill(['course_module_track_id' => $track->id])->saveQuietly();
+
+                $courseIds = $lesson->module?->courses()->pluck('courses.id')->all() ?? [];
+
+                if ($lesson->course_id) {
+                    $courseIds[] = $lesson->course_id;
+                }
+
+                foreach (array_unique(array_filter($courseIds)) as $courseId) {
+                    $track->courses()->syncWithoutDetaching([
+                        $courseId => ['sort_order' => (int) $track->sort_order],
+                    ]);
+                }
+            }
+
             $lesson->modules()->syncWithoutDetaching([
                 $lesson->course_module_id => ['sort_order' => (int) $lesson->sort_order],
             ]);
+
+            if ($lesson->course_module_track_id) {
+                $lesson->tracks()->syncWithoutDetaching([
+                    $lesson->course_module_track_id => ['sort_order' => (int) $lesson->sort_order],
+                ]);
+            }
         });
     }
 
     protected $fillable = [
         'course_id',
         'course_module_id',
+        'course_module_track_id',
         'title',
         'slug',
         'description',
@@ -41,6 +77,8 @@ class Lesson extends Model
         'panda_embed_url',
         'panda_player_url',
         'panda_status',
+        'google_doc_url',
+        'source_status',
         'metadata',
     ];
 
@@ -58,10 +96,22 @@ class Lesson extends Model
         return $this->belongsTo(CourseModule::class, 'course_module_id');
     }
 
+    public function track(): BelongsTo
+    {
+        return $this->belongsTo(CourseModuleTrack::class, 'course_module_track_id');
+    }
+
     public function modules(): BelongsToMany
     {
         return $this->belongsToMany(CourseModule::class, 'course_module_lessons')
             ->withPivot('sort_order')
+            ->withTimestamps();
+    }
+
+    public function tracks(): BelongsToMany
+    {
+        return $this->belongsToMany(CourseModuleTrack::class, 'course_module_track_lessons')
+            ->withPivot(['sort_order', 'status_override'])
             ->withTimestamps();
     }
 

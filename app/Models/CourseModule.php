@@ -80,6 +80,13 @@ class CourseModule extends Model
             ->orderBy('lessons.title');
     }
 
+    public function tracks(): HasMany
+    {
+        return $this->hasMany(CourseModuleTrack::class)
+            ->orderBy('sort_order')
+            ->orderBy('name');
+    }
+
     public function getPlanningLessonsAttribute(): array
     {
         $lessons = $this->sortLessonsNaturally(collect($this->lessons ?? [])

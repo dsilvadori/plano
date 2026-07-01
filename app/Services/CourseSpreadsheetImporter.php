@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
 use Illuminate\Support\Facades\DB;
@@ -27,7 +28,7 @@ class CourseSpreadsheetImporter
 
             $module ? $moduleStats['update']++ : $moduleStats['create']++;
 
-            foreach ($moduleData['lessons'] ?? [] as $index => $lessonData) {
+            foreach ($this->lessonsFromModuleData($moduleData) as $index => $lessonData) {
                 $slug = $this->lessonSlug((string) ($lessonData['name'] ?? ''), $index + 1);
 
                 $lesson = $module ? $this->resolveReusableLesson($module, (string) ($lessonData['name'] ?? ''), $slug, $lessonData) : null;
@@ -47,7 +48,7 @@ class CourseSpreadsheetImporter
                 ...$moduleStats,
             ],
             'lessons' => [
-                'total' => collect($payload['modules'])->sum(fn (array $module) => count($module['lessons'] ?? [])),
+                'total' => collect($payload['modules'])->sum(fn (array $module) => count($this->lessonsFromModuleData($module))),
                 ...$lessonStats,
             ],
             'total_minutes' => array_sum(array_column($payload['modules'], 'workload_minutes')),
@@ -71,7 +72,7 @@ class CourseSpreadsheetImporter
 
             $this->importStructure($course, $payload, $payload['study_track_name']);
 
-            return $course->fresh(['modules', 'studyTracks.modules']);
+            return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
     }
 
@@ -84,7 +85,7 @@ class CourseSpreadsheetImporter
 
             $this->importStructure($course, $payload, $studyTrackName);
 
-            return $course->fresh(['modules', 'studyTracks.modules']);
+            return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
     }
 
@@ -99,9 +100,10 @@ class CourseSpreadsheetImporter
                     'course_id' => $course->id,
                     'name' => $moduleData['name'],
                 ]);
+            $moduleIsNew = ! $module->exists;
 
             $module->fill([
-                'course_id' => $course->id,
+                'course_id' => $moduleIsNew ? $course->id : $module->course_id,
                 'name' => $module->name ?: $moduleData['name'],
                 'type' => $moduleData['type'],
                 'lessons' => $moduleData['lessons'] ?? [],
@@ -114,7 +116,7 @@ class CourseSpreadsheetImporter
                 $course->id => ['sort_order' => $moduleData['sort_order']],
             ]);
 
-            $this->importLessons($course, $module, $moduleData['lessons'] ?? []);
+            $this->importTracks($course, $module, $moduleData);
 
             $moduleIds[$module->id] = [
                 'weight' => 1,
@@ -150,10 +152,51 @@ class CourseSpreadsheetImporter
             ->value('name');
     }
 
-    protected function importLessons(Course $course, CourseModule $module, array $lessons): void
+    protected function importTracks(Course $course, CourseModule $module, array $moduleData): void
     {
-        $importedLessonIds = [];
+        $tracks = $moduleData['tracks'] ?? [[
+            'name' => $moduleData['track_name'] ?? 'Aulas',
+            'sort_order' => 1,
+            'workload_minutes' => $moduleData['workload_minutes'] ?? 0,
+            'lessons' => $moduleData['lessons'] ?? [],
+        ]];
 
+        foreach (array_values($tracks) as $index => $trackData) {
+            $trackName = trim((string) ($trackData['name'] ?? '')) ?: 'Aulas';
+            $sortOrder = (int) ($trackData['sort_order'] ?? ($index + 1));
+            $slug = $this->trackSlug($trackName, $sortOrder);
+            $track = $this->resolveTrackForModule($module, $trackName, $slug)
+                ?? new CourseModuleTrack([
+                    'course_module_id' => $module->id,
+                    'slug' => $slug,
+                ]);
+
+            $track->fill([
+                'course_module_id' => $module->id,
+                'name' => $trackName,
+                'slug' => $track->exists ? $track->slug : $slug,
+                'thumbnail_url' => $trackData['thumbnail_url'] ?? $track->thumbnail_url,
+                'sort_order' => $sortOrder,
+                'status' => $trackData['status'] ?? 'draft',
+                'panda_folder_id' => $trackData['panda_folder_id'] ?? $track->panda_folder_id,
+                'google_doc_url' => $trackData['google_doc_url'] ?? $track->google_doc_url,
+                'metadata' => [
+                    'source' => 'spreadsheet',
+                    'workload_minutes' => $trackData['workload_minutes'] ?? 0,
+                    'imported_at' => now()->toIso8601String(),
+                ],
+            ]);
+            $track->save();
+            $track->courses()->syncWithoutDetaching([
+                $course->id => ['sort_order' => $sortOrder],
+            ]);
+
+            $this->importLessons($course, $module, $track, $trackData['lessons'] ?? []);
+        }
+    }
+
+    protected function importLessons(Course $course, CourseModule $module, CourseModuleTrack $track, array $lessons): void
+    {
         foreach (array_values($lessons) as $index => $lessonData) {
             $title = trim((string) ($lessonData['name'] ?? ''));
 
@@ -166,17 +209,19 @@ class CourseSpreadsheetImporter
             $minutes = max(0, (int) ($lessonData['minutes'] ?? 0));
 
             $pandaVideoId = filled($lessonData['panda_video_id'] ?? null) ? (string) $lessonData['panda_video_id'] : null;
-            $lesson = $this->resolveReusableLesson($module, $title, $slug, $lessonData)
+            $lesson = $this->resolveReusableLesson($module, $title, $slug, $lessonData, $track)
                 ?? ($pandaVideoId
                     ? Lesson::query()->firstOrNew(['panda_video_id' => $pandaVideoId])
                     : new Lesson([
                         'course_module_id' => $module->id,
+                        'course_module_track_id' => $track->id,
                         'slug' => $slug,
                     ]));
 
             $lesson->fill([
                 'course_id' => $lesson->exists ? $lesson->course_id : $course->id,
                 'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
+                'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track->id) : $track->id,
                 'title' => $title,
                 'slug' => $lesson->exists ? $lesson->slug : $slug,
                 'description' => 'Aula importada por planilha.',
@@ -184,10 +229,14 @@ class CourseSpreadsheetImporter
                 'thumbnail_url' => $lessonData['thumbnail_url'] ?? $lesson->thumbnail_url,
                 'duration_seconds' => $minutes * 60,
                 'sort_order' => $sortOrder,
-                'status' => $this->normalizeLessonStatus((string) ($lessonData['status'] ?? 'published')),
+                'status' => $this->normalizeLessonStatus((string) ($lessonData['status'] ?? 'draft')),
                 'panda_video_id' => $pandaVideoId ?: $lesson->panda_video_id,
                 'panda_embed_url' => $lessonData['panda_embed_url'] ?? $lesson->panda_embed_url,
                 'panda_player_url' => $lessonData['panda_player_url'] ?? $lesson->panda_player_url,
+                'google_doc_url' => $lessonData['google_doc_url'] ?? $lesson->google_doc_url,
+                'source_status' => $pandaVideoId || filled($lessonData['panda_embed_url'] ?? null) || filled($lessonData['panda_player_url'] ?? null)
+                    ? 'media_ready'
+                    : 'awaiting_media',
                 'metadata' => [
                     'source' => 'spreadsheet',
                     'imported_at' => now()->toIso8601String(),
@@ -197,15 +246,9 @@ class CourseSpreadsheetImporter
             $lesson->modules()->syncWithoutDetaching([
                 $module->id => ['sort_order' => $sortOrder],
             ]);
-
-            $importedLessonIds[] = $lesson->id;
-        }
-
-        if ($importedLessonIds !== []) {
-            $module->onlineLessons()
-                ->where('metadata->source', 'spreadsheet')
-                ->whereNotIn('lessons.id', $importedLessonIds)
-                ->update(['status' => 'archived']);
+            $lesson->tracks()->syncWithoutDetaching([
+                $track->id => ['sort_order' => $sortOrder],
+            ]);
         }
     }
 
@@ -214,6 +257,13 @@ class CourseSpreadsheetImporter
         $slug = Str::slug($title);
 
         return $slug !== '' ? $slug : 'aula-' . $sortOrder;
+    }
+
+    protected function trackSlug(string $title, int $sortOrder): string
+    {
+        $slug = Str::slug($title);
+
+        return $slug !== '' ? $slug : 'trilha-' . $sortOrder;
     }
 
     protected function normalizeLessonType(string $type): string
@@ -247,12 +297,39 @@ class CourseSpreadsheetImporter
             ->first(fn (CourseModule $module) => $this->normalizeName($module->name) === $normalizedName);
     }
 
-    protected function resolveReusableLesson(CourseModule $module, string $title, string $slug, array $lessonData): ?Lesson
+    protected function resolveTrackForModule(CourseModule $module, string $trackName, string $slug): ?CourseModuleTrack
+    {
+        $track = $module->tracks()
+            ->where('slug', $slug)
+            ->first();
+
+        if ($track) {
+            return $track;
+        }
+
+        $normalizedName = $this->normalizeName($trackName);
+
+        return $module->tracks()
+            ->get()
+            ->first(fn (CourseModuleTrack $track) => $this->normalizeName($track->name) === $normalizedName);
+    }
+
+    protected function resolveReusableLesson(CourseModule $module, string $title, string $slug, array $lessonData, ?CourseModuleTrack $track = null): ?Lesson
     {
         $pandaVideoId = filled($lessonData['panda_video_id'] ?? null) ? (string) $lessonData['panda_video_id'] : null;
 
         if ($pandaVideoId) {
             $lesson = Lesson::query()->where('panda_video_id', $pandaVideoId)->first();
+
+            if ($lesson) {
+                return $lesson;
+            }
+        }
+
+        if ($track) {
+            $lesson = $track->lessons()
+                ->where('lessons.slug', $slug)
+                ->first();
 
             if ($lesson) {
                 return $lesson;
@@ -273,6 +350,18 @@ class CourseSpreadsheetImporter
             ->orderBy('id')
             ->get()
             ->first(fn (Lesson $lesson) => $this->normalizeName($lesson->title) === $normalizedTitle);
+    }
+
+    protected function lessonsFromModuleData(array $moduleData): array
+    {
+        if (! empty($moduleData['tracks'])) {
+            return collect($moduleData['tracks'])
+                ->flatMap(fn (array $track) => $track['lessons'] ?? [])
+                ->values()
+                ->all();
+        }
+
+        return $moduleData['lessons'] ?? [];
     }
 
     protected function normalizeName(string $value): string

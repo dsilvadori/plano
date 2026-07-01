@@ -106,41 +106,63 @@ class CourseSpreadsheetParser
             ->map(function (Collection $moduleRows, string $moduleName) use (&$sortOrder) {
                 $first = $moduleRows->first();
                 $moduleSortOrder = (int) ($first['module_sort_order'] ?? $first['ordem_modulo'] ?? 0);
-                $lessons = $moduleRows
-                    ->values()
-                    ->map(function (array $row, int $index) {
-                        $minutes = (int) round((float) str_replace(',', '.', $row['lesson_minutes'] ?? $row['minutos'] ?? 0));
+                $trackSortOrder = 1;
+                $tracks = $moduleRows
+                    ->groupBy(fn (array $row) => $row['track_name'] ?? $row['trilha'] ?? $moduleName)
+                    ->map(function (Collection $trackRows, string $trackName) use (&$trackSortOrder) {
+                        $firstTrackRow = $trackRows->first();
+                        $lessons = $trackRows
+                            ->values()
+                            ->map(function (array $row, int $index) {
+                                $minutes = (int) round((float) str_replace(',', '.', $row['lesson_minutes'] ?? $row['minutos'] ?? 0));
+
+                                return [
+                                    'name' => $this->normalizeLessonName($row['lesson_title'] ?? $row['aula']),
+                                    'minutes' => max(0, $minutes),
+                                    'type' => $row['lesson_type'] ?? $row['tipo_aula'] ?? 'video',
+                                    'status' => $row['lesson_status'] ?? $row['status_aula'] ?? 'draft',
+                                    'thumbnail_url' => $row['thumbnail_url'] ?? null,
+                                    'google_doc_url' => $row['lesson_google_doc_url'] ?? null,
+                                    'panda_video_id' => $row['panda_video_id'] ?? null,
+                                    'panda_embed_url' => $row['panda_embed_url'] ?? null,
+                                    'panda_player_url' => $row['panda_player_url'] ?? null,
+                                    'sort_order' => (int) ($row['lesson_sort_order'] ?? $row['ordem_aula'] ?? ($index + 1)),
+                                ];
+                            })
+                            ->filter(fn (array $lesson) => filled($lesson['name']) && $lesson['minutes'] > 0)
+                            ->values()
+                            ->all();
 
                         return [
-                            'name' => $this->normalizeLessonName($row['lesson_title'] ?? $row['aula']),
-                            'minutes' => max(0, $minutes),
-                            'type' => $row['lesson_type'] ?? $row['tipo_aula'] ?? 'video',
-                            'status' => $row['lesson_status'] ?? $row['status_aula'] ?? 'published',
-                            'thumbnail_url' => $row['thumbnail_url'] ?? null,
-                            'panda_video_id' => $row['panda_video_id'] ?? null,
-                            'panda_embed_url' => $row['panda_embed_url'] ?? null,
-                            'panda_player_url' => $row['panda_player_url'] ?? null,
-                            'sort_order' => (int) ($row['lesson_sort_order'] ?? $row['ordem_aula'] ?? ($index + 1)),
+                            'name' => trim($trackName),
+                            'sort_order' => (int) ($firstTrackRow['track_sort_order'] ?? $firstTrackRow['ordem_trilha'] ?? $trackSortOrder++),
+                            'thumbnail_url' => $firstTrackRow['track_thumbnail_url'] ?? null,
+                            'google_doc_url' => $firstTrackRow['track_google_doc_url'] ?? null,
+                            'panda_folder_id' => $firstTrackRow['panda_folder_id'] ?? null,
+                            'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
+                            'lessons' => $lessons,
                         ];
                     })
-                    ->filter(fn (array $lesson) => filled($lesson['name']) && $lesson['minutes'] > 0)
+                    ->filter(fn (array $track) => filled($track['name']) && $track['lessons'] !== [])
+                    ->sortBy('sort_order')
                     ->values()
                     ->all();
 
                 $assignedSortOrder = $moduleSortOrder ?: $sortOrder++;
+                $lessons = collect($tracks)->flatMap(fn (array $track) => $track['lessons'])->values()->all();
 
                 return [
                     'sheet_name' => 'CSV',
                     'group_name' => $first['module_group'] ?? $first['grupo_modulo'] ?? 'CSV',
-                    'track_name' => $moduleName,
                     'name' => $moduleName,
                     'type' => $first['module_type'] ?? $first['tipo_modulo'] ?? $this->inferModuleType('CSV', null, $moduleName),
                     'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
                     'sort_order' => $assignedSortOrder,
+                    'tracks' => $tracks,
                     'lessons' => $lessons,
                 ];
             })
-            ->filter(fn (array $module) => $module['lessons'] !== [])
+            ->filter(fn (array $module) => $module['tracks'] !== [])
             ->sortBy('sort_order')
             ->values()
             ->map(function (array $module, int $index) {
@@ -169,12 +191,13 @@ class CourseSpreadsheetParser
         return $sheets
             ->flatMap(function (array $sheet) use ($archive, $sharedStrings, &$sortOrder) {
                 $rows = $this->readWorksheetRows($archive, $sheet['target'], $sharedStrings);
-                $groupName = null;
+                $groupName = $this->normalizeSheetName($sheet['name']);
                 $currentTrackName = null;
                 $currentLessons = [];
-                $modules = [];
+                $tracks = [];
+                $trackSortOrder = 1;
 
-                $flushTrack = function () use (&$modules, &$currentTrackName, &$currentLessons, &$sortOrder, &$groupName, $sheet): void {
+                $flushTrack = function () use (&$tracks, &$currentTrackName, &$currentLessons, &$trackSortOrder): void {
                     if (blank($currentTrackName) || empty($currentLessons)) {
                         $currentTrackName = null;
                         $currentLessons = [];
@@ -182,16 +205,10 @@ class CourseSpreadsheetParser
                         return;
                     }
 
-                    $moduleName = trim(($groupName ? $groupName . ' - ' : '') . $currentTrackName);
-
-                    $modules[] = [
-                        'sheet_name' => $sheet['name'],
-                        'group_name' => $groupName ?: $sheet['name'],
-                        'track_name' => $currentTrackName,
-                        'name' => $moduleName,
-                        'type' => $this->inferModuleType($sheet['name'], $groupName, $currentTrackName),
+                    $tracks[] = [
+                        'name' => $currentTrackName,
+                        'sort_order' => $trackSortOrder++,
                         'workload_minutes' => array_sum(array_column($currentLessons, 'minutes')),
-                        'sort_order' => $sortOrder++,
                         'lessons' => $currentLessons,
                     ];
 
@@ -227,7 +244,6 @@ class CourseSpreadsheetParser
                     }
 
                     if ($currentTrackName === null) {
-                        $groupName ??= $this->normalizeSheetName($sheet['name']);
                         $currentTrackName = $groupName;
                     }
 
@@ -242,9 +258,46 @@ class CourseSpreadsheetParser
                 }
 
                 $flushTrack();
+                $lessons = collect($tracks)->flatMap(fn (array $track) => $track['lessons'])->values()->all();
 
-                return $modules;
+                if ($tracks === []) {
+                    return [];
+                }
+
+                return [[
+                    'sheet_name' => $sheet['name'],
+                    'group_name' => $groupName,
+                    'name' => $groupName,
+                    'type' => $this->inferModuleType($sheet['name'], $groupName, implode(' ', array_column($tracks, 'name'))),
+                    'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
+                    'sort_order' => $sortOrder++,
+                    'tracks' => $tracks,
+                    'lessons' => $lessons,
+                ]];
             })
+            ->groupBy(fn (array $module) => $this->normalizeImportName($module['name']))
+            ->map(function (Collection $modules): array {
+                $first = $modules->first();
+                $tracks = $modules
+                    ->flatMap(fn (array $module) => $module['tracks'] ?? [])
+                    ->values()
+                    ->map(function (array $track, int $index): array {
+                        $track['sort_order'] = $index + 1;
+
+                        return $track;
+                    })
+                    ->all();
+                $lessons = collect($tracks)->flatMap(fn (array $track) => $track['lessons'] ?? [])->values()->all();
+
+                return [
+                    ...$first,
+                    'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
+                    'tracks' => $tracks,
+                    'lessons' => $lessons,
+                ];
+            })
+            ->sortBy('sort_order')
+            ->values()
             ->all();
     }
 
@@ -320,6 +373,16 @@ class CourseSpreadsheetParser
             ->ascii()
             ->replaceMatches('/[^a-z0-9]+/', '_')
             ->trim('_')
+            ->value();
+    }
+
+    protected function normalizeImportName(string $value): string
+    {
+        return Str::of($value)
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
             ->value();
     }
 

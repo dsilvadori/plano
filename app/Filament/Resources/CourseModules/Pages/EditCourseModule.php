@@ -3,6 +3,8 @@
 namespace App\Filament\Resources\CourseModules\Pages;
 
 use App\Filament\Resources\CourseModules\CourseModuleResource;
+use App\Models\Course;
+use App\Services\GoogleDriveTrackImporter;
 use App\Services\PandaCourseImporter;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -67,6 +69,60 @@ class EditCourseModule extends EditRecord
                     } catch (Throwable $exception) {
                         Notification::make()
                             ->title('Não foi possível importar os vídeos.')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
+                }),
+            Action::make('importGoogleDrive')
+                ->label('Importar Drive')
+                ->icon('heroicon-o-folder')
+                ->modalHeading('Importar trilhas do Google Drive')
+                ->modalDescription('Informe uma pasta raiz. Cada subpasta dentro dela será criada ou atualizada como uma trilha deste módulo, e os arquivos de cada subpasta virarão aulas em rascunho.')
+                ->form([
+                    Select::make('course_id')
+                        ->label('Curso que usará estas trilhas')
+                        ->options(fn (): array => Course::query()
+                            ->whereHas('modules', fn ($query) => $query->whereKey($this->record->id))
+                            ->orWhereKey($this->record->course_id)
+                            ->orderBy('name')
+                            ->pluck('name', 'id')
+                            ->all())
+                        ->default(fn () => $this->record->course_id)
+                        ->searchable()
+                        ->preload()
+                        ->required(),
+                    TextInput::make('folder_url')
+                        ->label('URL ou ID da pasta raiz do Google Drive')
+                        ->placeholder('https://drive.google.com/drive/folders/...')
+                        ->required(),
+                    Select::make('lesson_status')
+                        ->label('Status inicial das aulas')
+                        ->options([
+                            'draft' => 'Rascunho',
+                            'published' => 'Publicado',
+                        ])
+                        ->default('draft')
+                        ->required(),
+                ])
+                ->action(function (array $data, GoogleDriveTrackImporter $importer): void {
+                    try {
+                        $course = Course::query()->findOrFail($data['course_id']);
+                        $summary = $importer->importFolderSubfoldersAsTracks(
+                            $course,
+                            $this->record,
+                            (string) $data['folder_url'],
+                            (string) ($data['lesson_status'] ?? 'draft'),
+                        );
+
+                        Notification::make()
+                            ->title('Trilhas importadas do Google Drive.')
+                            ->body('Trilhas: ' . $summary['tracks'] . '. Aulas criadas: ' . $summary['created_lessons'] . '. Aulas atualizadas: ' . $summary['updated_lessons'] . '.')
+                            ->success()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->title('Não foi possível importar o Google Drive.')
                             ->body($exception->getMessage())
                             ->danger()
                             ->send();

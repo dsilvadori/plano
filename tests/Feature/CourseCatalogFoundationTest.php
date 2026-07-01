@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
 use App\Models\AiArtifact;
@@ -166,6 +167,77 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertOk()
             ->assertSee('1 de 1 aula(s) concluída(s).')
             ->assertSee('Concluída');
+    }
+
+    public function test_courses_only_show_tracks_explicitly_linked_to_them(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $firstCourse = Course::factory()->create([
+            'name' => 'Curso com trilha A',
+            'status' => 'published',
+        ]);
+        $secondCourse = Course::factory()->create([
+            'name' => 'Curso com trilha B',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $firstCourse->id,
+            'name' => 'Português',
+            'sort_order' => 1,
+        ]);
+        $module->courses()->syncWithoutDetaching([
+            $secondCourse->id => ['sort_order' => 1],
+        ]);
+
+        $firstTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $secondTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Crase',
+            'slug' => 'crase',
+            'status' => 'published',
+            'sort_order' => 2,
+        ]);
+        $firstTrack->courses()->attach($firstCourse->id, ['sort_order' => 1]);
+        $secondTrack->courses()->attach($secondCourse->id, ['sort_order' => 1]);
+
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $firstCourse->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $firstTrack->id,
+            'title' => 'Aula da primeira trilha',
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $firstCourse->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $secondTrack->id,
+            'title' => 'Aula da segunda trilha',
+            'status' => 'published',
+        ]);
+
+        $student->courses()->attach($firstCourse, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $firstCourse->slug))
+            ->assertOk()
+            ->assertSee('Classe de palavras')
+            ->assertSee('Aula da primeira trilha')
+            ->assertDontSee('Crase')
+            ->assertDontSee('Aula da segunda trilha');
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$firstCourse->slug, $firstLesson]))
+            ->assertOk();
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$firstCourse->slug, $secondLesson]))
+            ->assertNotFound();
     }
 
     public function test_locked_student_cannot_open_lesson_player(): void

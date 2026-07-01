@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
 use App\Services\CourseSpreadsheetImporter;
@@ -23,9 +24,11 @@ class CourseSpreadsheetImportTest extends TestCase
 
         $this->assertSame('Oficial de Administração', $payload['course_name']);
         $this->assertSame('oficial-de-administracao', $payload['course_slug']);
-        $this->assertCount(30, $payload['modules']);
-        $this->assertSame('Português - Classe de palavras', $payload['modules'][0]['name']);
-        $this->assertSame(137, $payload['modules'][0]['workload_minutes']);
+        $this->assertCount(8, $payload['modules']);
+        $this->assertSame('Português', $payload['modules'][0]['name']);
+        $this->assertCount(8, $payload['modules'][0]['tracks']);
+        $this->assertSame('Classe de palavras', $payload['modules'][0]['tracks'][0]['name']);
+        $this->assertSame(137, $payload['modules'][0]['tracks'][0]['workload_minutes']);
     }
 
     public function test_parser_falls_back_to_filename_when_course_name_sheet_is_missing(): void
@@ -56,35 +59,39 @@ class CourseSpreadsheetImportTest extends TestCase
             base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')
         );
 
-        $course->load(['modules', 'studyTracks.modules']);
+        $course->load(['modules.tracks.lessons', 'studyTracks.modules']);
 
         $this->assertSame('Oficial de Administração', $course->name);
-        $this->assertCount(30, $course->modules);
+        $this->assertCount(8, $course->modules);
         $this->assertCount(1, $course->studyTracks);
         $this->assertSame('Trilha Oficial - Oficial de Administração', $course->studyTracks->first()->name);
-        $this->assertCount(30, $course->studyTracks->first()->modules);
+        $this->assertCount(8, $course->studyTracks->first()->modules);
         $this->assertDatabaseHas('course_modules', [
             'course_id' => $course->id,
-            'name' => 'Informáitca - Excel 2016',
-            'workload_minutes' => 380,
+            'name' => 'Informáitca',
+            'workload_minutes' => 1332,
             'type' => 'basic',
         ]);
         $this->assertDatabaseHas('course_modules', [
             'course_id' => $course->id,
-            'name' => 'Legislação - L.O - Santos',
-            'workload_minutes' => 207,
+            'name' => 'Legislação',
+            'workload_minutes' => 354,
             'type' => 'specific',
         ]);
-        $module = $course->modules()->where('name', 'Português - Classe de palavras')->first();
+        $module = $course->modules()->where('name', 'Português')->first();
         $this->assertNotNull($module);
         $this->assertIsArray($module->lessons);
         $this->assertNotEmpty($module->lessons);
+        $track = $module->tracks()->where('name', 'Classe de palavras')->first();
+        $this->assertNotNull($track);
         $this->assertDatabaseHas('lessons', [
             'course_id' => $course->id,
             'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
             'title' => $module->lessons[0]['name'],
             'duration_seconds' => $module->lessons[0]['minutes'] * 60,
-            'status' => 'published',
+            'status' => 'draft',
+            'source_status' => 'awaiting_media',
         ]);
     }
 
@@ -116,15 +123,15 @@ class CourseSpreadsheetImportTest extends TestCase
         ]);
         $this->assertDatabaseHas('course_modules', [
             'course_id' => $course->id,
-            'name' => 'Português - Classe de palavras',
-            'workload_minutes' => 137,
+            'name' => 'Português',
+            'workload_minutes' => 730,
         ]);
         $this->assertDatabaseHas('study_tracks', [
             'course_id' => $course->id,
             'name' => 'Trilha Oficial - Curso Gabaritando CRT',
         ]);
-        $this->assertSame(31, $course->modules()->count());
-        $this->assertSame(30, $course->studyTracks()->where('name', 'Trilha Oficial - Curso Gabaritando CRT')->first()->modules()->count());
+        $this->assertSame(9, $course->modules()->count());
+        $this->assertSame(8, $course->studyTracks()->where('name', 'Trilha Oficial - Curso Gabaritando CRT')->first()->modules()->count());
     }
 
     public function test_importer_updates_existing_official_structure_when_importing_into_course(): void
@@ -135,7 +142,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'is_active' => false,
         ]);
         $existingImportedModule = CourseModule::factory()->for($course)->create([
-            'name' => 'Português - Classe de palavras',
+            'name' => 'Português',
             'type' => 'questions',
             'workload_minutes' => 1,
             'sort_order' => 999,
@@ -160,18 +167,19 @@ class CourseSpreadsheetImportTest extends TestCase
             base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')
         );
 
-        $updatedModule = $course->modules()->where('name', 'Português - Classe de palavras')->first();
+        $updatedModule = $course->modules()->where('name', 'Português')->first();
         $officialTrack->refresh();
 
         $this->assertSame($existingImportedModule->id, $updatedModule->id);
         $this->assertSame('basic', $updatedModule->type);
-        $this->assertSame(137, $updatedModule->workload_minutes);
+        $this->assertSame(730, $updatedModule->workload_minutes);
         $this->assertNotSame('Conteúdo antigo', $updatedModule->lessons[0]['name']);
+        $this->assertTrue($updatedModule->tracks()->where('name', 'Classe de palavras')->exists());
         $this->assertDatabaseCount('study_tracks', 1);
         $this->assertSame('Trilha Oficial - Nome Antigo', $officialTrack->name);
         $this->assertTrue($officialTrack->modules()->whereKey($updatedModule->id)->exists());
         $this->assertFalse($officialTrack->modules()->whereKey($staleModule->id)->exists());
-        $this->assertSame(30, $officialTrack->modules()->count());
+        $this->assertSame(8, $officialTrack->modules()->count());
     }
 
     public function test_importer_preview_reports_dry_run_counts_without_writing(): void
@@ -181,8 +189,8 @@ class CourseSpreadsheetImportTest extends TestCase
         );
 
         $this->assertSame('create', $preview['course']['action']);
-        $this->assertSame(30, $preview['modules']['total']);
-        $this->assertSame(30, $preview['modules']['create']);
+        $this->assertSame(8, $preview['modules']['total']);
+        $this->assertSame(8, $preview['modules']['create']);
         $this->assertSame(0, $preview['modules']['update']);
         $this->assertGreaterThan(0, $preview['lessons']['total']);
         $this->assertSame($preview['lessons']['total'], $preview['lessons']['create']);
@@ -209,6 +217,7 @@ class CourseSpreadsheetImportTest extends TestCase
 
         $this->assertSame('Curso CSV', $course->name);
         $this->assertSame(2, $course->modules()->count());
+        $this->assertSame(2, CourseModuleTrack::query()->count());
         $this->assertSame(3, $course->lessons()->count());
         $this->assertDatabaseHas('lessons', [
             'course_id' => $course->id,
@@ -226,7 +235,7 @@ class CourseSpreadsheetImportTest extends TestCase
         ]);
     }
 
-    public function test_reimport_archives_removed_spreadsheet_lessons(): void
+    public function test_reimport_preserves_removed_spreadsheet_lessons_for_manual_review(): void
     {
         $firstPath = tempnam(sys_get_temp_dir(), 'course-import-first-') . '.csv';
         $secondPath = tempnam(sys_get_temp_dir(), 'course-import-second-') . '.csv';
@@ -250,7 +259,7 @@ class CourseSpreadsheetImportTest extends TestCase
             @unlink($secondPath);
         }
 
-        $this->assertSame('archived', $removedLesson->fresh()->status);
+        $this->assertSame('draft', $removedLesson->fresh()->status);
     }
 
     public function test_spreadsheet_import_reuses_existing_modules_and_lessons_by_name(): void

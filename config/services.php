@@ -61,4 +61,11 @@ return [
         'model' => env('GEMINI_MODEL', 'gemini-3.5-flash'),
     ],
 
+    'google_drive' => [
+        'enabled' => env('GOOGLE_DRIVE_ENABLED', false),
+        'credentials_path' => env('GOOGLE_DRIVE_CREDENTIALS_PATH'),
+        'scopes' => env('GOOGLE_DRIVE_SCOPES', 'https://www.googleapis.com/auth/drive.readonly'),
+        'api_base_url' => env('GOOGLE_DRIVE_API_BASE_URL', 'https://www.googleapis.com/drive/v3'),
+    ],
+
 ];

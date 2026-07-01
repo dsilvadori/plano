@@ -33,6 +33,7 @@ class CourseModulesTable
                 TextColumn::make('lessons_count')
                     ->label('Aulas da trilha')
                     ->sortable(query: fn ($query, $direction) => $query->orderBy('workload_minutes', $direction)),
+                TextColumn::make('tracks_count')->label('Trilhas')->counts('tracks'),
                 TextColumn::make('online_lessons_count')->label('Aulas online')->counts('onlineLessons'),
                 TextColumn::make('workload_minutes')->label('Minutos')->sortable(),
                 TextColumn::make('sort_order')->label('Ordem')->sortable(),
