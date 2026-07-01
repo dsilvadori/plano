@@ -10,6 +10,45 @@ use RuntimeException;
 
 class PandaVideoClient
 {
+    public function folders(?string $parentFolderId = null): Collection
+    {
+        $parentQueryParam = (string) config('services.panda.folder_parent_query_param', 'parent_id');
+        $response = $this->getWithAuthFallback($this->path('folders_path'), filled($parentFolderId) ? [
+            $parentQueryParam => $parentFolderId,
+        ] : []);
+
+        return $this->extractItems($response)
+            ->map(fn (array $folder) => $this->normalizeFolder($folder))
+            ->filter(fn (array $folder) => filled($folder['panda_folder_id']) && filled($folder['name']))
+            ->values();
+    }
+
+    public function findOrCreateFolder(string $name, ?string $parentFolderId = null): array
+    {
+        $normalizedName = $this->normalizeName($name);
+        $existing = $this->folders($parentFolderId)
+            ->first(fn (array $folder) => $this->normalizeName((string) $folder['name']) === $normalizedName);
+
+        if ($existing) {
+            return $existing;
+        }
+
+        return $this->createFolder($name, $parentFolderId);
+    }
+
+    public function createFolder(string $name, ?string $parentFolderId = null): array
+    {
+        $payload = [
+            (string) config('services.panda.folder_name_field', 'name') => $name,
+        ];
+
+        if (filled($parentFolderId)) {
+            $payload[(string) config('services.panda.folder_parent_payload_key', 'parent_id')] = $parentFolderId;
+        }
+
+        return $this->normalizeFolder($this->postWithAuthFallback($this->path('folders_path'), $payload));
+    }
+
     public function videos(?string $folderId = null): Collection
     {
         $folderQueryParam = (string) config('services.panda.folder_query_param', 'folder_id');
@@ -218,6 +257,30 @@ class PandaVideoClient
             'folder_name' => Arr::get($video, 'folder_name') ?? Arr::get($video, 'folder.name'),
             'payload' => $video,
         ];
+    }
+
+    protected function normalizeFolder(array $folder): array
+    {
+        $pandaId = Arr::get($folder, 'id')
+            ?? Arr::get($folder, 'folder_id')
+            ?? Arr::get($folder, 'panda_folder_id');
+
+        return [
+            'panda_folder_id' => filled($pandaId) ? (string) $pandaId : '',
+            'name' => (string) (Arr::get($folder, 'name') ?? Arr::get($folder, 'title') ?? ''),
+            'parent_id' => Arr::get($folder, 'parent_id') ?? Arr::get($folder, 'folder_id_parent') ?? Arr::get($folder, 'parent.id'),
+            'payload' => $folder,
+        ];
+    }
+
+    protected function normalizeName(string $value): string
+    {
+        return str((string) $value)
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
+            ->value();
     }
 
     protected function extractAiArtifacts(array $video): array

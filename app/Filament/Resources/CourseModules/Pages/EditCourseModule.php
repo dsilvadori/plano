@@ -10,6 +10,7 @@ use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
 use Throwable;
@@ -104,6 +105,10 @@ class EditCourseModule extends EditRecord
                         ])
                         ->default('draft')
                         ->required(),
+                    Toggle::make('create_panda_folders')
+                        ->label('Criar pastas correspondentes no Panda')
+                        ->helperText('Cria uma pasta Panda para o módulo e uma pasta Panda para cada trilha importada do Drive.')
+                        ->default(true),
                 ])
                 ->action(function (array $data, GoogleDriveTrackImporter $importer): void {
                     try {
@@ -113,11 +118,12 @@ class EditCourseModule extends EditRecord
                             $this->record,
                             (string) $data['folder_url'],
                             (string) ($data['lesson_status'] ?? 'draft'),
+                            (bool) ($data['create_panda_folders'] ?? true),
                         );
 
                         Notification::make()
                             ->title('Trilhas importadas do Google Drive.')
-                            ->body('Trilhas: ' . $summary['tracks'] . '. Aulas criadas: ' . $summary['created_lessons'] . '. Aulas atualizadas: ' . $summary['updated_lessons'] . '.')
+                            ->body('Trilhas: ' . $summary['tracks'] . '. Pastas Panda: ' . $summary['panda_folders'] . '. Aulas criadas: ' . $summary['created_lessons'] . '. Aulas atualizadas: ' . $summary['updated_lessons'] . '.')
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {

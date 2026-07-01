@@ -13,22 +13,33 @@ class GoogleDriveTrackImporter
 {
     public function __construct(
         protected GoogleDriveClient $drive,
+        protected PandaVideoClient $panda,
     ) {}
 
-    public function importFolderSubfoldersAsTracks(Course $course, CourseModule $module, string $folderUrlOrId, string $lessonStatus = 'draft'): array
+    public function importFolderSubfoldersAsTracks(Course $course, CourseModule $module, string $folderUrlOrId, string $lessonStatus = 'draft', bool $createPandaFolders = true): array
     {
         $folderId = $this->drive->folderIdFromUrl($folderUrlOrId);
         $folders = $this->sortNaturally($this->drive->listFolders($folderId));
 
-        return DB::transaction(function () use ($course, $module, $folderUrlOrId, $folderId, $folders, $lessonStatus): array {
+        return DB::transaction(function () use ($course, $module, $folderUrlOrId, $folderId, $folders, $lessonStatus, $createPandaFolders): array {
             $createdTracks = 0;
             $updatedTracks = 0;
             $createdLessons = 0;
             $updatedLessons = 0;
+            $pandaFolders = 0;
 
             $module->courses()->syncWithoutDetaching([
                 $course->id => ['sort_order' => (int) $module->sort_order],
             ]);
+
+            $modulePandaFolderId = $module->panda_folder_id;
+
+            if ($createPandaFolders) {
+                $modulePandaFolder = $this->panda->findOrCreateFolder($module->name);
+                $modulePandaFolderId = $modulePandaFolder['panda_folder_id'];
+                $module->forceFill(['panda_folder_id' => $modulePandaFolderId])->save();
+                $pandaFolders++;
+            }
 
             foreach ($folders as $trackIndex => $folder) {
                 $trackName = trim((string) ($folder['name'] ?? '')) ?: 'Trilha '.($trackIndex + 1);
@@ -41,6 +52,13 @@ class GoogleDriveTrackImporter
                         'slug' => $trackSlug,
                     ]);
                 $trackWasCreated = ! $track->exists;
+                $trackPandaFolderId = $track->panda_folder_id;
+
+                if ($createPandaFolders) {
+                    $trackPandaFolder = $this->panda->findOrCreateFolder($trackName, $modulePandaFolderId);
+                    $trackPandaFolderId = $trackPandaFolder['panda_folder_id'];
+                    $pandaFolders++;
+                }
 
                 $track->fill([
                     'course_module_id' => $module->id,
@@ -49,11 +67,13 @@ class GoogleDriveTrackImporter
                     'thumbnail_url' => $folder['thumbnailLink'] ?? $track->thumbnail_url,
                     'sort_order' => $trackIndex + 1,
                     'status' => 'draft',
+                    'panda_folder_id' => $trackPandaFolderId,
                     'google_doc_url' => $folder['webViewLink'] ?? $folderUrlOrId,
                     'metadata' => [
                         'source' => 'google_drive',
                         'drive_folder_id' => $folder['id'] ?? null,
                         'parent_folder_id' => $folderId,
+                        'panda_parent_folder_id' => $modulePandaFolderId,
                         'imported_at' => now()->toIso8601String(),
                     ],
                 ]);
@@ -121,6 +141,7 @@ class GoogleDriveTrackImporter
                 'tracks' => count($folders),
                 'created_tracks' => $createdTracks,
                 'updated_tracks' => $updatedTracks,
+                'panda_folders' => $pandaFolders,
                 'created_lessons' => $createdLessons,
                 'updated_lessons' => $updatedLessons,
             ];
