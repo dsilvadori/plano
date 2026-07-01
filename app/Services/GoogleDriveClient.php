@@ -60,6 +60,19 @@ class GoogleDriveClient
         return $files;
     }
 
+    public function downloadFileToPath(string $fileId, string $path): void
+    {
+        $response = $this->request()
+            ->sink($path)
+            ->get(rtrim((string) config('services.google_drive.api_base_url'), '/').'/files/'.$fileId, [
+                'alt' => 'media',
+            ]);
+
+        if ($response->failed()) {
+            throw new RuntimeException('Google Drive download error: '.$response->body());
+        }
+    }
+
     public function folderIdFromUrl(string $urlOrId): string
     {
         $value = trim($urlOrId);

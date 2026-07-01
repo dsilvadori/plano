@@ -3,8 +3,9 @@
 namespace App\Filament\Resources\CourseModules\Pages;
 
 use App\Filament\Resources\CourseModules\CourseModuleResource;
+use App\Jobs\ImportGoogleDriveModuleTracks;
 use App\Models\Course;
-use App\Services\GoogleDriveTrackImporter;
+use App\Models\GoogleDriveImportRun;
 use App\Services\PandaCourseImporter;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -64,7 +65,7 @@ class EditCourseModule extends EditRecord
 
                         Notification::make()
                             ->title('Aulas importadas da integração de vídeo.')
-                            ->body('Vídeos: ' . ($run->summary['videos'] ?? 0) . '. Criadas: ' . ($run->summary['created'] ?? 0) . '. Atualizadas: ' . ($run->summary['updated'] ?? 0) . '.')
+                            ->body('Vídeos: '.($run->summary['videos'] ?? 0).'. Criadas: '.($run->summary['created'] ?? 0).'. Atualizadas: '.($run->summary['updated'] ?? 0).'.')
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {
@@ -84,8 +85,11 @@ class EditCourseModule extends EditRecord
                     Select::make('course_id')
                         ->label('Curso que usará estas trilhas')
                         ->options(fn (): array => Course::query()
-                            ->whereHas('modules', fn ($query) => $query->whereKey($this->record->id))
-                            ->orWhereKey($this->record->course_id)
+                            ->where(function ($query): void {
+                                $query
+                                    ->whereHas('modules', fn ($moduleQuery) => $moduleQuery->whereKey($this->record->id))
+                                    ->orWhere('id', $this->record->course_id);
+                            })
                             ->orderBy('name')
                             ->pluck('name', 'id')
                             ->all())
@@ -109,21 +113,35 @@ class EditCourseModule extends EditRecord
                         ->label('Criar pastas correspondentes no Panda')
                         ->helperText('Cria uma pasta Panda para o módulo e uma pasta Panda para cada trilha importada do Drive.')
                         ->default(true),
+                    Toggle::make('upload_panda_videos')
+                        ->label('Enviar vídeos das trilhas ao Panda')
+                        ->helperText('Baixa cada arquivo de vídeo do Drive e envia para a pasta Panda da trilha. Arquivos PDF e Google Docs ficam como materiais/link.')
+                        ->default(true),
                 ])
-                ->action(function (array $data, GoogleDriveTrackImporter $importer): void {
+                ->action(function (array $data): void {
                     try {
-                        $course = Course::query()->findOrFail($data['course_id']);
-                        $summary = $importer->importFolderSubfoldersAsTracks(
-                            $course,
-                            $this->record,
+                        Course::query()->findOrFail($data['course_id']);
+                        $run = GoogleDriveImportRun::query()->create([
+                            'course_id' => (int) $data['course_id'],
+                            'course_module_id' => $this->record->id,
+                            'folder_url' => (string) $data['folder_url'],
+                            'status' => 'queued',
+                            'latest_message' => 'Aguardando worker.',
+                        ]);
+
+                        ImportGoogleDriveModuleTracks::dispatch(
+                            (int) $data['course_id'],
+                            $this->record->id,
                             (string) $data['folder_url'],
                             (string) ($data['lesson_status'] ?? 'draft'),
                             (bool) ($data['create_panda_folders'] ?? true),
+                            (bool) ($data['upload_panda_videos'] ?? true),
+                            $run->id,
                         );
 
                         Notification::make()
-                            ->title('Trilhas importadas do Google Drive.')
-                            ->body('Trilhas: ' . $summary['tracks'] . '. Pastas Panda: ' . $summary['panda_folders'] . '. Aulas criadas: ' . $summary['created_lessons'] . '. Aulas atualizadas: ' . $summary['updated_lessons'] . '.')
+                            ->title('Importação enviada para a fila.')
+                            ->body('Acompanhe o progresso em Operação > Importações Drive.')
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {

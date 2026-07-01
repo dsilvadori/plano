@@ -12,10 +12,20 @@ class PandaVideoClient
 {
     public function folders(?string $parentFolderId = null): Collection
     {
-        $parentQueryParam = (string) config('services.panda.folder_parent_query_param', 'parent_id');
-        $response = $this->getWithAuthFallback($this->path('folders_path'), filled($parentFolderId) ? [
+        $parentQueryParam = trim((string) config('services.panda.folder_parent_query_param', ''));
+        $query = filled($parentFolderId) && $parentQueryParam !== '' ? [
             $parentQueryParam => $parentFolderId,
-        ] : []);
+        ] : [];
+
+        try {
+            $response = $this->getWithAuthFallback($this->path('folders_path'), $query);
+        } catch (\Throwable $exception) {
+            if ($query === [] || ! str_contains($exception->getMessage(), $parentQueryParam)) {
+                throw $exception;
+            }
+
+            $response = $this->getWithAuthFallback($this->path('folders_path'));
+        }
 
         return $this->extractItems($response)
             ->map(fn (array $folder) => $this->normalizeFolder($folder))
@@ -41,10 +51,25 @@ class PandaVideoClient
         $payload = [
             (string) config('services.panda.folder_name_field', 'name') => $name,
         ];
+        $parentPayloadKey = trim((string) config('services.panda.folder_parent_payload_key', ''));
 
-        if (filled($parentFolderId)) {
-            $payload[(string) config('services.panda.folder_parent_payload_key', 'parent_id')] = $parentFolderId;
+        if (filled($parentFolderId) && $parentPayloadKey !== '') {
+            $payload[$parentPayloadKey] = $parentFolderId;
         }
+
+        try {
+            return $this->normalizeFolder($this->postWithAuthFallback($this->path('folders_path'), $payload));
+        } catch (\Throwable $exception) {
+            if (! filled($parentFolderId) || $parentPayloadKey === '') {
+                throw $exception;
+            }
+
+            if (! str_contains($exception->getMessage(), $parentPayloadKey)) {
+                throw $exception;
+            }
+        }
+
+        unset($payload[$parentPayloadKey]);
 
         return $this->normalizeFolder($this->postWithAuthFallback($this->path('folders_path'), $payload));
     }
@@ -62,6 +87,38 @@ class PandaVideoClient
             ->values();
     }
 
+    public function uploadVideo(string $path, string $title, ?string $folderId = null): array
+    {
+        if (! is_file($path)) {
+            throw new RuntimeException("Arquivo de vídeo não encontrado para upload: {$path}");
+        }
+
+        $payload = [
+            (string) config('services.panda.video_title_field', 'title') => $title,
+        ];
+
+        $folderField = trim((string) config('services.panda.video_folder_field', 'folder_id'));
+
+        if (filled($folderId) && $folderField !== '') {
+            $payload[$folderField] = $folderId;
+        }
+
+        $response = $this->multipartPostWithAuthFallback(
+            $this->path('video_upload_path'),
+            $payload,
+            (string) config('services.panda.video_file_field', 'file'),
+            $path,
+        );
+
+        $video = $this->normalizeVideo($this->extractSingleItem($response), $folderId);
+
+        if (blank($video['panda_video_id'])) {
+            throw new RuntimeException('O Panda aceitou o upload, mas não retornou o ID do vídeo.');
+        }
+
+        return $video;
+    }
+
     public function createAiPackage(string $videoId, string $fromLang = 'auto', string $type = 'ALL_TEXT_ITEMS'): array
     {
         return $this->postWithAuthFallback($this->path('ai_workflow_path'), [
@@ -75,7 +132,7 @@ class PandaVideoClient
     {
         $response = Http::baseUrl(rtrim((string) config('services.panda.ai_config_base_url'), '/'))
             ->acceptJson()
-            ->get('/' . trim($pullzoneName, '/') . '/' . $videoExternalId . '-ai.json');
+            ->get('/'.trim($pullzoneName, '/').'/'.$videoExternalId.'-ai.json');
 
         if ($response->status() === 404) {
             return null;
@@ -91,7 +148,7 @@ class PandaVideoClient
         $response = Http::baseUrl(rtrim((string) config('services.panda.ai_config_base_url'), '/'))
             ->acceptJson()
             ->timeout(5)
-            ->get('/' . trim($pullzoneName, '/') . '/' . $videoExternalId . '.json');
+            ->get('/'.trim($pullzoneName, '/').'/'.$videoExternalId.'.json');
 
         if ($response->status() === 404) {
             return null;
@@ -130,9 +187,9 @@ class PandaVideoClient
         }
 
         throw new RuntimeException(
-            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de autenticação. ' .
-            'Confira se a chave é uma API Key válida e se a API está liberada na conta. Última resposta: ' .
-            trim((string) $lastBody) . ' (status ' . $lastStatus . ')'
+            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de autenticação. '.
+            'Confira se a chave é uma API Key válida e se a API está liberada na conta. Última resposta: '.
+            trim((string) $lastBody).' (status '.$lastStatus.')'
         );
     }
 
@@ -151,7 +208,7 @@ class PandaVideoClient
         foreach ($attempts as $attempt) {
             $requestPath = $attempt['query'] === []
                 ? $path
-                : $path . '?' . http_build_query($attempt['query']);
+                : $path.'?'.http_build_query($attempt['query']);
             $response = $this->http($attempt['headers'])->post($requestPath, $payload);
 
             if ($response->successful()) {
@@ -167,9 +224,59 @@ class PandaVideoClient
         }
 
         throw new RuntimeException(
-            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de autenticação da IA. ' .
-            'Confira a chave da API e permissões da conta. Última resposta: ' .
-            trim((string) $lastBody) . ' (status ' . $lastStatus . ')'
+            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de autenticação da IA. '.
+            'Confira a chave da API e permissões da conta. Última resposta: '.
+            trim((string) $lastBody).' (status '.$lastStatus.')'
+        );
+    }
+
+    protected function multipartPostWithAuthFallback(string $path, array $payload, string $fileField, string $filePath): array
+    {
+        $apiKey = config('services.panda.api_key');
+
+        if (blank($apiKey)) {
+            throw new RuntimeException('Configure PANDA_API_KEY antes de enviar vídeos ao Panda.');
+        }
+
+        $attempts = $this->authAttempts((string) $apiKey);
+        $lastStatus = null;
+        $lastBody = null;
+
+        foreach ($attempts as $attempt) {
+            $requestPath = $attempt['query'] === []
+                ? $path
+                : $path.'?'.http_build_query($attempt['query']);
+            $handle = fopen($filePath, 'r');
+
+            if ($handle === false) {
+                throw new RuntimeException("Não foi possível abrir o arquivo de vídeo: {$filePath}");
+            }
+
+            try {
+                $response = $this->http($attempt['headers'])
+                    ->timeout((int) config('services.panda.video_upload_timeout', 600))
+                    ->attach($fileField, $handle, basename($filePath))
+                    ->post($requestPath, $payload);
+            } finally {
+                fclose($handle);
+            }
+
+            if ($response->successful()) {
+                return $response->json() ?? [];
+            }
+
+            $lastStatus = $response->status();
+            $lastBody = $response->body();
+
+            if ($response->status() !== 401) {
+                $response->throw();
+            }
+        }
+
+        throw new RuntimeException(
+            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de upload. '.
+            'Confira a chave da API e permissões da conta. Última resposta: '.
+            trim((string) $lastBody).' (status '.$lastStatus.')'
         );
     }
 
@@ -184,11 +291,11 @@ class PandaVideoClient
     {
         $configuredHeader = (string) config('services.panda.auth_header', 'Authorization');
         $configuredScheme = trim((string) config('services.panda.auth_scheme', 'Bearer'));
-        $configuredValue = $configuredScheme !== '' ? $configuredScheme . ' ' . $apiKey : $apiKey;
+        $configuredValue = $configuredScheme !== '' ? $configuredScheme.' '.$apiKey : $apiKey;
 
         return collect([
             ['headers' => [$configuredHeader => $configuredValue], 'query' => []],
-            ['headers' => ['Authorization' => 'Bearer ' . $apiKey], 'query' => []],
+            ['headers' => ['Authorization' => 'Bearer '.$apiKey], 'query' => []],
             ['headers' => ['Authorization' => $apiKey], 'query' => []],
             ['headers' => ['X-API-Key' => $apiKey], 'query' => []],
             ['headers' => ['x-api-key' => $apiKey], 'query' => []],
@@ -204,7 +311,7 @@ class PandaVideoClient
 
     protected function path(string $configKey): string
     {
-        return '/' . ltrim((string) config("services.panda.{$configKey}"), '/');
+        return '/'.ltrim((string) config("services.panda.{$configKey}"), '/');
     }
 
     protected function extractItems(array $response): Collection
@@ -218,6 +325,19 @@ class PandaVideoClient
         }
 
         return collect(array_is_list($response) ? $response : []);
+    }
+
+    protected function extractSingleItem(array $response): array
+    {
+        foreach (['data', 'video', 'item', 'result'] as $key) {
+            $item = Arr::get($response, $key);
+
+            if (is_array($item) && ! array_is_list($item)) {
+                return $item;
+            }
+        }
+
+        return $response;
     }
 
     protected function normalizeVideo(array $video, ?string $folderId): array
@@ -240,7 +360,7 @@ class PandaVideoClient
             ?? Arr::get($video, 'video_hls');
 
         if (blank($embedUrl) && filled(config('services.panda.embed_base_url')) && filled($pandaId)) {
-            $embedUrl = rtrim((string) config('services.panda.embed_base_url'), '/') . '/' . $pandaId;
+            $embedUrl = rtrim((string) config('services.panda.embed_base_url'), '/').'/'.$pandaId;
         }
 
         return [
