@@ -217,6 +217,67 @@ class PandaImportTest extends TestCase
         $this->assertNull(app(PandaVideoClient::class)->findVideoByTitle('Aula teste', 'folder-1'));
     }
 
+    public function test_panda_client_finds_existing_video_when_panda_title_keeps_extension(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.videos_path' => '/videos',
+            'services.panda.folder_query_param' => 'folder_id',
+        ]);
+
+        Http::fake([
+            'https://panda.test/videos?folder_id=folder-1' => Http::response([
+                'data' => [[
+                    'id' => 'existing-video',
+                    'title' => '01-anaytics.mp4',
+                    'status' => 'CONVERTING',
+                    'folder_id' => 'folder-1',
+                ]],
+            ], 200),
+        ]);
+
+        $video = app(PandaVideoClient::class)->findVideoByTitle('01 - Anaytics', 'folder-1');
+
+        $this->assertSame('existing-video', $video['panda_video_id']);
+    }
+
+    public function test_panda_client_does_not_create_folder_when_existing_name_is_found(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.folders_path' => '/folders',
+        ]);
+
+        Http::fake(function ($request) {
+            if ($request->method() === 'GET' && $request->url() === 'https://panda.test/folders') {
+                return Http::response([
+                    'data' => [[
+                        'id' => 'existing-folder',
+                        'name' => 'Informática',
+                        'status' => true,
+                    ]],
+                ]);
+            }
+
+            if ($request->method() === 'POST' && $request->url() === 'https://panda.test/folders') {
+                $this->fail('Não deveria criar pasta quando já existe uma com o mesmo nome.');
+            }
+
+            return Http::response([], 404);
+        });
+
+        $folder = app(PandaVideoClient::class)->findOrCreateFolder('Informatica');
+
+        $this->assertSame('existing-folder', $folder['panda_folder_id']);
+        $this->assertFalse($folder['was_created']);
+    }
+
     public function test_panda_client_does_not_reconcile_draft_video_after_binary_failure(): void
     {
         config([

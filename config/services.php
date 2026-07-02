@@ -59,6 +59,8 @@ return [
         'video_folder_field' => env('PANDA_VIDEO_FOLDER_FIELD', 'folder_id'),
         'video_upload_timeout' => env('PANDA_VIDEO_UPLOAD_TIMEOUT', 600),
         'video_upload_delay_seconds' => env('PANDA_VIDEO_UPLOAD_DELAY_SECONDS', 0),
+        'video_upload_retry_attempts' => env('PANDA_VIDEO_UPLOAD_RETRY_ATTEMPTS', 8),
+        'video_upload_retry_delay_seconds' => env('PANDA_VIDEO_UPLOAD_RETRY_DELAY_SECONDS', 120),
         'uploader_base_url' => env('PANDA_UPLOADER_BASE_URL', 'https://uploader.pandavideo.com'),
         'uploader_path' => env('PANDA_UPLOADER_PATH', '/files/'),
         'uploader_auth_scheme' => env('PANDA_UPLOADER_AUTH_SCHEME', env('PANDA_AUTH_SCHEME', '')),

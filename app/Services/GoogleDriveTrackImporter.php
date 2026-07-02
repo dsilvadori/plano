@@ -140,7 +140,11 @@ class GoogleDriveTrackImporter
                                 $pandaVideosSkipped++;
                             } else {
                                 $pandaVideo = $this->uploadDriveVideoToPanda($file, $title, $trackPandaFolderId);
-                                $pandaVideosUploaded++;
+                                if (($pandaVideo['was_reused'] ?? false) === true) {
+                                    $pandaVideosSkipped++;
+                                } else {
+                                    $pandaVideosUploaded++;
+                                }
                                 $this->pauseAfterPandaUploadIfConfigured();
                             }
                         } catch (\Throwable $exception) {
@@ -250,7 +254,7 @@ class GoogleDriveTrackImporter
 
         $folder = $this->panda->findOrCreateFolder($name, $parentFolderId);
 
-        return [$folder['panda_folder_id'], true];
+        return [$folder['panda_folder_id'], (bool) ($folder['was_created'] ?? true)];
     }
 
     protected function pauseAfterPandaUploadIfConfigured(): void
@@ -291,12 +295,62 @@ class GoogleDriveTrackImporter
         try {
             $this->drive->downloadFileToPath($driveFileId, $path);
 
-            return $this->panda->uploadVideo($path, $title, $pandaFolderId);
+            return $this->uploadLocalVideoToPandaWithRetry($path, $title, $pandaFolderId);
         } finally {
             if (is_file($path)) {
                 @unlink($path);
             }
         }
+    }
+
+    protected function uploadLocalVideoToPandaWithRetry(string $path, string $title, ?string $pandaFolderId): array
+    {
+        $attempts = max(1, (int) config('services.panda.video_upload_retry_attempts', 1));
+        $delaySeconds = max(0, (int) config('services.panda.video_upload_retry_delay_seconds', 0));
+        $lastException = null;
+
+        for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+            $existingVideo = $attempt > 1
+                ? $this->panda->findVideoByTitle($title, $pandaFolderId)
+                : null;
+
+            if ($existingVideo) {
+                return array_merge($existingVideo, ['was_reused' => true]);
+            }
+
+            try {
+                return $this->panda->uploadVideo($path, $title, $pandaFolderId);
+            } catch (\Throwable $exception) {
+                $lastException = $exception;
+
+                if (! $this->isPandaUploadConcurrencyLimit($exception) || $attempt === $attempts) {
+                    throw $exception;
+                }
+
+                $this->sleepBeforeRetry($delaySeconds, $attempt);
+            }
+        }
+
+        throw $lastException ?? new \RuntimeException('Upload Panda não concluído.');
+    }
+
+    protected function isPandaUploadConcurrencyLimit(\Throwable $exception): bool
+    {
+        $message = strtolower($exception->getMessage());
+
+        return str_contains($message, 'upload concurrency limit')
+            || str_contains($message, 'reached the upload concurrency')
+            || str_contains($message, 'errcode":10')
+            || str_contains($message, 'errcode": 10');
+    }
+
+    protected function sleepBeforeRetry(int $delaySeconds, int $attempt): void
+    {
+        if ($delaySeconds <= 0) {
+            return;
+        }
+
+        sleep($delaySeconds * $attempt);
     }
 
     protected function temporaryVideoPath(string $name): string

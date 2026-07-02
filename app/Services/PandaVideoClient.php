@@ -41,10 +41,10 @@ class PandaVideoClient
             ->first(fn (array $folder) => $this->normalizeName((string) $folder['name']) === $normalizedName);
 
         if ($existing) {
-            return $existing;
+            return array_merge($existing, ['was_created' => false]);
         }
 
-        return $this->createFolder($name, $parentFolderId);
+        return array_merge($this->createFolder($name, $parentFolderId), ['was_created' => true]);
     }
 
     public function activeFolder(string $folderId): ?array
@@ -116,7 +116,7 @@ class PandaVideoClient
         }
 
         return $this->videos($folderId)
-            ->first(fn (array $video) => $this->normalizeName((string) $video['title']) === $normalizedTitle
+            ->first(fn (array $video) => $this->normalizedTitleMatches((string) $video['title'], $normalizedTitle)
                 && $this->isProcessablePandaVideo($video));
     }
 
@@ -832,6 +832,18 @@ class PandaVideoClient
             ->replaceMatches('/[^a-z0-9]+/', ' ')
             ->squish()
             ->value();
+    }
+
+    protected function normalizedTitleMatches(string $candidate, string $normalizedTitle): bool
+    {
+        if ($this->normalizeName($candidate) === $normalizedTitle) {
+            return true;
+        }
+
+        $extensionless = pathinfo($candidate, PATHINFO_FILENAME);
+
+        return $extensionless !== ''
+            && $this->normalizeName($extensionless) === $normalizedTitle;
     }
 
     protected function extractAiArtifacts(array $video): array

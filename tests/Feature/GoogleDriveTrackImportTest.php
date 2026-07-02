@@ -419,6 +419,86 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame('HTTP content length exceeded 10485760 bytes.', $lesson->metadata['panda_upload_error']);
     }
 
+    public function test_import_retries_panda_concurrency_limit_and_reuses_video_that_appears(): void
+    {
+        config([
+            'services.panda.video_upload_retry_attempts' => 2,
+            'services.panda.video_upload_retry_delay_seconds' => 0,
+        ]);
+
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $drive->shouldReceive('folderIdFromUrl')->once()->andReturn('root-folder');
+        $drive->shouldReceive('listFolders')->once()->andReturn([[
+            'id' => 'folder-windows-10',
+            'name' => 'Windows 10',
+            'mimeType' => GoogleDriveClient::FOLDER_MIME_TYPE,
+        ]]);
+        $drive->shouldReceive('listFiles')->once()->andReturn([[
+            'id' => 'video-windows-01',
+            'name' => '01 - Introdução ao Windows.mp4',
+            'mimeType' => 'video/mp4',
+        ]]);
+        $drive->shouldReceive('downloadFileToPath')
+            ->once()
+            ->andReturnUsing(function (string $fileId, string $path): void {
+                file_put_contents($path, 'video-content');
+            });
+
+        $panda->shouldReceive('findOrCreateFolder')
+            ->once()
+            ->with('Informática', null)
+            ->andReturn(['panda_folder_id' => 'panda-module-informatica', 'name' => 'Informática', 'was_created' => true]);
+        $panda->shouldReceive('findOrCreateFolder')
+            ->once()
+            ->with('Windows 10', 'panda-module-informatica')
+            ->andReturn(['panda_folder_id' => 'panda-track-windows-10', 'name' => 'Windows 10', 'was_created' => true]);
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Introdução ao Windows', 'panda-track-windows-10')
+            ->andReturn(null);
+        $panda->shouldReceive('uploadVideo')
+            ->once()
+            ->with(Mockery::type('string'), '01 - Introdução ao Windows', 'panda-track-windows-10')
+            ->andThrow(new \RuntimeException('{"errCode":10,"errMsg":"you have reached the upload concurrency limit, please wait and try again"}'));
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Introdução ao Windows', 'panda-track-windows-10')
+            ->andReturn([
+                'panda_video_id' => 'existing-after-retry',
+                'title' => '01 - Introdução ao Windows.mp4',
+                'description' => null,
+                'duration_seconds' => 0,
+                'thumbnail_url' => null,
+                'panda_status' => 'CONVERTING',
+                'panda_embed_url' => 'https://player.test/embed/existing-after-retry',
+                'panda_player_url' => 'https://player.test/existing-after-retry',
+                'folder_id' => 'panda-track-windows-10',
+                'payload' => ['id' => 'existing-after-retry'],
+            ]);
+
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática',
+        ]);
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->importFolderSubfoldersAsTracks(
+            $course,
+            $module,
+            'root-folder',
+        );
+
+        $lesson = Lesson::query()->where('slug', '01-introducao-ao-windows')->firstOrFail();
+
+        $this->assertSame(0, $summary['panda_videos_failed']);
+        $this->assertSame(0, $summary['panda_videos_uploaded']);
+        $this->assertSame(1, $summary['panda_videos_skipped']);
+        $this->assertSame('existing-after-retry', $lesson->panda_video_id);
+        $this->assertSame('media_ready', $lesson->source_status);
+    }
+
     public function test_import_links_existing_panda_video_by_title_without_uploading_duplicate(): void
     {
         $drive = Mockery::mock(GoogleDriveClient::class);
