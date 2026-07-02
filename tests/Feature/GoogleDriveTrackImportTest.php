@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\ImportGoogleDriveLessons;
 use App\Jobs\ImportGoogleDriveModuleTracks;
 use App\Models\Course;
 use App\Models\CourseModule;
@@ -761,6 +762,105 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame('active-panda-track-windows-10', $track->fresh()->panda_folder_id);
     }
 
+    public function test_imports_drive_folder_files_as_standalone_lessons(): void
+    {
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $drive->shouldReceive('folderIdFromUrl')
+            ->once()
+            ->with('standalone-folder')
+            ->andReturn('standalone-folder');
+        $drive->shouldReceive('listFiles')
+            ->once()
+            ->with('standalone-folder')
+            ->andReturn([
+                [
+                    'id' => 'video-standalone-01',
+                    'name' => '01 - Aula avulsa.mp4',
+                    'mimeType' => 'video/mp4',
+                    'webViewLink' => 'https://drive.test/file/video-standalone-01',
+                ],
+                [
+                    'id' => 'pdf-standalone-02',
+                    'name' => '02 - Material.pdf',
+                    'mimeType' => 'application/pdf',
+                    'webViewLink' => 'https://drive.test/file/pdf-standalone-02',
+                ],
+            ]);
+        $drive->shouldReceive('downloadFileToPath')
+            ->once()
+            ->with('video-standalone-01', Mockery::type('string'))
+            ->andReturnUsing(function (string $fileId, string $path): void {
+                file_put_contents($path, 'video-content');
+            });
+
+        $panda->shouldReceive('findOrCreateFolder')
+            ->once()
+            ->with('Aulas avulsas', null)
+            ->andReturn([
+                'panda_folder_id' => 'panda-standalone-folder',
+                'name' => 'Aulas avulsas',
+                'was_created' => true,
+            ]);
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Aula avulsa', 'panda-standalone-folder')
+            ->andReturn(null);
+        $panda->shouldReceive('uploadVideo')
+            ->once()
+            ->with(Mockery::type('string'), '01 - Aula avulsa', 'panda-standalone-folder')
+            ->andReturn([
+                'panda_video_id' => 'panda-video-standalone-01',
+                'title' => '01 - Aula avulsa',
+                'description' => null,
+                'duration_seconds' => 0,
+                'thumbnail_url' => null,
+                'panda_status' => 'CONVERTING',
+                'panda_embed_url' => 'https://player.test/embed/panda-video-standalone-01',
+                'panda_player_url' => 'https://player.test/panda-video-standalone-01',
+                'folder_id' => 'panda-standalone-folder',
+                'payload' => ['id' => 'panda-video-standalone-01'],
+            ]);
+
+        $run = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'standalone-folder',
+            'status' => 'running',
+        ]);
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->importFolderFilesAsLessons(
+            null,
+            null,
+            null,
+            'standalone-folder',
+            pandaFolderName: 'Aulas avulsas',
+            run: $run,
+        );
+
+        $this->assertSame(2, $summary['created_lessons']);
+        $this->assertSame(1, $summary['panda_folders']);
+        $this->assertSame(1, $summary['panda_videos_uploaded']);
+        $this->assertDatabaseHas('lessons', [
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Aula avulsa',
+            'type' => 'video',
+            'source_status' => 'media_ready',
+            'panda_video_id' => 'panda-video-standalone-01',
+        ]);
+        $this->assertDatabaseHas('lessons', [
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '02 - Material',
+            'type' => 'pdf',
+            'source_status' => 'media_ready',
+        ]);
+        $this->assertSame(2, $run->fresh()->processed_lessons);
+        $this->assertSame(100, $run->fresh()->progress_percent);
+    }
+
     public function test_background_job_runs_drive_import_with_expected_parameters(): void
     {
         $course = Course::factory()->create();
@@ -808,5 +908,52 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame('finished', $run->fresh()->status);
         $this->assertSame('Importação concluída.', $run->fresh()->latest_message);
         $this->assertSame(['tracks' => 1, 'created_lessons' => 0], $run->fresh()->summary);
+    }
+
+    public function test_background_job_runs_standalone_lesson_drive_import(): void
+    {
+        $run = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'https://drive.test/aulas',
+            'status' => 'queued',
+        ]);
+        $importer = Mockery::mock(GoogleDriveTrackImporter::class);
+
+        $importer->shouldReceive('importFolderFilesAsLessons')
+            ->once()
+            ->withArgs(function (
+                ?Course $givenCourse,
+                ?CourseModule $givenModule,
+                ?CourseModuleTrack $givenTrack,
+                string $folderUrl,
+                string $lessonStatus,
+                ?string $pandaFolderName,
+                bool $createPandaFolder,
+                bool $uploadPandaVideos,
+                GoogleDriveImportRun $givenRun,
+            ) use ($run): bool {
+                return $givenCourse === null
+                    && $givenModule === null
+                    && $givenTrack === null
+                    && $folderUrl === 'https://drive.test/aulas'
+                    && $lessonStatus === 'draft'
+                    && $pandaFolderName === 'Aulas avulsas'
+                    && $createPandaFolder
+                    && $uploadPandaVideos
+                    && $givenRun->is($run);
+            })
+            ->andReturn(['tracks' => 0, 'created_lessons' => 2]);
+
+        (new ImportGoogleDriveLessons(
+            null,
+            null,
+            null,
+            'https://drive.test/aulas',
+            pandaFolderName: 'Aulas avulsas',
+            runId: $run->id,
+        ))->handle($importer);
+
+        $this->assertSame('finished', $run->fresh()->status);
+        $this->assertSame('Importação de aulas concluída.', $run->fresh()->latest_message);
+        $this->assertSame(['tracks' => 0, 'created_lessons' => 2], $run->fresh()->summary);
     }
 }

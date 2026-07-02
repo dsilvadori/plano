@@ -9,18 +9,22 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use BackedEnum;
+use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
+use Filament\Tables\Columns\ImageColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Str;
 
 class CourseModuleTrackResource extends Resource
@@ -59,7 +63,20 @@ class CourseModuleTrackResource extends Resource
             TextInput::make('thumbnail_url')
                 ->label('URL da thumbnail')
                 ->url()
-                ->maxLength(2048),
+                ->maxLength(2048)
+                ->helperText('Usada como fallback quando nenhum arquivo for enviado.'),
+            FileUpload::make('thumbnail_path')
+                ->label('Thumbnail por arquivo')
+                ->image()
+                ->imageEditor()
+                ->imagePreviewHeight('180')
+                ->disk('public')
+                ->directory('track-thumbnails')
+                ->visibility('public')
+                ->maxSize(4096)
+                ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp'])
+                ->helperText('Ao enviar um arquivo, ele tem prioridade sobre a URL da thumbnail.')
+                ->columnSpanFull(),
             TextInput::make('sort_order')
                 ->label('Ordem')
                 ->numeric()
@@ -95,6 +112,10 @@ class CourseModuleTrackResource extends Resource
     {
         return $table
             ->columns([
+                ImageColumn::make('thumbnail_display_url')
+                    ->label('Thumb')
+                    ->size(56)
+                    ->square(),
                 TextColumn::make('name')->label('Trilha')->searchable()->sortable(),
                 TextColumn::make('module.name')->label('Módulo')->searchable()->sortable(),
                 TextColumn::make('courses_count')->label('Cursos')->counts('courses'),
@@ -116,6 +137,18 @@ class CourseModuleTrackResource extends Resource
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
+                    BulkAction::make('publish')
+                        ->label('Publicar selecionadas')
+                        ->icon('heroicon-o-eye')
+                        ->requiresConfirmation()
+                        ->action(fn (Collection $records) => $records->each->update(['status' => 'published']))
+                        ->deselectRecordsAfterCompletion(),
+                    BulkAction::make('unpublish')
+                        ->label('Despublicar selecionadas')
+                        ->icon('heroicon-o-eye-slash')
+                        ->requiresConfirmation()
+                        ->action(fn (Collection $records) => $records->each->update(['status' => 'draft']))
+                        ->deselectRecordsAfterCompletion(),
                     DeleteBulkAction::make(),
                 ]),
             ]);

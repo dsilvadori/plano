@@ -53,17 +53,23 @@ class LessonResource extends Resource
                     $set('course_module_id', null);
                     $set('course_module_track_id', null);
                 })
-                ->required(),
+                ->nullable(),
             Select::make('course_module_id')
                 ->label('Módulo')
                 ->options(fn (Get $get): array => filled($get('course_id'))
                     ? CourseModule::query()
                         ->where('course_id', $get('course_id'))
+                        ->orWhereHas('courses', fn ($query) => $query->whereKey($get('course_id')))
+                        ->orWhereNull('course_id')
                         ->orderBy('sort_order')
                         ->orderBy('name')
                         ->pluck('name', 'id')
                         ->all()
-                    : [])
+                    : CourseModule::query()
+                        ->orderBy('sort_order')
+                        ->orderBy('name')
+                        ->pluck('name', 'id')
+                        ->all())
                 ->searchable()
                 ->preload()
                 ->createOptionForm([
@@ -72,7 +78,7 @@ class LessonResource extends Resource
                         ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
                         ->searchable()
                         ->preload()
-                        ->required(),
+                        ->nullable(),
                     TextInput::make('name')
                         ->label('Nome')
                         ->required(),
@@ -124,7 +130,7 @@ class LessonResource extends Resource
                         $set('course_id', $module->course_id);
                     }
                 })
-                ->required(),
+                ->nullable(),
             Select::make('course_module_track_id')
                 ->label('Trilha')
                 ->options(fn (Get $get): array => filled($get('course_module_id'))
