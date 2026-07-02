@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('panda_import_runs', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('course_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('course_id')->nullable()->constrained()->nullOnDelete();
             $table->string('panda_folder_id')->nullable()->index();
             $table->string('status')->default('pending')->index();
             $table->json('summary')->nullable();

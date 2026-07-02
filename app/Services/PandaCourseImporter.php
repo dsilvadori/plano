@@ -2,10 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\AiArtifact;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
-use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\PandaImportRun;
 use App\Support\LessonTitleNormalizer;
@@ -34,7 +34,7 @@ class PandaCourseImporter
             DB::transaction(function () use ($course, $folderId, $moduleName, $lessonStatus, $moduleType, $run, $videos): void {
                 $resolvedModuleName = $moduleName
                     ?: (string) ($videos->first()['folder_name'] ?? null)
-                    ?: 'Pasta de vídeos ' . $folderId;
+                    ?: 'Pasta de vídeos '.$folderId;
 
                 $module = CourseModule::updateOrCreate(
                     [
@@ -141,7 +141,7 @@ class PandaCourseImporter
     {
         $course ??= $module->course;
         $run = PandaImportRun::create([
-            'course_id' => $course->id,
+            'course_id' => $course?->id,
             'panda_folder_id' => $folderId,
             'status' => 'running',
             'started_at' => now(),
@@ -174,7 +174,7 @@ class PandaCourseImporter
                     $wasRecentlyCreated = ! $lesson->exists;
 
                     $lesson->fill([
-                        'course_id' => $lesson->exists ? $lesson->course_id : $course->id,
+                        'course_id' => $lesson->exists ? $lesson->course_id : $course?->id,
                         'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
                         'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track->id) : $track->id,
                         'title' => $normalizedTitle,
@@ -244,24 +244,28 @@ class PandaCourseImporter
         return $run->fresh(['items']);
     }
 
-    public function importReplacingModuleByName(Course $fallbackCourse, string $moduleName, string $folderId, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun
+    public function importReplacingModuleByName(?Course $fallbackCourse, string $moduleName, string $folderId, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun
     {
         $module = $this->findModuleByName($moduleName);
 
         if (! $module) {
             $module = CourseModule::create([
-                'course_id' => $fallbackCourse->id,
+                'course_id' => $fallbackCourse?->id,
                 'name' => $moduleName,
                 'type' => $this->normalizeModuleType($moduleType),
                 'workload_minutes' => 0,
-                'sort_order' => (int) ($fallbackCourse->modules()->max('course_modules.sort_order') + 1),
+                'sort_order' => $fallbackCourse
+                    ? (int) ($fallbackCourse->modules()->max('course_modules.sort_order') + 1)
+                    : (int) (CourseModule::query()->max('sort_order') + 1),
                 'is_active' => true,
             ]);
         }
 
-        $module->courses()->syncWithoutDetaching([
-            $fallbackCourse->id => ['sort_order' => (int) $module->sort_order],
-        ]);
+        if ($fallbackCourse) {
+            $module->courses()->syncWithoutDetaching([
+                $fallbackCourse->id => ['sort_order' => (int) $module->sort_order],
+            ]);
+        }
 
         $module->forceFill([
             'type' => $this->normalizeModuleType($moduleType),
@@ -274,7 +278,7 @@ class PandaCourseImporter
     {
         $slug = Str::slug($title);
 
-        return $slug !== '' ? $slug : 'aula-panda-' . $sortOrder;
+        return $slug !== '' ? $slug : 'aula-panda-'.$sortOrder;
     }
 
     protected function normalizeLessonStatus(string $status): string
@@ -292,7 +296,7 @@ class PandaCourseImporter
         $minutes = (int) ceil(((int) ($video['duration_seconds'] ?? 0)) / 60);
 
         return [
-            'name' => $normalizedTitle ?: (trim((string) ($video['title'] ?? '')) ?: 'Aula importada ' . ($index + 1)),
+            'name' => $normalizedTitle ?: (trim((string) ($video['title'] ?? '')) ?: 'Aula importada '.($index + 1)),
             'minutes' => max(1, $minutes),
         ];
     }
@@ -309,7 +313,7 @@ class PandaCourseImporter
         ])->save();
     }
 
-    protected function ensureTrackForModule(CourseModule $module, Course $course, string $name, string $folderId): CourseModuleTrack
+    protected function ensureTrackForModule(CourseModule $module, ?Course $course, string $name, string $folderId): CourseModuleTrack
     {
         $trackName = trim($name) ?: 'Aulas';
         $slug = Str::slug($trackName) ?: 'aulas';
@@ -331,9 +335,11 @@ class PandaCourseImporter
             ],
         );
 
-        $track->courses()->syncWithoutDetaching([
-            $course->id => ['sort_order' => (int) $track->sort_order],
-        ]);
+        if ($course) {
+            $track->courses()->syncWithoutDetaching([
+                $course->id => ['sort_order' => (int) $track->sort_order],
+            ]);
+        }
 
         return $track;
     }

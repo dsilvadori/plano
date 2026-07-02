@@ -16,7 +16,7 @@ class GoogleDriveTrackImporter
         protected PandaVideoClient $panda,
     ) {}
 
-    public function importFolderSubfoldersAsTracks(Course $course, CourseModule $module, string $folderUrlOrId, string $lessonStatus = 'draft', bool $createPandaFolders = true, bool $uploadPandaVideos = true, ?GoogleDriveImportRun $run = null): array
+    public function importFolderSubfoldersAsTracks(?Course $course, CourseModule $module, string $folderUrlOrId, string $lessonStatus = 'draft', bool $createPandaFolders = true, bool $uploadPandaVideos = true, ?GoogleDriveImportRun $run = null): array
     {
         $folderId = $this->drive->folderIdFromUrl($folderUrlOrId);
         $folders = $this->sortNaturally($this->drive->listFolders($folderId));
@@ -35,17 +35,18 @@ class GoogleDriveTrackImporter
         $pandaVideosSkipped = 0;
         $pandaVideosFailed = 0;
 
-        $module->courses()->syncWithoutDetaching([
-            $course->id => ['sort_order' => (int) $module->sort_order],
-        ]);
+        if ($course) {
+            $module->courses()->syncWithoutDetaching([
+                $course->id => ['sort_order' => (int) $module->sort_order],
+            ]);
+        }
 
         $modulePandaFolderId = $module->panda_folder_id;
 
-        if ($createPandaFolders && blank($modulePandaFolderId)) {
-            $modulePandaFolder = $this->panda->findOrCreateFolder($module->name);
-            $modulePandaFolderId = $modulePandaFolder['panda_folder_id'];
+        if ($createPandaFolders) {
+            [$modulePandaFolderId, $moduleFolderCreated] = $this->resolvePandaFolderId($module->name, $modulePandaFolderId);
             $module->forceFill(['panda_folder_id' => $modulePandaFolderId])->save();
-            $pandaFolders++;
+            $pandaFolders += $moduleFolderCreated ? 1 : 0;
         }
 
         foreach ($folders as $trackIndex => $folder) {
@@ -61,10 +62,9 @@ class GoogleDriveTrackImporter
             $trackWasCreated = ! $track->exists;
             $trackPandaFolderId = $track->panda_folder_id;
 
-            if ($createPandaFolders && blank($trackPandaFolderId)) {
-                $trackPandaFolder = $this->panda->findOrCreateFolder($trackName, $modulePandaFolderId);
-                $trackPandaFolderId = $trackPandaFolder['panda_folder_id'];
-                $pandaFolders++;
+            if ($createPandaFolders) {
+                [$trackPandaFolderId, $trackFolderCreated] = $this->resolvePandaFolderId($trackName, $trackPandaFolderId, $modulePandaFolderId);
+                $pandaFolders += $trackFolderCreated ? 1 : 0;
             }
 
             $track->fill([
@@ -85,9 +85,11 @@ class GoogleDriveTrackImporter
                 ],
             ]);
             $track->save();
-            $track->courses()->syncWithoutDetaching([
-                $course->id => ['sort_order' => $trackIndex + 1],
-            ]);
+            if ($course) {
+                $track->courses()->syncWithoutDetaching([
+                    $course->id => ['sort_order' => $trackIndex + 1],
+                ]);
+            }
 
             $trackWasCreated ? $createdTracks++ : $updatedTracks++;
 
@@ -104,7 +106,7 @@ class GoogleDriveTrackImporter
                     ->where('lessons.slug', $slug)
                     ->first()
                     ?? new Lesson([
-                        'course_id' => $course->id,
+                        'course_id' => $course?->id,
                         'course_module_id' => $module->id,
                         'course_module_track_id' => $track->id,
                         'slug' => $slug,
@@ -116,11 +118,31 @@ class GoogleDriveTrackImporter
 
                 if ($uploadPandaVideos && $type === 'video') {
                     if (filled($lesson->panda_video_id)) {
-                        $pandaVideosSkipped++;
-                    } else {
+                        $pandaVideo = $this->panda->processableVideo((string) $lesson->panda_video_id, $trackPandaFolderId);
+
+                        if ($pandaVideo) {
+                            $pandaVideosSkipped++;
+                        } else {
+                            $lesson->forceFill([
+                                'panda_video_id' => null,
+                                'panda_embed_url' => null,
+                                'panda_player_url' => null,
+                                'panda_status' => null,
+                            ]);
+                        }
+                    }
+
+                    if (! $pandaVideo) {
                         try {
-                            $pandaVideo = $this->uploadDriveVideoToPanda($file, $title, $trackPandaFolderId);
-                            $pandaVideosUploaded++;
+                            $pandaVideo = $this->panda->findVideoByTitle($title, $trackPandaFolderId);
+
+                            if ($pandaVideo) {
+                                $pandaVideosSkipped++;
+                            } else {
+                                $pandaVideo = $this->uploadDriveVideoToPanda($file, $title, $trackPandaFolderId);
+                                $pandaVideosUploaded++;
+                                $this->pauseAfterPandaUploadIfConfigured();
+                            }
                         } catch (\Throwable $exception) {
                             $pandaUploadError = $exception->getMessage();
                             $pandaVideosFailed++;
@@ -129,7 +151,7 @@ class GoogleDriveTrackImporter
                 }
 
                 $lesson->fill([
-                    'course_id' => $lesson->exists ? $lesson->course_id : $course->id,
+                    'course_id' => $lesson->exists ? $lesson->course_id : $course?->id,
                     'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
                     'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track->id) : $track->id,
                     'title' => $title,
@@ -173,7 +195,9 @@ class GoogleDriveTrackImporter
                     'panda_videos_uploaded' => $pandaVideosUploaded,
                     'panda_videos_skipped' => $pandaVideosSkipped,
                     'panda_videos_failed' => $pandaVideosFailed,
-                    'latest_message' => 'Aula processada: '.$title,
+                    'latest_message' => $pandaUploadError
+                        ? 'Aula criada; upload Panda pendente: '.$title
+                        : 'Aula processada: '.$title,
                 ]);
             }
 
@@ -216,6 +240,26 @@ class GoogleDriveTrackImporter
 
         $run->forceFill($attributes)->save();
         $run->refresh();
+    }
+
+    protected function resolvePandaFolderId(string $name, ?string $localFolderId, ?string $parentFolderId = null): array
+    {
+        if (filled($localFolderId) && $this->panda->activeFolder((string) $localFolderId)) {
+            return [(string) $localFolderId, false];
+        }
+
+        $folder = $this->panda->findOrCreateFolder($name, $parentFolderId);
+
+        return [$folder['panda_folder_id'], true];
+    }
+
+    protected function pauseAfterPandaUploadIfConfigured(): void
+    {
+        $seconds = (int) config('services.panda.video_upload_delay_seconds', 0);
+
+        if ($seconds > 0) {
+            sleep($seconds);
+        }
     }
 
     protected function lessonTitleFromFile(string $name, int $fallbackIndex): string

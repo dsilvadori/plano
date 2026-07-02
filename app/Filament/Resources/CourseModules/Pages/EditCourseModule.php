@@ -85,18 +85,14 @@ class EditCourseModule extends EditRecord
                     Select::make('course_id')
                         ->label('Curso que usará estas trilhas')
                         ->options(fn (): array => Course::query()
-                            ->where(function ($query): void {
-                                $query
-                                    ->whereHas('modules', fn ($moduleQuery) => $moduleQuery->whereKey($this->record->id))
-                                    ->orWhere('id', $this->record->course_id);
-                            })
                             ->orderBy('name')
                             ->pluck('name', 'id')
                             ->all())
                         ->default(fn () => $this->record->course_id)
                         ->searchable()
                         ->preload()
-                        ->required(),
+                        ->nullable()
+                        ->helperText('Opcional. Deixe vazio para importar as trilhas apenas no módulo independente.'),
                     TextInput::make('folder_url')
                         ->label('URL ou ID da pasta raiz do Google Drive')
                         ->placeholder('https://drive.google.com/drive/folders/...')
@@ -120,9 +116,10 @@ class EditCourseModule extends EditRecord
                 ])
                 ->action(function (array $data): void {
                     try {
-                        Course::query()->findOrFail($data['course_id']);
+                        $courseId = filled($data['course_id'] ?? null) ? (int) $data['course_id'] : null;
+
                         $run = GoogleDriveImportRun::query()->create([
-                            'course_id' => (int) $data['course_id'],
+                            'course_id' => $courseId,
                             'course_module_id' => $this->record->id,
                             'folder_url' => (string) $data['folder_url'],
                             'status' => 'queued',
@@ -130,7 +127,7 @@ class EditCourseModule extends EditRecord
                         ]);
 
                         ImportGoogleDriveModuleTracks::dispatch(
-                            (int) $data['course_id'],
+                            $courseId,
                             $this->record->id,
                             (string) $data['folder_url'],
                             (string) ($data['lesson_status'] ?? 'draft'),

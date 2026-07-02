@@ -17,10 +17,12 @@ class CourseModuleForm
         return $schema
             ->components([
                 Select::make('course_id')
-                    ->label('Curso')
+                    ->label('Curso de referência')
                     ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
                     ->searchable()
-                    ->required(),
+                    ->preload()
+                    ->nullable()
+                    ->helperText('Opcional. Deixe vazio para cadastrar um módulo independente e reutilizável.'),
                 TextInput::make('name')
                     ->label('Nome')
                     ->required(),
@@ -73,7 +75,7 @@ class CourseModuleForm
     protected static function formatLessonsForTextarea(array $lessons): string
     {
         return collect($lessons)
-            ->map(fn (array $lesson) => trim((string) ($lesson['name'] ?? '')) . '|' . (int) ($lesson['minutes'] ?? 0))
+            ->map(fn (array $lesson) => trim((string) ($lesson['name'] ?? '')).'|'.(int) ($lesson['minutes'] ?? 0))
             ->implode("\n");
     }
 

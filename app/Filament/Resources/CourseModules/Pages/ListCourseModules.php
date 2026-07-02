@@ -31,7 +31,8 @@ class ListCourseModules extends ListRecords
                         ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
                         ->searchable()
                         ->preload()
-                        ->required(),
+                        ->nullable()
+                        ->helperText('Opcional. Deixe vazio para criar ou atualizar um módulo independente.'),
                     TextInput::make('module_name')
                         ->label('Nome do módulo')
                         ->required(),
@@ -61,7 +62,9 @@ class ListCourseModules extends ListRecords
                 ])
                 ->action(function (array $data, PandaCourseImporter $importer): void {
                     try {
-                        $course = Course::query()->findOrFail($data['course_id']);
+                        $course = filled($data['course_id'] ?? null)
+                            ? Course::query()->findOrFail($data['course_id'])
+                            : null;
                         $run = $importer->importReplacingModuleByName(
                             $course,
                             (string) $data['module_name'],
@@ -72,7 +75,7 @@ class ListCourseModules extends ListRecords
 
                         Notification::make()
                             ->title('Módulo importado da integração de vídeo.')
-                            ->body('Vídeos: ' . ($run->summary['videos'] ?? 0) . '. Criadas: ' . ($run->summary['created'] ?? 0) . '. Atualizadas: ' . ($run->summary['updated'] ?? 0) . '.')
+                            ->body('Vídeos: '.($run->summary['videos'] ?? 0).'. Criadas: '.($run->summary['created'] ?? 0).'. Atualizadas: '.($run->summary['updated'] ?? 0).'.')
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {

@@ -14,7 +14,7 @@ class GoogleDriveImportRunForm
     {
         return $schema
             ->components([
-                TextInput::make('course.name')->label('Curso')->disabled(),
+                TextInput::make('course.name')->label('Curso')->placeholder('Catálogo')->disabled(),
                 TextInput::make('module.name')->label('Módulo')->disabled(),
                 TextInput::make('status')
                     ->label('Status')
@@ -32,10 +32,10 @@ class GoogleDriveImportRunForm
                 TextInput::make('latest_message')->label('Última atualização')->disabled()->columnSpanFull(),
                 TextInput::make('panda_folders')->label('Pastas Panda')->disabled(),
                 TextInput::make('panda_videos_uploaded')->label('Vídeos enviados')->disabled(),
-                TextInput::make('panda_videos_failed')->label('Vídeos com erro')->disabled(),
+                TextInput::make('panda_videos_failed')->label('Uploads pendentes')->disabled(),
                 TextInput::make('panda_videos_skipped')->label('Vídeos ignorados')->disabled(),
                 KeyValue::make('summary')->label('Resumo')->disabled()->columnSpanFull(),
-                Textarea::make('error_message')->label('Erro')->disabled()->columnSpanFull(),
+                Textarea::make('error_message')->label('Erro da importação')->disabled()->columnSpanFull(),
                 DateTimePicker::make('started_at')->label('Iniciada em')->timezone('America/Sao_Paulo')->disabled(),
                 DateTimePicker::make('finished_at')->label('Finalizada em')->timezone('America/Sao_Paulo')->disabled(),
             ]);

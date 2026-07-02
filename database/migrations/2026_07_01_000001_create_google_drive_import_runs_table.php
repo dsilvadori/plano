@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('google_drive_import_runs', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('course_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('course_id')->nullable()->constrained()->nullOnDelete();
             $table->foreignId('course_module_id')->constrained()->cascadeOnDelete();
             $table->string('folder_url', 2048);
             $table->string('folder_id')->nullable()->index();

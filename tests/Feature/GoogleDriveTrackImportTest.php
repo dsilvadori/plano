@@ -292,7 +292,7 @@ class GoogleDriveTrackImportTest extends TestCase
 
         $panda->shouldReceive('findOrCreateFolder')
             ->once()
-            ->with('Informática')
+            ->with('Informática', null)
             ->andReturn([
                 'panda_folder_id' => 'panda-module-informatica',
                 'name' => 'Informática',
@@ -306,6 +306,10 @@ class GoogleDriveTrackImportTest extends TestCase
                 'name' => 'Windows 10',
                 'payload' => [],
             ]);
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Introdução ao Windows', 'panda-track-windows-10')
+            ->andReturn(null);
         $panda->shouldReceive('uploadVideo')
             ->once()
             ->with(Mockery::type('string'), '01 - Introdução ao Windows', 'panda-track-windows-10')
@@ -380,12 +384,16 @@ class GoogleDriveTrackImportTest extends TestCase
 
         $panda->shouldReceive('findOrCreateFolder')
             ->once()
-            ->with('Informática')
+            ->with('Informática', null)
             ->andReturn(['panda_folder_id' => 'panda-module-informatica', 'name' => 'Informática']);
         $panda->shouldReceive('findOrCreateFolder')
             ->once()
             ->with('Windows 10', 'panda-module-informatica')
             ->andReturn(['panda_folder_id' => 'panda-track-windows-10', 'name' => 'Windows 10']);
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Introdução ao Windows', 'panda-track-windows-10')
+            ->andReturn(null);
         $panda->shouldReceive('uploadVideo')
             ->once()
             ->andThrow(new \RuntimeException('HTTP content length exceeded 10485760 bytes.'));
@@ -411,6 +419,163 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame('HTTP content length exceeded 10485760 bytes.', $lesson->metadata['panda_upload_error']);
     }
 
+    public function test_import_links_existing_panda_video_by_title_without_uploading_duplicate(): void
+    {
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $drive->shouldReceive('folderIdFromUrl')->once()->andReturn('root-folder');
+        $drive->shouldReceive('listFolders')->once()->andReturn([[
+            'id' => 'folder-windows-10',
+            'name' => 'Windows 10',
+            'mimeType' => GoogleDriveClient::FOLDER_MIME_TYPE,
+        ]]);
+        $drive->shouldReceive('listFiles')->once()->andReturn([[
+            'id' => 'video-windows-01',
+            'name' => '01 - Introdução ao Windows.mp4',
+            'mimeType' => 'video/mp4',
+        ]]);
+        $drive->shouldNotReceive('downloadFileToPath');
+
+        $panda->shouldReceive('findOrCreateFolder')
+            ->once()
+            ->with('Informática', null)
+            ->andReturn(['panda_folder_id' => 'panda-module-informatica', 'name' => 'Informática']);
+        $panda->shouldReceive('findOrCreateFolder')
+            ->once()
+            ->with('Windows 10', 'panda-module-informatica')
+            ->andReturn(['panda_folder_id' => 'panda-track-windows-10', 'name' => 'Windows 10']);
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Introdução ao Windows', 'panda-track-windows-10')
+            ->andReturn([
+                'panda_video_id' => 'existing-panda-video-windows-01',
+                'title' => '01 - Introdução ao Windows',
+                'description' => null,
+                'duration_seconds' => 0,
+                'thumbnail_url' => null,
+                'panda_status' => 'CONVERTING',
+                'panda_embed_url' => 'https://player.test/embed/existing-panda-video-windows-01',
+                'panda_player_url' => 'https://player.test/existing-panda-video-windows-01',
+                'folder_id' => 'panda-track-windows-10',
+                'payload' => ['id' => 'existing-panda-video-windows-01'],
+            ]);
+        $panda->shouldNotReceive('uploadVideo');
+
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática',
+        ]);
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->importFolderSubfoldersAsTracks(
+            $course,
+            $module,
+            'root-folder',
+        );
+
+        $lesson = Lesson::query()->where('slug', '01-introducao-ao-windows')->firstOrFail();
+
+        $this->assertSame(0, $summary['panda_videos_uploaded']);
+        $this->assertSame(1, $summary['panda_videos_skipped']);
+        $this->assertSame('existing-panda-video-windows-01', $lesson->panda_video_id);
+        $this->assertSame('media_ready', $lesson->source_status);
+    }
+
+    public function test_import_reuploads_when_local_panda_video_is_not_processable(): void
+    {
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $drive->shouldReceive('folderIdFromUrl')->once()->andReturn('root-folder');
+        $drive->shouldReceive('listFolders')->once()->andReturn([[
+            'id' => 'folder-windows-10',
+            'name' => 'Windows 10',
+            'mimeType' => GoogleDriveClient::FOLDER_MIME_TYPE,
+        ]]);
+        $drive->shouldReceive('listFiles')->once()->andReturn([[
+            'id' => 'video-windows-01',
+            'name' => '01 - Introdução ao Windows.mp4',
+            'mimeType' => 'video/mp4',
+        ]]);
+        $drive->shouldReceive('downloadFileToPath')
+            ->once()
+            ->andReturnUsing(function (string $fileId, string $path): void {
+                file_put_contents($path, 'video-content');
+            });
+
+        $panda->shouldReceive('activeFolder')
+            ->once()
+            ->with('panda-module-informatica')
+            ->andReturn(['panda_folder_id' => 'panda-module-informatica', 'name' => 'Informática', 'status' => true]);
+        $panda->shouldReceive('activeFolder')
+            ->once()
+            ->with('panda-track-windows-10')
+            ->andReturn(['panda_folder_id' => 'panda-track-windows-10', 'name' => 'Windows 10', 'status' => true]);
+        $panda->shouldReceive('processableVideo')
+            ->once()
+            ->with('deleting-panda-video-windows-01', 'panda-track-windows-10')
+            ->andReturn(null);
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Introdução ao Windows', 'panda-track-windows-10')
+            ->andReturn(null);
+        $panda->shouldReceive('uploadVideo')
+            ->once()
+            ->with(Mockery::type('string'), '01 - Introdução ao Windows', 'panda-track-windows-10')
+            ->andReturn([
+                'panda_video_id' => 'new-panda-video-windows-01',
+                'title' => '01 - Introdução ao Windows',
+                'description' => null,
+                'duration_seconds' => 0,
+                'thumbnail_url' => null,
+                'panda_status' => 'CONVERTING',
+                'panda_embed_url' => 'https://player.test/embed/new-panda-video-windows-01',
+                'panda_player_url' => 'https://player.test/new-panda-video-windows-01',
+                'folder_id' => 'panda-track-windows-10',
+                'payload' => ['id' => 'new-panda-video-windows-01'],
+            ]);
+
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática',
+            'panda_folder_id' => 'panda-module-informatica',
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'panda_folder_id' => 'panda-track-windows-10',
+            'sort_order' => 1,
+            'status' => 'draft',
+        ]);
+        Lesson::query()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Introdução ao Windows',
+            'slug' => '01-introducao-ao-windows',
+            'type' => 'video',
+            'status' => 'draft',
+            'panda_video_id' => 'deleting-panda-video-windows-01',
+            'sort_order' => 1,
+        ]);
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->importFolderSubfoldersAsTracks(
+            $course,
+            $module,
+            'root-folder',
+        );
+
+        $lesson = Lesson::query()->where('slug', '01-introducao-ao-windows')->firstOrFail();
+
+        $this->assertSame(1, $summary['panda_videos_uploaded']);
+        $this->assertSame(0, $summary['panda_videos_skipped']);
+        $this->assertSame('new-panda-video-windows-01', $lesson->panda_video_id);
+        $this->assertSame('CONVERTING', $lesson->panda_status);
+    }
+
     public function test_import_reuses_existing_local_panda_folder_ids_without_creating_duplicates(): void
     {
         $drive = Mockery::mock(GoogleDriveClient::class);
@@ -424,6 +589,14 @@ class GoogleDriveTrackImportTest extends TestCase
         ]]);
         $drive->shouldReceive('listFiles')->once()->andReturn([]);
 
+        $panda->shouldReceive('activeFolder')
+            ->once()
+            ->with('existing-panda-module-informatica')
+            ->andReturn(['panda_folder_id' => 'existing-panda-module-informatica', 'name' => 'Informática', 'status' => true]);
+        $panda->shouldReceive('activeFolder')
+            ->once()
+            ->with('existing-panda-track-windows-10')
+            ->andReturn(['panda_folder_id' => 'existing-panda-track-windows-10', 'name' => 'Windows 10', 'status' => true]);
         $panda->shouldNotReceive('findOrCreateFolder');
 
         $course = Course::factory()->create();
@@ -450,6 +623,62 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame(0, $summary['panda_folders']);
         $this->assertSame('existing-panda-module-informatica', $module->fresh()->panda_folder_id);
         $this->assertSame('existing-panda-track-windows-10', $track->fresh()->panda_folder_id);
+    }
+
+    public function test_import_recreates_inactive_local_panda_folders(): void
+    {
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $drive->shouldReceive('folderIdFromUrl')->once()->andReturn('root-folder');
+        $drive->shouldReceive('listFolders')->once()->andReturn([[
+            'id' => 'folder-windows-10',
+            'name' => 'Windows 10',
+            'mimeType' => GoogleDriveClient::FOLDER_MIME_TYPE,
+        ]]);
+        $drive->shouldReceive('listFiles')->once()->andReturn([]);
+
+        $panda->shouldReceive('activeFolder')
+            ->once()
+            ->with('inactive-panda-module-informatica')
+            ->andReturn(null);
+        $panda->shouldReceive('findOrCreateFolder')
+            ->once()
+            ->with('Informática', null)
+            ->andReturn(['panda_folder_id' => 'active-panda-module-informatica', 'name' => 'Informática']);
+        $panda->shouldReceive('activeFolder')
+            ->once()
+            ->with('inactive-panda-track-windows-10')
+            ->andReturn(null);
+        $panda->shouldReceive('findOrCreateFolder')
+            ->once()
+            ->with('Windows 10', 'active-panda-module-informatica')
+            ->andReturn(['panda_folder_id' => 'active-panda-track-windows-10', 'name' => 'Windows 10']);
+
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática',
+            'panda_folder_id' => 'inactive-panda-module-informatica',
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'panda_folder_id' => 'inactive-panda-track-windows-10',
+            'sort_order' => 1,
+            'status' => 'draft',
+        ]);
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->importFolderSubfoldersAsTracks(
+            $course,
+            $module,
+            'root-folder',
+        );
+
+        $this->assertSame(2, $summary['panda_folders']);
+        $this->assertSame('active-panda-module-informatica', $module->fresh()->panda_folder_id);
+        $this->assertSame('active-panda-track-windows-10', $track->fresh()->panda_folder_id);
     }
 
     public function test_background_job_runs_drive_import_with_expected_parameters(): void

@@ -6,6 +6,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 class PandaVideoClient
@@ -44,6 +45,25 @@ class PandaVideoClient
         }
 
         return $this->createFolder($name, $parentFolderId);
+    }
+
+    public function activeFolder(string $folderId): ?array
+    {
+        try {
+            $folder = $this->normalizeFolder($this->getWithAuthFallback($this->path('folders_path').'/'.rawurlencode($folderId)));
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if (blank($folder['panda_folder_id'])) {
+            return null;
+        }
+
+        if (($folder['status'] ?? true) !== true) {
+            return null;
+        }
+
+        return $folder;
     }
 
     public function createFolder(string $name, ?string $parentFolderId = null): array
@@ -87,10 +107,44 @@ class PandaVideoClient
             ->values();
     }
 
+    public function findVideoByTitle(string $title, ?string $folderId = null): ?array
+    {
+        $normalizedTitle = $this->normalizeName($title);
+
+        if ($normalizedTitle === '') {
+            return null;
+        }
+
+        return $this->videos($folderId)
+            ->first(fn (array $video) => $this->normalizeName((string) $video['title']) === $normalizedTitle
+                && $this->isProcessablePandaVideo($video));
+    }
+
+    public function processableVideo(string $videoId, ?string $folderId = null): ?array
+    {
+        try {
+            $video = $this->video($videoId, $folderId);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $video && $this->isProcessablePandaVideo($video) ? $video : null;
+    }
+
     public function uploadVideo(string $path, string $title, ?string $folderId = null): array
     {
         if (! is_file($path)) {
             throw new RuntimeException("Arquivo de vídeo não encontrado para upload: {$path}");
+        }
+
+        $mode = (string) config('services.panda.video_upload_mode', 'create_then_put');
+
+        if ($mode === 'tus') {
+            return $this->uploadVideoUsingTus($path, $title, $folderId);
+        }
+
+        if ($mode === 'create_then_put') {
+            return $this->uploadVideoByCreatingDraftAndPuttingBinary($path, $title, $folderId);
         }
 
         $payload = [
@@ -117,6 +171,280 @@ class PandaVideoClient
         }
 
         return $video;
+    }
+
+    protected function uploadVideoUsingTus(string $path, string $title, ?string $folderId = null): array
+    {
+        $videoId = (string) Str::uuid();
+        $uploadUrl = $this->createTusUpload($path, $title, $videoId, $folderId);
+        $this->sendTusPatch($uploadUrl, $path);
+
+        $video = $this->waitForUploadedVideo($videoId, $folderId);
+        $this->ensureVideoIsInExpectedFolder($video, $folderId);
+
+        return $video;
+    }
+
+    protected function createTusUpload(string $path, string $title, string $videoId, ?string $folderId): string
+    {
+        $lastResponse = null;
+
+        foreach ($this->uploaderAuthorizationValues() as $authorization) {
+            $metadata = [
+                'video_id' => $videoId,
+                'user_id' => (string) config('services.panda.uploader_user_id', ''),
+                'upload_type' => 'direct',
+                'authorization' => $authorization,
+                'filename' => $this->uploadFilename($path, $title),
+                'filetype' => mime_content_type($path) ?: 'video/mp4',
+                'name' => $title,
+            ];
+
+            if (filled($folderId)) {
+                $metadata['folder_id'] = (string) $folderId;
+            }
+
+            $response = Http::timeout((int) config('services.panda.video_upload_timeout', 600))
+                ->withHeaders([
+                    'Tus-Resumable' => '1.0.0',
+                    'Upload-Length' => (string) filesize($path),
+                    'Upload-Metadata' => $this->tusMetadataHeader($metadata),
+                ])
+                ->post($this->uploaderUrl());
+
+            if ($response->successful()) {
+                $lastResponse = $response;
+                break;
+            }
+
+            $lastResponse = $response;
+
+            if (! in_array($response->status(), [401, 403], true)) {
+                $response->throw();
+            }
+        }
+
+        $lastResponse?->throw();
+
+        $location = $lastResponse?->header('Location');
+
+        if (blank($location)) {
+            throw new RuntimeException('O Panda aceitou a criação do upload TUS, mas não retornou o header Location.');
+        }
+
+        return $this->absoluteUploaderLocation((string) $location);
+    }
+
+    protected function sendTusPatch(string $uploadUrl, string $path): void
+    {
+        $handle = fopen($path, 'r');
+
+        if ($handle === false) {
+            throw new RuntimeException("Não foi possível abrir o arquivo de vídeo: {$path}");
+        }
+
+        try {
+            $response = Http::timeout((int) config('services.panda.video_upload_timeout', 600))
+                ->withHeaders([
+                    'Tus-Resumable' => '1.0.0',
+                    'Upload-Offset' => '0',
+                    'Content-Type' => 'application/offset+octet-stream',
+                ])
+                ->withBody($handle, 'application/offset+octet-stream')
+                ->send('PATCH', $uploadUrl);
+        } finally {
+            fclose($handle);
+        }
+
+        $response->throw();
+    }
+
+    protected function tusMetadataHeader(array $metadata): string
+    {
+        return collect($metadata)
+            ->filter(fn ($value) => filled($value))
+            ->map(fn ($value, string $key) => $key.' '.base64_encode((string) $value))
+            ->implode(',');
+    }
+
+    protected function uploaderAuthorizationValues(): array
+    {
+        $apiKey = (string) config('services.panda.api_key');
+
+        if (blank($apiKey)) {
+            throw new RuntimeException('Configure PANDA_API_KEY antes de enviar vídeos ao Panda.');
+        }
+
+        $scheme = trim((string) config('services.panda.uploader_auth_scheme', ''));
+        $configuredValue = $scheme !== '' ? $scheme.' '.$apiKey : $apiKey;
+
+        return collect([$configuredValue, 'Bearer '.$apiKey, $apiKey])
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    protected function uploaderUrl(): string
+    {
+        return rtrim((string) config('services.panda.uploader_base_url'), '/')
+            .'/'.ltrim((string) config('services.panda.uploader_path', '/files/'), '/');
+    }
+
+    protected function absoluteUploaderLocation(string $location): string
+    {
+        if (str_starts_with($location, 'http://') || str_starts_with($location, 'https://')) {
+            return $location;
+        }
+
+        return rtrim((string) config('services.panda.uploader_base_url'), '/').'/'.ltrim($location, '/');
+    }
+
+    protected function uploadFilename(string $path, string $title): string
+    {
+        $extension = pathinfo($path, PATHINFO_EXTENSION) ?: 'mp4';
+        $filename = Str::slug(pathinfo($title, PATHINFO_FILENAME));
+
+        return ($filename !== '' ? $filename : pathinfo($path, PATHINFO_FILENAME)).'.'.$extension;
+    }
+
+    protected function waitForUploadedVideo(string $videoId, ?string $folderId): array
+    {
+        $attempts = max(1, (int) config('services.panda.uploader_video_lookup_attempts', 6));
+        $delaySeconds = max(0, (int) config('services.panda.uploader_video_lookup_delay_seconds', 2));
+        $lastVideo = null;
+
+        for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+            try {
+                $lastVideo = $this->video($videoId, $folderId);
+
+                if ($lastVideo && $this->isProcessablePandaVideo($lastVideo)) {
+                    return $lastVideo;
+                }
+            } catch (\Throwable) {
+                //
+            }
+
+            if ($attempt < $attempts && $delaySeconds > 0) {
+                sleep($delaySeconds);
+            }
+        }
+
+        if ($lastVideo) {
+            throw new RuntimeException(
+                'O upload TUS foi concluído, mas o Panda ainda retornou o vídeo como '.
+                strtoupper((string) ($lastVideo['panda_status'] ?? 'status desconhecido')).'.'
+            );
+        }
+
+        throw new RuntimeException('O upload TUS foi concluído, mas o vídeo ainda não apareceu na API do Panda.');
+    }
+
+    protected function uploadVideoByCreatingDraftAndPuttingBinary(string $path, string $title, ?string $folderId = null): array
+    {
+        $payload = [
+            (string) config('services.panda.video_title_field', 'title') => $title,
+        ];
+        $folderField = trim((string) config('services.panda.video_folder_field', 'folder_id'));
+
+        if (filled($folderId) && $folderField !== '') {
+            $payload[$folderField] = $folderId;
+        }
+
+        $created = $this->postWithAuthFallback($this->path('video_create_path'), $payload);
+        $video = $this->normalizeVideo($this->extractSingleItem($created), $folderId);
+        $videoId = $video['panda_video_id'];
+
+        if (blank($videoId)) {
+            throw new RuntimeException('O Panda criou o rascunho do vídeo, mas não retornou o ID.');
+        }
+
+        $uploadPath = str_replace('{id}', rawurlencode($videoId), $this->path('video_binary_upload_path'));
+        try {
+            $uploaded = $this->putBinaryWithAuthFallback($uploadPath, $path);
+        } catch (\Throwable $exception) {
+            if ($this->shouldReconcileCreatedVideoAfterBinaryFailure($exception)) {
+                $syncedVideo = $this->findCreatedVideoAfterBinaryFailure($videoId, $folderId);
+
+                if ($syncedVideo && $this->isProcessablePandaVideo($syncedVideo)) {
+                    return $syncedVideo;
+                }
+            }
+
+            $this->deleteVideoQuietly($videoId);
+
+            throw $exception;
+        }
+
+        if ($uploaded !== []) {
+            $uploadedVideo = $this->normalizeVideo($this->extractSingleItem($uploaded), $folderId);
+
+            if (filled($uploadedVideo['panda_video_id'])) {
+                $this->ensureVideoIsInExpectedFolder($uploadedVideo, $folderId);
+
+                return $uploadedVideo;
+            }
+        }
+
+        $syncedVideo = $this->video($videoId, $folderId) ?? $video;
+        $this->ensureVideoIsInExpectedFolder($syncedVideo, $folderId);
+
+        return $syncedVideo;
+    }
+
+    protected function shouldReconcileCreatedVideoAfterBinaryFailure(\Throwable $exception): bool
+    {
+        $message = $exception->getMessage();
+
+        return str_contains($message, '413')
+            || str_contains($message, '10485760')
+            || str_contains($message, 'endpoint binário configurado');
+    }
+
+    protected function findCreatedVideoAfterBinaryFailure(string $videoId, ?string $folderId): ?array
+    {
+        try {
+            return $this->video($videoId, $folderId);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    protected function isProcessablePandaVideo(array $video): bool
+    {
+        $status = strtoupper((string) ($video['panda_status'] ?? ''));
+
+        return filled($video['panda_video_id'])
+            && ! in_array($status, ['DRAFT', 'DELETING', 'DELETED', 'ERROR', 'FAILED'], true);
+    }
+
+    public function video(string $videoId, ?string $folderId = null): ?array
+    {
+        $response = $this->getWithAuthFallback($this->path('videos_path').'/'.rawurlencode($videoId));
+        $video = $this->normalizeVideo($this->extractSingleItem($response), $folderId);
+
+        return filled($video['panda_video_id']) ? $video : null;
+    }
+
+    protected function ensureVideoIsInExpectedFolder(array $video, ?string $folderId): void
+    {
+        if (blank($folderId)) {
+            return;
+        }
+
+        if ((string) ($video['folder_id'] ?? '') === (string) $folderId) {
+            return;
+        }
+
+        $videoId = (string) ($video['panda_video_id'] ?? '');
+
+        if (filled($videoId)) {
+            $this->deleteVideoQuietly($videoId);
+        }
+
+        throw new RuntimeException(
+            'O Panda criou o vídeo, mas não vinculou à pasta esperada. '.
+            'A API está ignorando o folder_id no endpoint atual; confirme com o Panda o endpoint/campo para upload direto em pasta.'
+        );
     }
 
     public function createAiPackage(string $videoId, string $fromLang = 'auto', string $type = 'ALL_TEXT_ITEMS'): array
@@ -280,6 +608,108 @@ class PandaVideoClient
         );
     }
 
+    protected function putBinaryWithAuthFallback(string $path, string $filePath): array
+    {
+        $apiKey = config('services.panda.api_key');
+
+        if (blank($apiKey)) {
+            throw new RuntimeException('Configure PANDA_API_KEY antes de enviar vídeos ao Panda.');
+        }
+
+        $attempts = $this->authAttempts((string) $apiKey);
+        $lastStatus = null;
+        $lastBody = null;
+
+        foreach ($attempts as $attempt) {
+            $requestPath = $attempt['query'] === []
+                ? $path
+                : $path.'?'.http_build_query($attempt['query']);
+            $handle = fopen($filePath, 'r');
+
+            if ($handle === false) {
+                throw new RuntimeException("Não foi possível abrir o arquivo de vídeo: {$filePath}");
+            }
+
+            try {
+                $response = $this->http($attempt['headers'])
+                    ->timeout((int) config('services.panda.video_upload_timeout', 600))
+                    ->withBody($handle, 'application/octet-stream')
+                    ->put($requestPath);
+            } finally {
+                fclose($handle);
+            }
+
+            if ($response->successful()) {
+                return $response->json() ?? [];
+            }
+
+            $lastStatus = $response->status();
+            $lastBody = $response->body();
+
+            if ($response->status() !== 401) {
+                if ($response->status() === 413 || str_contains($response->body(), '10485760')) {
+                    throw new RuntimeException(
+                        'O endpoint binário configurado no Panda ainda recusou arquivo acima de 10MB. '.
+                        'Confirme PANDA_VIDEO_BINARY_UPLOAD_PATH com o suporte do Panda para upload grande.'
+                    );
+                }
+
+                $response->throw();
+            }
+        }
+
+        throw new RuntimeException(
+            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de upload binário. '.
+            'Confira a chave da API e permissões da conta. Última resposta: '.
+            trim((string) $lastBody).' (status '.$lastStatus.')'
+        );
+    }
+
+    protected function deleteVideoQuietly(string $videoId): void
+    {
+        try {
+            $this->deleteWithAuthFallback($this->path('videos_path').'/'.rawurlencode($videoId));
+        } catch (\Throwable) {
+            //
+        }
+    }
+
+    protected function deleteWithAuthFallback(string $path): array
+    {
+        $apiKey = config('services.panda.api_key');
+
+        if (blank($apiKey)) {
+            throw new RuntimeException('Configure PANDA_API_KEY antes de remover vídeos do Panda.');
+        }
+
+        $attempts = $this->authAttempts((string) $apiKey);
+        $lastStatus = null;
+        $lastBody = null;
+
+        foreach ($attempts as $attempt) {
+            $requestPath = $attempt['query'] === []
+                ? $path
+                : $path.'?'.http_build_query($attempt['query']);
+            $response = $this->http($attempt['headers'])->delete($requestPath);
+
+            if ($response->successful()) {
+                return $response->json() ?? [];
+            }
+
+            $lastStatus = $response->status();
+            $lastBody = $response->body();
+
+            if ($response->status() !== 401) {
+                $response->throw();
+            }
+        }
+
+        throw new RuntimeException(
+            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de remoção. '.
+            'Última resposta: '.trim((string) $lastBody).' (status '.$lastStatus.')'
+        );
+    }
+
     protected function http(array $headers = []): PendingRequest
     {
         return Http::baseUrl(rtrim((string) config('services.panda.base_url'), '/'))
@@ -389,6 +819,7 @@ class PandaVideoClient
             'panda_folder_id' => filled($pandaId) ? (string) $pandaId : '',
             'name' => (string) (Arr::get($folder, 'name') ?? Arr::get($folder, 'title') ?? ''),
             'parent_id' => Arr::get($folder, 'parent_id') ?? Arr::get($folder, 'folder_id_parent') ?? Arr::get($folder, 'parent.id'),
+            'status' => Arr::get($folder, 'status'),
             'payload' => $folder,
         ];
     }

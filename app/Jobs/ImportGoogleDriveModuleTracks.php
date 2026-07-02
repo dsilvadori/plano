@@ -8,6 +8,7 @@ use App\Models\GoogleDriveImportRun;
 use App\Services\GoogleDriveTrackImporter;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Throwable;
 
 class ImportGoogleDriveModuleTracks implements ShouldQueue
@@ -19,7 +20,7 @@ class ImportGoogleDriveModuleTracks implements ShouldQueue
     public int $timeout = 7200;
 
     public function __construct(
-        public int $courseId,
+        public ?int $courseId,
         public int $moduleId,
         public string $folderUrl,
         public string $lessonStatus = 'draft',
@@ -28,9 +29,18 @@ class ImportGoogleDriveModuleTracks implements ShouldQueue
         public ?int $runId = null,
     ) {}
 
+    public function middleware(): array
+    {
+        return [
+            (new WithoutOverlapping('google-drive-panda-import'))
+                ->shared()
+                ->expireAfter($this->timeout),
+        ];
+    }
+
     public function handle(GoogleDriveTrackImporter $importer): void
     {
-        $course = Course::query()->findOrFail($this->courseId);
+        $course = $this->courseId ? Course::query()->findOrFail($this->courseId) : null;
         $module = CourseModule::query()->findOrFail($this->moduleId);
         $run = $this->runId ? GoogleDriveImportRun::query()->find($this->runId) : null;
 

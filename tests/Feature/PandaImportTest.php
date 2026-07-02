@@ -4,10 +4,10 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
-use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\PandaImportRun;
 use App\Services\PandaCourseImporter;
+use App\Services\PandaVideoClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -15,6 +15,401 @@ use Tests\TestCase;
 class PandaImportTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_panda_client_uploads_video_with_create_then_put_flow(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.video_upload_mode' => 'create_then_put',
+            'services.panda.video_create_path' => '/videos',
+            'services.panda.video_binary_upload_path' => '/videos/{id}',
+            'services.panda.video_title_field' => 'title',
+            'services.panda.video_folder_field' => 'folder_id',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        $path = sys_get_temp_dir().'/panda-client-upload-test.mp4';
+        file_put_contents($path, 'video-content');
+
+        Http::fake(function ($request) {
+            if ($request->method() === 'POST' && $request->url() === 'https://panda.test/videos') {
+                $this->assertSame('test-key', $request->header('Authorization')[0] ?? null);
+                $this->assertSame([
+                    'title' => 'Aula teste',
+                    'folder_id' => 'folder-1',
+                ], $request->data());
+
+                return Http::response([
+                    'id' => 'video-draft-1',
+                    'title' => 'Aula teste',
+                    'status' => 'DRAFT',
+                    'folder_id' => 'folder-1',
+                ], 201);
+            }
+
+            if ($request->method() === 'PUT' && $request->url() === 'https://panda.test/videos/video-draft-1') {
+                return Http::response([
+                    'id' => 'video-draft-1',
+                    'title' => 'Aula teste',
+                    'status' => 'PROCESSING',
+                    'folder_id' => 'folder-1',
+                    'video_player' => 'https://player.test/embed/video-draft-1',
+                ], 200);
+            }
+
+            return Http::response([], 404);
+        });
+
+        try {
+            $video = app(PandaVideoClient::class)->uploadVideo($path, 'Aula teste', 'folder-1');
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertSame('video-draft-1', $video['panda_video_id']);
+        $this->assertSame('PROCESSING', $video['panda_status']);
+        $this->assertSame('https://player.test/embed/video-draft-1', $video['panda_embed_url']);
+    }
+
+    public function test_panda_client_deletes_draft_when_binary_upload_fails(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.video_upload_mode' => 'create_then_put',
+            'services.panda.video_create_path' => '/videos',
+            'services.panda.video_binary_upload_path' => '/videos/{id}',
+            'services.panda.video_title_field' => 'title',
+            'services.panda.video_folder_field' => 'folder_id',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        $path = sys_get_temp_dir().'/panda-client-upload-fail-test.mp4';
+        file_put_contents($path, 'video-content');
+        $deleted = false;
+
+        Http::fake(function ($request) use (&$deleted) {
+            if ($request->method() === 'POST' && $request->url() === 'https://panda.test/videos') {
+                return Http::response([
+                    'id' => 'video-draft-fail',
+                    'title' => 'Aula teste',
+                    'status' => 'DRAFT',
+                    'folder_id' => null,
+                ], 201);
+            }
+
+            if ($request->method() === 'PUT' && $request->url() === 'https://panda.test/videos/video-draft-fail') {
+                return Http::response('HTTP content length exceeded 10485760 bytes.', 413);
+            }
+
+            if ($request->method() === 'DELETE' && $request->url() === 'https://panda.test/videos/video-draft-fail') {
+                $deleted = true;
+
+                return Http::response([], 204);
+            }
+
+            return Http::response([], 404);
+        });
+
+        try {
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('endpoint binário configurado');
+
+            app(PandaVideoClient::class)->uploadVideo($path, 'Aula teste', 'folder-1');
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertTrue($deleted);
+    }
+
+    public function test_panda_client_reconciles_created_video_when_binary_endpoint_reports_size_limit(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.video_upload_mode' => 'create_then_put',
+            'services.panda.video_create_path' => '/videos',
+            'services.panda.video_binary_upload_path' => '/videos/{id}',
+            'services.panda.video_title_field' => 'title',
+            'services.panda.video_folder_field' => 'folder_id',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        $path = sys_get_temp_dir().'/panda-client-upload-reconcile-test.mp4';
+        file_put_contents($path, 'video-content');
+        $deleted = false;
+
+        Http::fake(function ($request) use (&$deleted) {
+            if ($request->method() === 'POST' && $request->url() === 'https://panda.test/videos') {
+                return Http::response([
+                    'id' => 'video-queued-after-413',
+                    'title' => 'Aula teste',
+                    'status' => 'DRAFT',
+                    'folder_id' => 'folder-1',
+                ], 201);
+            }
+
+            if ($request->method() === 'PUT' && $request->url() === 'https://panda.test/videos/video-queued-after-413') {
+                return Http::response('HTTP content length exceeded 10485760 bytes.', 413);
+            }
+
+            if ($request->method() === 'GET' && $request->url() === 'https://panda.test/videos/video-queued-after-413') {
+                return Http::response([
+                    'id' => 'video-queued-after-413',
+                    'title' => 'Aula teste',
+                    'status' => 'CONVERTING',
+                    'folder_id' => 'folder-1',
+                    'video_player' => 'https://player.test/embed/video-queued-after-413',
+                ], 200);
+            }
+
+            if ($request->method() === 'DELETE' && $request->url() === 'https://panda.test/videos/video-queued-after-413') {
+                $deleted = true;
+
+                return Http::response([], 204);
+            }
+
+            return Http::response([], 404);
+        });
+
+        try {
+            $video = app(PandaVideoClient::class)->uploadVideo($path, 'Aula teste', 'folder-1');
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertFalse($deleted);
+        $this->assertSame('video-queued-after-413', $video['panda_video_id']);
+        $this->assertSame('CONVERTING', $video['panda_status']);
+        $this->assertSame('https://player.test/embed/video-queued-after-413', $video['panda_embed_url']);
+    }
+
+    public function test_panda_client_does_not_reuse_deleting_video_by_title(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.videos_path' => '/videos',
+            'services.panda.folder_query_param' => 'folder_id',
+        ]);
+
+        Http::fake([
+            'https://panda.test/videos?folder_id=folder-1' => Http::response([
+                'data' => [[
+                    'id' => 'deleting-video',
+                    'title' => 'Aula teste',
+                    'status' => 'DELETING',
+                    'folder_id' => 'folder-1',
+                ]],
+            ], 200),
+        ]);
+
+        $this->assertNull(app(PandaVideoClient::class)->findVideoByTitle('Aula teste', 'folder-1'));
+    }
+
+    public function test_panda_client_does_not_reconcile_draft_video_after_binary_failure(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.video_upload_mode' => 'create_then_put',
+            'services.panda.video_create_path' => '/videos',
+            'services.panda.video_binary_upload_path' => '/videos/{id}',
+            'services.panda.video_title_field' => 'title',
+            'services.panda.video_folder_field' => 'folder_id',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        $path = sys_get_temp_dir().'/panda-client-upload-draft-test.mp4';
+        file_put_contents($path, 'video-content');
+        $deleted = false;
+
+        Http::fake(function ($request) use (&$deleted) {
+            if ($request->method() === 'POST' && $request->url() === 'https://panda.test/videos') {
+                return Http::response([
+                    'id' => 'video-still-draft',
+                    'title' => 'Aula teste',
+                    'status' => 'DRAFT',
+                    'folder_id' => 'folder-1',
+                ], 201);
+            }
+
+            if ($request->method() === 'PUT' && $request->url() === 'https://panda.test/videos/video-still-draft') {
+                return Http::response('HTTP content length exceeded 10485760 bytes.', 413);
+            }
+
+            if ($request->method() === 'GET' && $request->url() === 'https://panda.test/videos/video-still-draft') {
+                return Http::response([
+                    'id' => 'video-still-draft',
+                    'title' => 'Aula teste',
+                    'status' => 'DRAFT',
+                    'folder_id' => 'folder-1',
+                ], 200);
+            }
+
+            if ($request->method() === 'DELETE' && $request->url() === 'https://panda.test/videos/video-still-draft') {
+                $deleted = true;
+
+                return Http::response([], 204);
+            }
+
+            return Http::response([], 404);
+        });
+
+        try {
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('endpoint binário configurado');
+
+            app(PandaVideoClient::class)->uploadVideo($path, 'Aula teste', 'folder-1');
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertTrue($deleted);
+    }
+
+    public function test_panda_client_uploads_video_with_tus_uploader_flow(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.video_upload_mode' => 'tus',
+            'services.panda.videos_path' => '/videos',
+            'services.panda.uploader_base_url' => 'https://uploader.test',
+            'services.panda.uploader_path' => '/files/',
+            'services.panda.uploader_auth_scheme' => '',
+            'services.panda.uploader_video_lookup_attempts' => 1,
+            'services.panda.uploader_video_lookup_delay_seconds' => 0,
+        ]);
+
+        $path = sys_get_temp_dir().'/panda-client-tus-upload-test.mp4';
+        file_put_contents($path, 'video-content');
+        $createdVideoId = null;
+        $metadata = [];
+        $patched = false;
+
+        Http::fake(function ($request) use (&$createdVideoId, &$metadata, &$patched) {
+            if ($request->method() === 'POST' && $request->url() === 'https://uploader.test/files/') {
+                $metadata = collect(explode(',', (string) $request->header('Upload-Metadata')[0]))
+                    ->filter()
+                    ->mapWithKeys(function (string $entry) {
+                        [$key, $value] = explode(' ', $entry, 2);
+
+                        return [$key => base64_decode($value)];
+                    })
+                    ->all();
+                $createdVideoId = $metadata['video_id'] ?? null;
+
+                return Http::response('', 201, ['Location' => '/files/upload-1']);
+            }
+
+            if ($request->method() === 'PATCH' && $request->url() === 'https://uploader.test/files/upload-1') {
+                $patched = true;
+
+                return Http::response('', 204);
+            }
+
+            if ($request->method() === 'GET' && $createdVideoId && $request->url() === 'https://panda.test/videos/'.$createdVideoId) {
+                return Http::response([
+                    'id' => $createdVideoId,
+                    'title' => 'Aula TUS',
+                    'status' => 'CONVERTING',
+                    'folder_id' => 'folder-1',
+                    'video_player' => 'https://player.test/embed/'.$createdVideoId,
+                ]);
+            }
+
+            return Http::response([], 404);
+        });
+
+        try {
+            $video = app(PandaVideoClient::class)->uploadVideo($path, 'Aula TUS', 'folder-1');
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertTrue($patched);
+        $this->assertNotEmpty($createdVideoId);
+        $this->assertSame('folder-1', $metadata['folder_id'] ?? null);
+        $this->assertSame('direct', $metadata['upload_type'] ?? null);
+        $this->assertSame('test-key', $metadata['authorization'] ?? null);
+        $this->assertSame($createdVideoId, $video['panda_video_id']);
+        $this->assertSame('CONVERTING', $video['panda_status']);
+    }
+
+    public function test_panda_client_does_not_return_draft_after_tus_upload(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.video_upload_mode' => 'tus',
+            'services.panda.videos_path' => '/videos',
+            'services.panda.uploader_base_url' => 'https://uploader.test',
+            'services.panda.uploader_path' => '/files/',
+            'services.panda.uploader_video_lookup_attempts' => 1,
+            'services.panda.uploader_video_lookup_delay_seconds' => 0,
+        ]);
+
+        $path = sys_get_temp_dir().'/panda-client-tus-draft-test.mp4';
+        file_put_contents($path, 'video-content');
+        $createdVideoId = null;
+
+        Http::fake(function ($request) use (&$createdVideoId) {
+            if ($request->method() === 'POST' && $request->url() === 'https://uploader.test/files/') {
+                $metadata = collect(explode(',', (string) $request->header('Upload-Metadata')[0]))
+                    ->filter()
+                    ->mapWithKeys(function (string $entry) {
+                        [$key, $value] = explode(' ', $entry, 2);
+
+                        return [$key => base64_decode($value)];
+                    })
+                    ->all();
+                $createdVideoId = $metadata['video_id'] ?? null;
+
+                return Http::response('', 201, ['Location' => '/files/upload-1']);
+            }
+
+            if ($request->method() === 'PATCH' && $request->url() === 'https://uploader.test/files/upload-1') {
+                return Http::response('', 204);
+            }
+
+            if ($request->method() === 'GET' && $createdVideoId && $request->url() === 'https://panda.test/videos/'.$createdVideoId) {
+                return Http::response([
+                    'id' => $createdVideoId,
+                    'title' => 'Aula TUS',
+                    'status' => 'DRAFT',
+                    'folder_id' => 'folder-1',
+                ]);
+            }
+
+            return Http::response([], 404);
+        });
+
+        try {
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('DRAFT');
+
+            app(PandaVideoClient::class)->uploadVideo($path, 'Aula TUS', 'folder-1');
+        } finally {
+            @unlink($path);
+        }
+    }
 
     public function test_panda_folder_import_creates_module_reusable_lesson_and_history(): void
     {

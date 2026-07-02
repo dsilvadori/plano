@@ -16,7 +16,11 @@ class CourseModulesTable
     {
         return $table
             ->columns([
-                TextColumn::make('course.name')->label('Curso')->searchable()->sortable(),
+                TextColumn::make('course.name')
+                    ->label('Curso de referência')
+                    ->placeholder('Catálogo')
+                    ->searchable()
+                    ->sortable(),
                 TextColumn::make('name')->label('Módulo')->searchable()->sortable(),
                 TextColumn::make('type')
                     ->label('Tipo')
