@@ -3,15 +3,11 @@
 namespace App\Filament\Resources\CourseModules\Pages;
 
 use App\Filament\Resources\CourseModules\CourseModuleResource;
-use App\Jobs\ImportGoogleDriveModuleTracks;
-use App\Models\Course;
-use App\Models\GoogleDriveImportRun;
 use App\Services\PandaCourseImporter;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
-use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
 use Throwable;
@@ -71,79 +67,6 @@ class EditCourseModule extends EditRecord
                     } catch (Throwable $exception) {
                         Notification::make()
                             ->title('Não foi possível importar os vídeos.')
-                            ->body($exception->getMessage())
-                            ->danger()
-                            ->send();
-                    }
-                }),
-            Action::make('importGoogleDrive')
-                ->label('Importar Drive')
-                ->icon('heroicon-o-folder')
-                ->modalHeading('Importar trilhas do Google Drive')
-                ->modalDescription('Informe uma pasta raiz. Cada subpasta dentro dela será criada ou atualizada como uma trilha deste módulo, e os arquivos de cada subpasta virarão aulas em rascunho.')
-                ->form([
-                    Select::make('course_id')
-                        ->label('Curso que usará estas trilhas')
-                        ->options(fn (): array => Course::query()
-                            ->orderBy('name')
-                            ->pluck('name', 'id')
-                            ->all())
-                        ->default(fn () => $this->record->course_id)
-                        ->searchable()
-                        ->preload()
-                        ->nullable()
-                        ->helperText('Opcional. Deixe vazio para importar as trilhas apenas no módulo independente.'),
-                    TextInput::make('folder_url')
-                        ->label('URL ou ID da pasta raiz do Google Drive')
-                        ->placeholder('https://drive.google.com/drive/folders/...')
-                        ->required(),
-                    Select::make('lesson_status')
-                        ->label('Status inicial das aulas')
-                        ->options([
-                            'draft' => 'Rascunho',
-                            'published' => 'Publicado',
-                        ])
-                        ->default('draft')
-                        ->required(),
-                    Toggle::make('create_panda_folders')
-                        ->label('Criar pastas correspondentes no Panda')
-                        ->helperText('Cria uma pasta Panda para o módulo e uma pasta Panda para cada trilha importada do Drive.')
-                        ->default(true),
-                    Toggle::make('upload_panda_videos')
-                        ->label('Enviar vídeos das trilhas ao Panda')
-                        ->helperText('Baixa cada arquivo de vídeo do Drive e envia para a pasta Panda da trilha. Arquivos PDF e Google Docs ficam como materiais/link.')
-                        ->default(true),
-                ])
-                ->action(function (array $data): void {
-                    try {
-                        $courseId = filled($data['course_id'] ?? null) ? (int) $data['course_id'] : null;
-
-                        $run = GoogleDriveImportRun::query()->create([
-                            'course_id' => $courseId,
-                            'course_module_id' => $this->record->id,
-                            'folder_url' => (string) $data['folder_url'],
-                            'status' => 'queued',
-                            'latest_message' => 'Aguardando worker.',
-                        ]);
-
-                        ImportGoogleDriveModuleTracks::dispatch(
-                            $courseId,
-                            $this->record->id,
-                            (string) $data['folder_url'],
-                            (string) ($data['lesson_status'] ?? 'draft'),
-                            (bool) ($data['create_panda_folders'] ?? true),
-                            (bool) ($data['upload_panda_videos'] ?? true),
-                            $run->id,
-                        );
-
-                        Notification::make()
-                            ->title('Importação enviada para a fila.')
-                            ->body('Acompanhe o progresso em Operação > Importações Drive.')
-                            ->success()
-                            ->send();
-                    } catch (Throwable $exception) {
-                        Notification::make()
-                            ->title('Não foi possível importar o Google Drive.')
                             ->body($exception->getMessage())
                             ->danger()
                             ->send();

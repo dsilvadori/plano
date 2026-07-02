@@ -217,13 +217,24 @@ class CourseSpreadsheetImporter
                         'course_module_track_id' => $track->id,
                         'slug' => $slug,
                     ]));
+            $lessonExists = $lesson->exists;
+            $isStandaloneLibraryLesson = $lessonExists
+                && blank($lesson->course_id)
+                && blank($lesson->course_module_id)
+                && blank($lesson->course_module_track_id);
+            $hasReadyMedia = $pandaVideoId
+                || filled($lessonData['panda_embed_url'] ?? null)
+                || filled($lessonData['panda_player_url'] ?? null)
+                || filled($lesson->panda_video_id)
+                || filled($lesson->panda_embed_url)
+                || filled($lesson->panda_player_url);
 
             $lesson->fill([
-                'course_id' => $lesson->exists ? $lesson->course_id : $course->id,
-                'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
-                'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track->id) : $track->id,
+                'course_id' => $isStandaloneLibraryLesson ? null : ($lessonExists ? $lesson->course_id : $course->id),
+                'course_module_id' => $isStandaloneLibraryLesson ? null : ($lessonExists ? $lesson->course_module_id : $module->id),
+                'course_module_track_id' => $isStandaloneLibraryLesson ? null : ($lessonExists ? ($lesson->course_module_track_id ?: $track->id) : $track->id),
                 'title' => $title,
-                'slug' => $lesson->exists ? $lesson->slug : $slug,
+                'slug' => $lessonExists ? $lesson->slug : $slug,
                 'description' => 'Aula importada por planilha.',
                 'type' => $this->normalizeLessonType((string) ($lessonData['type'] ?? 'video')),
                 'thumbnail_url' => $lessonData['thumbnail_url'] ?? $lesson->thumbnail_url,
@@ -234,11 +245,12 @@ class CourseSpreadsheetImporter
                 'panda_embed_url' => $lessonData['panda_embed_url'] ?? $lesson->panda_embed_url,
                 'panda_player_url' => $lessonData['panda_player_url'] ?? $lesson->panda_player_url,
                 'google_doc_url' => $lessonData['google_doc_url'] ?? $lesson->google_doc_url,
-                'source_status' => $pandaVideoId || filled($lessonData['panda_embed_url'] ?? null) || filled($lessonData['panda_player_url'] ?? null)
-                    ? 'media_ready'
-                    : 'awaiting_media',
+                'source_status' => $hasReadyMedia ? 'media_ready' : ($lesson->source_status ?: 'awaiting_media'),
                 'metadata' => [
                     'source' => 'spreadsheet',
+                    'matched_existing_lesson' => $lessonExists,
+                    'matched_standalone_library_lesson' => $isStandaloneLibraryLesson,
+                    'matched_by_name' => $lessonExists && $this->normalizeName($lesson->title) === $this->normalizeName($title),
                     'imported_at' => now()->toIso8601String(),
                 ],
             ]);

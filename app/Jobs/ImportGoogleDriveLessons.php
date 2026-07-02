@@ -66,6 +66,18 @@ class ImportGoogleDriveLessons implements ShouldQueue
             $run,
         );
 
+        if (($summary['total_lessons'] ?? 0) === 0) {
+            $run?->forceFill([
+                'status' => 'failed',
+                'summary' => $summary,
+                'latest_message' => 'Nenhum arquivo foi encontrado na pasta do Drive.',
+                'error_message' => 'Verifique se a pasta ou as subpastas possuem arquivos e se elas foram compartilhadas com a conta de serviço do Google Drive.',
+                'finished_at' => now(),
+            ])->save();
+
+            return;
+        }
+
         $run?->forceFill([
             'status' => 'finished',
             'summary' => $summary,

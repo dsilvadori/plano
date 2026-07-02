@@ -302,4 +302,53 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('panda-original', $existingLesson->fresh()->panda_video_id);
         $this->assertSame('https://player.example.com/original', $existingLesson->fresh()->panda_embed_url);
     }
+
+    public function test_spreadsheet_import_links_standalone_lessons_by_name_without_overwriting_media(): void
+    {
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Aula avulsa do Drive',
+            'slug' => 'aula-avulsa-do-drive',
+            'description' => 'Aula importada pelo Drive.',
+            'type' => 'video',
+            'thumbnail_url' => null,
+            'duration_seconds' => 1200,
+            'sort_order' => 1,
+            'panda_video_id' => 'panda-drive-video',
+            'panda_embed_url' => 'https://player.example.com/drive-video',
+            'panda_player_url' => null,
+            'panda_status' => 'CONVERTED',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-link-standalone-') . '.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso com Aula Avulsa,Informática,basic,1,Windows 10,Aula avulsa do Drive,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Informática')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Windows 10')->firstOrFail();
+        $existingLesson->refresh();
+
+        $this->assertSame(1, Lesson::query()->where('title', 'Aula avulsa do Drive')->count());
+        $this->assertNull($existingLesson->course_id);
+        $this->assertNull($existingLesson->course_module_id);
+        $this->assertNull($existingLesson->course_module_track_id);
+        $this->assertSame('panda-drive-video', $existingLesson->panda_video_id);
+        $this->assertSame('https://player.example.com/drive-video', $existingLesson->panda_embed_url);
+        $this->assertSame('media_ready', $existingLesson->source_status);
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($module->id)->exists());
+    }
 }

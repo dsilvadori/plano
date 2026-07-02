@@ -36,15 +36,25 @@ class PandaVideoClient
 
     public function findOrCreateFolder(string $name, ?string $parentFolderId = null): array
     {
-        $normalizedName = $this->normalizeName($name);
-        $existing = $this->folders($parentFolderId)
-            ->first(fn (array $folder) => $this->normalizeName((string) $folder['name']) === $normalizedName);
+        $existing = $this->findFolderByName($name, $parentFolderId);
 
         if ($existing) {
             return array_merge($existing, ['was_created' => false]);
         }
 
         return array_merge($this->createFolder($name, $parentFolderId), ['was_created' => true]);
+    }
+
+    public function findFolderByName(string $name, ?string $parentFolderId = null): ?array
+    {
+        $normalizedName = $this->normalizeName($name);
+
+        if ($normalizedName === '') {
+            return null;
+        }
+
+        return $this->folders($parentFolderId)
+            ->first(fn (array $folder) => $this->normalizeName((string) $folder['name']) === $normalizedName);
     }
 
     public function activeFolder(string $folderId): ?array
