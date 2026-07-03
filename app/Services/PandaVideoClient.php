@@ -524,6 +524,21 @@ class PandaVideoClient
         ]);
     }
 
+    public function createTutor(string $videoId, ?string $message = null): array
+    {
+        $message = $message ?: (string) config('services.panda.tutor_message', 'Converse com a tutora LilIA');
+        $payload = [
+            'video_ids' => [$videoId],
+            'lang' => (string) config('services.panda.ai_from_lang', 'pt-BR'),
+            'name' => $message,
+            'open_new_tab' => false,
+            'initial_question' => $message,
+            'question_suggestions' => true,
+        ];
+
+        return $this->postWithAuthFallback($this->path('tutor_create_path'), $payload);
+    }
+
     public function aiPackage(string $pullzoneName, string $videoExternalId): ?array
     {
         $response = Http::baseUrl(rtrim((string) config('services.panda.ai_config_base_url'), '/'))

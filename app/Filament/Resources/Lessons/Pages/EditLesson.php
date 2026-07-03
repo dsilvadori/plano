@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Lessons\Pages;
 
 use App\Filament\Resources\Lessons\LessonResource;
 use App\Services\PandaAiResourceActivator;
+use App\Services\PandaTutorActivator;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Notifications\Notification;
@@ -42,6 +43,34 @@ class EditLesson extends EditRecord
 
                         Notification::make()
                             ->title('Não foi possível ativar a IA do Panda')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
+                }),
+            Action::make('activatePandaTutor')
+                ->label('Ativar Tutor IA')
+                ->icon('heroicon-o-chat-bubble-left-right')
+                ->requiresConfirmation()
+                ->modalHeading('Ativar Tutor IA do Panda')
+                ->modalDescription('A plataforma verificará se o Tutor IA já está disponível no Panda. Se ainda não estiver, solicitará a geração dos recursos necessários e agendará novas verificações.')
+                ->visible(fn (): bool => LessonResource::hasPandaVideo($this->record))
+                ->action(function (PandaTutorActivator $activator): void {
+                    try {
+                        $result = $activator->activate($this->record);
+
+                        Notification::make()
+                            ->title($result['available'] ? 'Tutor IA ativado' : 'Tutor IA solicitado')
+                            ->body($result['available']
+                                ? 'O Tutor IA do Panda já está disponível para esta aula.'
+                                : 'O Panda recebeu a solicitação e a plataforma vai verificar novamente em background.')
+                            ->success()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        report($exception);
+
+                        Notification::make()
+                            ->title('Não foi possível ativar o Tutor IA')
                             ->body($exception->getMessage())
                             ->danger()
                             ->send();

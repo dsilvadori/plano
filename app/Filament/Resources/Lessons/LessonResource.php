@@ -10,6 +10,7 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Services\PandaAiResourceActivator;
+use App\Services\PandaTutorActivator;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
@@ -355,6 +356,34 @@ class LessonResource extends Resource
                                 ->send();
                         }
                     }),
+                Action::make('activatePandaTutor')
+                    ->label('Ativar Tutor IA')
+                    ->icon('heroicon-o-chat-bubble-left-right')
+                    ->requiresConfirmation()
+                    ->modalHeading('Ativar Tutor IA do Panda')
+                    ->modalDescription('A plataforma verificará se o Tutor IA já está disponível no Panda. Se ainda não estiver, solicitará a geração dos recursos necessários e agendará novas verificações.')
+                    ->visible(fn (Lesson $record): bool => self::hasPandaVideo($record))
+                    ->action(function (Lesson $record, PandaTutorActivator $activator): void {
+                        try {
+                            $result = $activator->activate($record);
+
+                            Notification::make()
+                                ->title($result['available'] ? 'Tutor IA ativado' : 'Tutor IA solicitado')
+                                ->body($result['available']
+                                    ? 'O Tutor IA do Panda já está disponível para esta aula.'
+                                    : 'O Panda recebeu a solicitação e a plataforma vai verificar novamente em background.')
+                                ->success()
+                                ->send();
+                        } catch (Throwable $exception) {
+                            report($exception);
+
+                            Notification::make()
+                                ->title('Não foi possível ativar o Tutor IA')
+                                ->body($exception->getMessage())
+                                ->danger()
+                                ->send();
+                        }
+                    }),
                 EditAction::make(),
             ])
             ->toolbarActions([
@@ -393,6 +422,42 @@ class LessonResource extends Resource
                             $notification = Notification::make()
                                 ->title('Geração de IA Panda concluída')
                                 ->body("Solicitadas: {$requested}. Aguardando Panda: {$pending}. Artefatos sincronizados: {$syncedArtifacts}. Ignoradas sem vídeo Panda: {$skipped}. Falhas: {$failed}.");
+
+                            ($failed > 0 ? $notification->warning() : $notification->success())->send();
+                        })
+                        ->deselectRecordsAfterCompletion(),
+                    BulkAction::make('activatePandaTutor')
+                        ->label('Ativar Tutor IA')
+                        ->icon('heroicon-o-chat-bubble-left-right')
+                        ->requiresConfirmation()
+                        ->modalHeading('Ativar Tutor IA do Panda')
+                        ->modalDescription('Para aulas selecionadas, a plataforma verificará se o Tutor IA já está disponível no Panda. Se ainda não estiver, solicitará a geração dos recursos necessários.')
+                        ->action(function (Collection $records, PandaTutorActivator $activator): void {
+                            $activated = 0;
+                            $requested = 0;
+                            $skipped = 0;
+                            $failed = 0;
+
+                            foreach ($records as $record) {
+                                if (! self::hasPandaVideo($record)) {
+                                    $skipped++;
+
+                                    continue;
+                                }
+
+                                try {
+                                    $result = $activator->activate($record);
+                                    $activated += $result['available'] ? 1 : 0;
+                                    $requested += $result['requested'] ? 1 : 0;
+                                } catch (Throwable $exception) {
+                                    report($exception);
+                                    $failed++;
+                                }
+                            }
+
+                            $notification = Notification::make()
+                                ->title('Ativação do Tutor IA concluída')
+                                ->body("Ativadas: {$activated}. Solicitadas: {$requested}. Ignoradas sem vídeo Panda: {$skipped}. Falhas: {$failed}.");
 
                             ($failed > 0 ? $notification->warning() : $notification->success())->send();
                         })

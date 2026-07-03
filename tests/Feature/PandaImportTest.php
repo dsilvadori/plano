@@ -45,6 +45,38 @@ class PandaImportTest extends TestCase
         $this->assertSame(['ok' => true], $response);
     }
 
+    public function test_panda_client_creates_tutor_with_default_lilia_message(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.tutor_create_path' => '/assist-ai/buy_and_create',
+            'services.panda.tutor_message' => 'Converse com a tutora LilIA',
+            'services.panda.ai_from_lang' => 'pt-BR',
+        ]);
+
+        Http::fake(function ($request) {
+            $this->assertSame('POST', $request->method());
+            $this->assertSame('https://panda.test/assist-ai/buy_and_create', $request->url());
+            $this->assertSame([
+                'video_ids' => ['video-123'],
+                'lang' => 'pt-BR',
+                'name' => 'Converse com a tutora LilIA',
+                'open_new_tab' => false,
+                'initial_question' => 'Converse com a tutora LilIA',
+                'question_suggestions' => true,
+            ], $request->data());
+
+            return Http::response(['assistant' => ['id' => 'assistant-123']], 200);
+        });
+
+        $response = app(PandaVideoClient::class)->createTutor('video-123');
+
+        $this->assertSame(['assistant' => ['id' => 'assistant-123']], $response);
+    }
+
     public function test_panda_client_uploads_video_with_create_then_put_flow(): void
     {
         config([
