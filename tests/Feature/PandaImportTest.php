@@ -244,6 +244,34 @@ class PandaImportTest extends TestCase
         $this->assertSame('existing-video', $video['panda_video_id']);
     }
 
+    public function test_panda_client_reuses_draft_video_by_title_to_avoid_duplicate_upload(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.videos_path' => '/videos',
+            'services.panda.folder_query_param' => 'folder_id',
+        ]);
+
+        Http::fake([
+            'https://panda.test/videos?folder_id=folder-1' => Http::response([
+                'data' => [[
+                    'id' => 'draft-video',
+                    'title' => 'Aula teste.mp4',
+                    'status' => 'DRAFT',
+                    'folder_id' => 'folder-1',
+                ]],
+            ], 200),
+        ]);
+
+        $video = app(PandaVideoClient::class)->findVideoByTitle('Aula teste', 'folder-1');
+
+        $this->assertSame('draft-video', $video['panda_video_id']);
+        $this->assertSame('DRAFT', $video['panda_status']);
+    }
+
     public function test_panda_client_does_not_create_folder_when_existing_name_is_found(): void
     {
         config([
@@ -276,6 +304,67 @@ class PandaImportTest extends TestCase
 
         $this->assertSame('existing-folder', $folder['panda_folder_id']);
         $this->assertFalse($folder['was_created']);
+    }
+
+    public function test_panda_client_finds_folder_when_api_returns_folders_key_and_folder_name(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.folders_path' => '/folders',
+        ]);
+
+        Http::fake([
+            'https://panda.test/folders' => Http::response([
+                'folders' => [[
+                    'folder_id' => 'folder-caixa',
+                    'folder_name' => 'Caixa',
+                    'status' => true,
+                ]],
+            ], 200),
+        ]);
+
+        $folder = app(PandaVideoClient::class)->findFolderByName('Caixa');
+
+        $this->assertSame('folder-caixa', $folder['panda_folder_id']);
+    }
+
+    public function test_panda_client_finds_folder_on_paginated_response(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.folders_path' => '/folders',
+        ]);
+
+        Http::fake([
+            'https://panda.test/folders' => Http::response([
+                'data' => [[
+                    'id' => 'folder-word',
+                    'name' => 'Word 365',
+                    'status' => true,
+                ]],
+                'current_page' => 1,
+                'last_page' => 2,
+            ], 200),
+            'https://panda.test/folders?page=2' => Http::response([
+                'data' => [[
+                    'id' => 'folder-excel',
+                    'name' => 'Excel 365',
+                    'status' => true,
+                ]],
+                'current_page' => 2,
+                'last_page' => 2,
+            ], 200),
+        ]);
+
+        $folder = app(PandaVideoClient::class)->findFolderByName('Excel 365');
+
+        $this->assertSame('folder-excel', $folder['panda_folder_id']);
     }
 
     public function test_panda_client_does_not_reconcile_draft_video_after_binary_failure(): void
@@ -412,7 +501,7 @@ class PandaImportTest extends TestCase
         $this->assertSame('CONVERTING', $video['panda_status']);
     }
 
-    public function test_panda_client_does_not_return_draft_after_tus_upload(): void
+    public function test_panda_client_returns_draft_after_tus_upload_to_avoid_blocking_import(): void
     {
         config([
             'services.panda.api_key' => 'test-key',
@@ -463,13 +552,13 @@ class PandaImportTest extends TestCase
         });
 
         try {
-            $this->expectException(\RuntimeException::class);
-            $this->expectExceptionMessage('DRAFT');
-
-            app(PandaVideoClient::class)->uploadVideo($path, 'Aula TUS', 'folder-1');
+            $video = app(PandaVideoClient::class)->uploadVideo($path, 'Aula TUS', 'folder-1');
         } finally {
             @unlink($path);
         }
+
+        $this->assertSame($createdVideoId, $video['panda_video_id']);
+        $this->assertSame('DRAFT', $video['panda_status']);
     }
 
     public function test_panda_folder_import_creates_module_reusable_lesson_and_history(): void

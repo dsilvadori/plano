@@ -2,11 +2,13 @@
 
 namespace App\Services;
 
+use App\Jobs\UploadLessonToPanda;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\GoogleDriveImportRun;
 use App\Models\Lesson;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class GoogleDriveTrackImporter
@@ -118,7 +120,7 @@ class GoogleDriveTrackImporter
 
                 if ($uploadPandaVideos && $type === 'video') {
                     if (filled($lesson->panda_video_id)) {
-                        $pandaVideo = $this->panda->processableVideo((string) $lesson->panda_video_id, $trackPandaFolderId);
+                        $pandaVideo = $this->panda->reusableVideo((string) $lesson->panda_video_id, $trackPandaFolderId);
 
                         if ($pandaVideo) {
                             $pandaVideosSkipped++;
@@ -163,7 +165,7 @@ class GoogleDriveTrackImporter
                     'description' => 'Aula criada a partir do Google Drive.',
                     'type' => $type,
                     'thumbnail_url' => $file['thumbnailLink'] ?? $lesson->thumbnail_url,
-                    'duration_seconds' => $lesson->duration_seconds ?: 0,
+                    'duration_seconds' => $this->durationSecondsFromPandaVideo($pandaVideo, $lesson),
                     'sort_order' => $lessonIndex + 1,
                     'status' => $lessonStatus,
                     'panda_video_id' => $pandaVideo['panda_video_id'] ?? $lesson->panda_video_id,
@@ -291,16 +293,19 @@ class GoogleDriveTrackImporter
         foreach ($files as $lessonIndex => $file) {
             $title = $this->lessonTitleFromFile((string) ($file['name'] ?? ''), $lessonIndex + 1);
             $slug = Str::slug($title) ?: 'aula-'.($lessonIndex + 1);
-            [$lessonPandaFolderId, $lessonPandaFolderError] = $this->resolvePandaFolderIdForStandaloneDriveFile(
+            [$lessonPandaFolderId, $lessonPandaFolderError, $lessonPandaFolderCreated] = $this->resolvePandaFolderIdForStandaloneDriveFile(
                 $file,
                 $pandaFolderId,
                 $module,
                 $track,
                 $uploadPandaVideos && $this->lessonTypeForMimeType((string) ($file['mimeType'] ?? '')) === 'video',
+                $createPandaFolder,
             );
+            $pandaFolders += $lessonPandaFolderCreated ? 1 : 0;
             $lesson = $this->lessonQueryForScope($course, $module, $track)
                 ->where('slug', $slug)
                 ->first()
+                ?? $this->resolveReusableDriveLesson($course, $module, $track, $title, $slug, $file)
                 ?? new Lesson([
                     'course_id' => $course?->id,
                     'course_module_id' => $module?->id,
@@ -311,23 +316,16 @@ class GoogleDriveTrackImporter
             $type = $this->lessonTypeForMimeType((string) ($file['mimeType'] ?? ''));
             $pandaVideo = null;
             $pandaUploadError = $lessonPandaFolderError;
+            $pandaUploadQueued = false;
 
             if ($uploadPandaVideos && $type === 'video' && blank($pandaUploadError)) {
-                if (! $this->lessonPandaFolderMatches($lesson, $lessonPandaFolderId)) {
-                    $lesson->forceFill([
-                        'panda_video_id' => null,
-                        'panda_embed_url' => null,
-                        'panda_player_url' => null,
-                        'panda_status' => null,
-                    ]);
-                }
-
                 if (filled($lesson->panda_video_id)) {
-                    $pandaVideo = $this->panda->processableVideo((string) $lesson->panda_video_id, $lessonPandaFolderId);
+                    $pandaVideo = $this->panda->reusableVideo((string) $lesson->panda_video_id, $lessonPandaFolderId);
 
-                    if ($pandaVideo) {
+                    if ($pandaVideo && $this->pandaVideoMatchesExpectedFolder($pandaVideo, $lessonPandaFolderId)) {
                         $pandaVideosSkipped++;
                     } else {
+                        $pandaVideo = null;
                         $lesson->forceFill([
                             'panda_video_id' => null,
                             'panda_embed_url' => null,
@@ -343,6 +341,9 @@ class GoogleDriveTrackImporter
 
                         if ($pandaVideo) {
                             $pandaVideosSkipped++;
+                        } elseif ($this->shouldQueuePandaUploads()) {
+                            $pandaUploadQueued = true;
+                            $pandaVideosFailed++;
                         } else {
                             $pandaVideo = $this->uploadDriveVideoToPanda($file, $title, $lessonPandaFolderId);
                             if (($pandaVideo['was_reused'] ?? false) === true) {
@@ -370,7 +371,7 @@ class GoogleDriveTrackImporter
                 'description' => 'Aula criada a partir do Google Drive.',
                 'type' => $type,
                 'thumbnail_url' => $file['thumbnailLink'] ?? $lesson->thumbnail_url,
-                'duration_seconds' => $lesson->duration_seconds ?: 0,
+                'duration_seconds' => $this->durationSecondsFromPandaVideo($pandaVideo, $lesson),
                 'sort_order' => $lessonIndex + 1,
                 'status' => $lessonStatus,
                 'panda_video_id' => $pandaVideo['panda_video_id'] ?? $lesson->panda_video_id,
@@ -378,7 +379,7 @@ class GoogleDriveTrackImporter
                 'panda_player_url' => $pandaVideo['panda_player_url'] ?? $lesson->panda_player_url,
                 'panda_status' => $pandaVideo['panda_status'] ?? $lesson->panda_status,
                 'google_doc_url' => $file['webViewLink'] ?? $lesson->google_doc_url,
-                'source_status' => $pandaVideo || filled($lesson->panda_video_id) || $type === 'pdf' ? 'media_ready' : 'awaiting_media',
+                'source_status' => $this->sourceStatusForImportedLesson($type, $pandaVideo, $lesson, $pandaUploadQueued),
                 'metadata' => [
                     'source' => 'google_drive',
                     'drive_file_id' => $file['id'] ?? null,
@@ -391,10 +392,16 @@ class GoogleDriveTrackImporter
                     'panda_folder_id' => $lessonPandaFolderId,
                     'panda_upload' => $pandaVideo['payload'] ?? null,
                     'panda_upload_error' => $pandaUploadError,
+                    'panda_upload_queued_at' => $pandaUploadQueued ? now()->toIso8601String() : null,
+                    'panda_upload_run_id' => $pandaUploadQueued ? $run?->id : null,
                     'imported_at' => now()->toIso8601String(),
                 ],
             ]);
             $lesson->save();
+
+            if ($pandaUploadQueued) {
+                $this->dispatchPandaUpload($lesson, $run);
+            }
 
             if ($module) {
                 $lesson->modules()->syncWithoutDetaching([
@@ -464,29 +471,79 @@ class GoogleDriveTrackImporter
         return $this->sortNaturally($files);
     }
 
-    protected function resolvePandaFolderIdForStandaloneDriveFile(array $file, ?string $defaultPandaFolderId, ?CourseModule $module, ?CourseModuleTrack $track, bool $requiresPandaFolder): array
+    protected function resolvePandaFolderIdForStandaloneDriveFile(array $file, ?string $defaultPandaFolderId, ?CourseModule $module, ?CourseModuleTrack $track, bool $requiresPandaFolder, bool $createMissingPandaFolder = true): array
     {
         if ($module || $track || filled($defaultPandaFolderId)) {
-            return [$defaultPandaFolderId, null];
+            return [$defaultPandaFolderId, null, false];
         }
 
         if (! $requiresPandaFolder) {
-            return [null, null];
+            return [null, null, false];
         }
 
         $sourceFolderName = $this->sourceFolderNameForFile($file);
 
         if ($sourceFolderName === '') {
-            return [null, 'Arquivo do Drive sem subpasta de origem; upload na raiz do Panda foi bloqueado.'];
+            return [null, 'Arquivo do Drive sem subpasta de origem; upload na raiz do Panda foi bloqueado.', false];
         }
 
-        $folder = $this->panda->findFolderByName($sourceFolderName);
+        $folder = $this->findPandaFolderForDrivePath((string) ($file['_source_folder_path'] ?? ''));
 
-        if (! $folder || blank($folder['panda_folder_id'] ?? null)) {
-            return [null, "Pasta Panda não encontrada para a subpasta do Drive: {$sourceFolderName}. Upload na raiz bloqueado."];
+        if ($folder && filled($folder['panda_folder_id'] ?? null)) {
+            return [(string) $folder['panda_folder_id'], null, false];
         }
 
-        return [(string) $folder['panda_folder_id'], null];
+        if (! $createMissingPandaFolder) {
+            return [null, "Pasta Panda não encontrada para a subpasta do Drive: {$sourceFolderName}. Upload na raiz bloqueado.", false];
+        }
+
+        $folder = $this->panda->createFolder($sourceFolderName);
+
+        if (blank($folder['panda_folder_id'] ?? null)) {
+            return [null, "O Panda criou a pasta {$sourceFolderName}, mas não retornou o ID da pasta.", false];
+        }
+
+        return [(string) $folder['panda_folder_id'], null, true];
+    }
+
+    protected function findPandaFolderForDrivePath(string $path): ?array
+    {
+        foreach ($this->pandaFolderNameCandidatesForDrivePath($path) as $candidate) {
+            $folder = $this->panda->findFolderByName($candidate);
+
+            if ($folder && filled($folder['panda_folder_id'] ?? null)) {
+                return $folder;
+            }
+        }
+
+        return null;
+    }
+
+    protected function pandaFolderNameCandidatesForDrivePath(string $path): array
+    {
+        $parts = array_values(array_filter(
+            explode('/', trim($path, '/')),
+            fn (string $part): bool => trim($part) !== '',
+        ));
+
+        $candidates = [];
+
+        for ($index = count($parts) - 1; $index >= 0; $index--) {
+            $part = trim($parts[$index]);
+
+            if ($part === '') {
+                continue;
+            }
+
+            $candidates[] = $part;
+            $withoutNumericPrefix = trim((string) preg_replace('/^\d+\s*[-_.]\s*/', '', $part));
+
+            if ($withoutNumericPrefix !== '' && $withoutNumericPrefix !== $part) {
+                $candidates[] = $withoutNumericPrefix;
+            }
+        }
+
+        return collect($candidates)->unique(fn (string $name): string => $this->normalizeImportName($name))->values()->all();
     }
 
     protected function sourceFolderNameForFile(array $file): string
@@ -515,6 +572,43 @@ class GoogleDriveTrackImporter
             ->when($track, fn ($query) => $query->where('course_module_track_id', $track->id), fn ($query) => $query->whereNull('course_module_track_id'));
     }
 
+    protected function resolveReusableDriveLesson(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $title, string $slug, array $file): ?Lesson
+    {
+        $driveFileId = (string) ($file['id'] ?? '');
+
+        if ($driveFileId !== '') {
+            $lesson = Lesson::query()
+                ->orderBy('id')
+                ->get()
+                ->first(function (Lesson $lesson) use ($driveFileId): bool {
+                    $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+
+                    return ($metadata['source'] ?? null) === 'google_drive'
+                        && ($metadata['drive_file_id'] ?? null) === $driveFileId;
+                });
+
+            if ($lesson) {
+                return $lesson;
+            }
+        }
+
+        $normalizedTitle = $this->normalizeImportName($title);
+
+        if ($normalizedTitle === '') {
+            return null;
+        }
+
+        return Lesson::query()
+            ->orderByRaw('case when panda_video_id is null then 1 else 0 end')
+            ->orderBy('id')
+            ->get()
+            ->first(function (Lesson $lesson) use ($normalizedTitle, $slug): bool {
+                return $lesson->slug === $slug
+                    || $this->normalizeImportName($lesson->title) === $normalizedTitle
+                    || $this->normalizeImportName(pathinfo($lesson->title, PATHINFO_FILENAME)) === $normalizedTitle;
+            });
+    }
+
     public function reprocessPendingLessonsForRun(GoogleDriveImportRun $sourceRun, ?GoogleDriveImportRun $run = null): array
     {
         $folderId = $sourceRun->folder_id ?: $this->drive->folderIdFromUrl($sourceRun->folder_url);
@@ -532,28 +626,27 @@ class GoogleDriveTrackImporter
         $pandaVideosUploaded = 0;
         $pandaVideosSkipped = 0;
         $pandaVideosFailed = 0;
+        $pandaFolders = 0;
 
         foreach ($lessons->values() as $index => $lesson) {
             $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
-            [$pandaFolderId, $pandaFolderError] = $this->resolvePandaFolderIdForPendingLesson($lesson);
+            [$pandaFolderId, $pandaFolderError, $pandaFolderCreated] = $this->resolvePandaFolderIdForPendingLesson($lesson);
+            $pandaFolders += $pandaFolderCreated ? 1 : 0;
             $pandaVideo = null;
             $pandaUploadError = $pandaFolderError;
+            $pandaUploadQueued = false;
 
             if (blank($pandaUploadError) && ! $this->lessonPandaFolderMatches($lesson, $pandaFolderId)) {
-                $lesson->forceFill([
-                    'panda_video_id' => null,
-                    'panda_embed_url' => null,
-                    'panda_player_url' => null,
-                    'panda_status' => null,
-                ]);
+                $pandaVideo = null;
             }
 
             if (blank($pandaUploadError) && filled($lesson->panda_video_id)) {
-                $pandaVideo = $this->panda->processableVideo((string) $lesson->panda_video_id, $pandaFolderId);
+                $pandaVideo = $this->panda->reusableVideo((string) $lesson->panda_video_id, $pandaFolderId);
 
-                if ($pandaVideo) {
+                if ($pandaVideo && $this->pandaVideoMatchesExpectedFolder($pandaVideo, $pandaFolderId)) {
                     $pandaVideosSkipped++;
                 } else {
+                    $pandaVideo = null;
                     $lesson->forceFill([
                         'panda_video_id' => null,
                         'panda_embed_url' => null,
@@ -569,6 +662,9 @@ class GoogleDriveTrackImporter
 
                     if ($pandaVideo) {
                         $pandaVideosSkipped++;
+                    } elseif ($this->shouldQueuePandaUploads()) {
+                        $pandaUploadQueued = true;
+                        $pandaVideosFailed++;
                     } else {
                         $pandaVideo = $this->uploadDriveVideoToPanda($this->driveFileForLesson($lesson), $lesson->title, $pandaFolderId);
 
@@ -593,15 +689,22 @@ class GoogleDriveTrackImporter
                 'panda_embed_url' => $pandaVideo['panda_embed_url'] ?? $lesson->panda_embed_url,
                 'panda_player_url' => $pandaVideo['panda_player_url'] ?? $lesson->panda_player_url,
                 'panda_status' => $pandaVideo['panda_status'] ?? $lesson->panda_status,
-                'source_status' => $pandaVideo || filled($lesson->panda_video_id) ? 'media_ready' : 'awaiting_media',
+                'duration_seconds' => $this->durationSecondsFromPandaVideo($pandaVideo, $lesson),
+                'source_status' => $pandaUploadQueued ? 'upload_queued' : ($pandaVideo || filled($lesson->panda_video_id) ? 'media_ready' : 'awaiting_media'),
                 'metadata' => [
                     ...$metadata,
                     'panda_upload' => $pandaVideo['payload'] ?? ($metadata['panda_upload'] ?? null),
                     'panda_upload_error' => $pandaUploadError,
+                    'panda_upload_queued_at' => $pandaUploadQueued ? now()->toIso8601String() : ($metadata['panda_upload_queued_at'] ?? null),
+                    'panda_upload_run_id' => $pandaUploadQueued ? $run?->id : ($metadata['panda_upload_run_id'] ?? null),
                     'reprocessed_at' => now()->toIso8601String(),
                     'reprocessed_from_run_id' => $sourceRun->id,
                 ],
             ])->save();
+
+            if ($pandaUploadQueued) {
+                $this->dispatchPandaUpload($lesson, $run);
+            }
 
             $this->updateRun($run, [
                 'processed_lessons' => $index + 1,
@@ -620,7 +723,7 @@ class GoogleDriveTrackImporter
             'created_tracks' => 0,
             'updated_tracks' => 0,
             'total_lessons' => $lessons->count(),
-            'panda_folders' => 0,
+            'panda_folders' => $pandaFolders,
             'panda_videos_uploaded' => $pandaVideosUploaded,
             'panda_videos_skipped' => $pandaVideosSkipped,
             'panda_videos_failed' => $pandaVideosFailed,
@@ -633,7 +736,7 @@ class GoogleDriveTrackImporter
     protected function pendingLessonsForFolder(string $folderId): \Illuminate\Support\Collection
     {
         return Lesson::query()
-            ->where('source_status', 'awaiting_media')
+            ->whereIn('source_status', ['awaiting_media', 'upload_queued', 'upload_failed'])
             ->orderBy('sort_order')
             ->orderBy('id')
             ->get()
@@ -672,22 +775,28 @@ class GoogleDriveTrackImporter
         $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
 
         if (filled($metadata['panda_folder_id'] ?? null)) {
-            return [(string) $metadata['panda_folder_id'], null];
+            return [(string) $metadata['panda_folder_id'], null, false];
         }
 
         $sourceFolderName = $this->sourceFolderNameForPath((string) ($metadata['drive_source_folder_path'] ?? ''));
 
         if ($sourceFolderName === '') {
-            return [null, 'Aula sem pasta Panda e sem subpasta de origem; upload na raiz do Panda foi bloqueado.'];
+            return [null, 'Aula sem pasta Panda e sem subpasta de origem; upload na raiz do Panda foi bloqueado.', false];
         }
 
-        $folder = $this->panda->findFolderByName($sourceFolderName);
+        $folder = $this->findPandaFolderForDrivePath((string) ($metadata['drive_source_folder_path'] ?? ''));
 
-        if (! $folder || blank($folder['panda_folder_id'] ?? null)) {
-            return [null, "Pasta Panda não encontrada para a subpasta do Drive: {$sourceFolderName}. Upload na raiz bloqueado."];
+        if ($folder && filled($folder['panda_folder_id'] ?? null)) {
+            return [(string) $folder['panda_folder_id'], null, false];
         }
 
-        return [(string) $folder['panda_folder_id'], null];
+        $folder = $this->panda->createFolder($sourceFolderName);
+
+        if (blank($folder['panda_folder_id'] ?? null)) {
+            return [null, "O Panda criou a pasta {$sourceFolderName}, mas não retornou o ID da pasta.", false];
+        }
+
+        return [(string) $folder['panda_folder_id'], null, true];
     }
 
     protected function lessonPandaFolderMatches(Lesson $lesson, ?string $expectedPandaFolderId): bool
@@ -700,6 +809,119 @@ class GoogleDriveTrackImporter
         $currentPandaFolderId = filled($metadata['panda_folder_id'] ?? null) ? (string) $metadata['panda_folder_id'] : null;
 
         return $currentPandaFolderId === (string) $expectedPandaFolderId;
+    }
+
+    protected function pandaVideoMatchesExpectedFolder(array $video, ?string $expectedPandaFolderId): bool
+    {
+        if (blank($expectedPandaFolderId)) {
+            return true;
+        }
+
+        $actualFolderId = (string) ($video['folder_id'] ?? '');
+
+        return $actualFolderId === '' || $actualFolderId === (string) $expectedPandaFolderId;
+    }
+
+    protected function durationSecondsFromPandaVideo(?array $pandaVideo, Lesson $lesson): int
+    {
+        $duration = $pandaVideo['duration_seconds'] ?? null;
+
+        if (is_numeric($duration) && (int) $duration > 0) {
+            return (int) $duration;
+        }
+
+        return (int) ($lesson->duration_seconds ?: 0);
+    }
+
+    public function uploadQueuedLessonToPanda(Lesson $lesson, ?GoogleDriveImportRun $run = null): array
+    {
+        $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+        $pandaFolderId = filled($metadata['panda_folder_id'] ?? null)
+            ? (string) $metadata['panda_folder_id']
+            : $this->resolvePandaFolderIdForPendingLesson($lesson)[0];
+
+        if (blank($pandaFolderId)) {
+            throw new \RuntimeException('Aula sem pasta Panda resolvida; upload na raiz do Panda foi bloqueado.');
+        }
+
+        $lesson->forceFill([
+            'source_status' => 'uploading',
+            'metadata' => [
+                ...$metadata,
+                'panda_upload_started_at' => now()->toIso8601String(),
+                'panda_upload_error' => null,
+            ],
+        ])->save();
+
+        $pandaVideo = null;
+        $wasReused = false;
+
+        if (filled($lesson->panda_video_id)) {
+            $pandaVideo = $this->panda->reusableVideo((string) $lesson->panda_video_id, $pandaFolderId);
+            $wasReused = (bool) $pandaVideo;
+        }
+
+        if (! $pandaVideo) {
+            $pandaVideo = $this->panda->findVideoByTitle($lesson->title, $pandaFolderId);
+            $wasReused = (bool) $pandaVideo;
+        }
+
+        if (! $pandaVideo) {
+            $pandaVideo = $this->uploadDriveVideoToPanda($this->driveFileForLesson($lesson), $lesson->title, $pandaFolderId);
+        }
+
+        $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+        $lesson->forceFill([
+            'panda_video_id' => $pandaVideo['panda_video_id'] ?? $lesson->panda_video_id,
+            'panda_embed_url' => $pandaVideo['panda_embed_url'] ?? $lesson->panda_embed_url,
+            'panda_player_url' => $pandaVideo['panda_player_url'] ?? $lesson->panda_player_url,
+            'panda_status' => $pandaVideo['panda_status'] ?? $lesson->panda_status,
+            'duration_seconds' => $this->durationSecondsFromPandaVideo($pandaVideo, $lesson),
+            'source_status' => 'media_ready',
+            'metadata' => [
+                ...$metadata,
+                'panda_folder_id' => $pandaFolderId,
+                'panda_upload' => $pandaVideo['payload'] ?? ($metadata['panda_upload'] ?? null),
+                'panda_upload_error' => null,
+                'panda_upload_completed_at' => now()->toIso8601String(),
+            ],
+        ])->save();
+
+        if ($run) {
+            $updates = [
+                'latest_message' => ($wasReused ? 'Vídeo Panda reaproveitado: ' : 'Upload Panda concluído: ').$lesson->title,
+                'error_message' => null,
+                'updated_at' => now(),
+            ];
+
+            if ($wasReused) {
+                $updates['panda_videos_skipped'] = DB::raw('panda_videos_skipped + 1');
+            } else {
+                $updates['panda_videos_uploaded'] = DB::raw('panda_videos_uploaded + 1');
+            }
+
+            if ($run->panda_videos_failed > 0) {
+                $updates['panda_videos_failed'] = DB::raw('panda_videos_failed - 1');
+            }
+
+            GoogleDriveImportRun::query()->whereKey($run->id)->update($updates);
+            $run->refresh();
+        }
+
+        return [
+            ...$pandaVideo,
+            'was_reused' => $wasReused,
+        ];
+    }
+
+    protected function normalizeImportName(string $value): string
+    {
+        return Str::of($value)
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
+            ->value();
     }
 
     protected function sortNaturally(array $files): array
@@ -717,6 +939,29 @@ class GoogleDriveTrackImporter
 
         $run->forceFill($attributes)->save();
         $run->refresh();
+    }
+
+    protected function shouldQueuePandaUploads(): bool
+    {
+        return (bool) config('services.panda.queue_drive_uploads', false);
+    }
+
+    protected function dispatchPandaUpload(Lesson $lesson, ?GoogleDriveImportRun $run): void
+    {
+        UploadLessonToPanda::dispatch($lesson->id, $run?->id);
+    }
+
+    protected function sourceStatusForImportedLesson(string $type, ?array $pandaVideo, Lesson $lesson, bool $pandaUploadQueued): string
+    {
+        if ($pandaUploadQueued) {
+            return 'upload_queued';
+        }
+
+        if ($pandaVideo || filled($lesson->panda_video_id) || $type === 'pdf') {
+            return 'media_ready';
+        }
+
+        return 'awaiting_media';
     }
 
     protected function resolvePandaFolderId(string $name, ?string $localFolderId, ?string $parentFolderId = null): array

@@ -176,6 +176,9 @@ class LessonResource extends Resource
                 ->options([
                     'structure_only' => 'Somente estrutura',
                     'awaiting_media' => 'Aguardando mídia',
+                    'upload_queued' => 'Upload na fila',
+                    'uploading' => 'Enviando ao Panda',
+                    'upload_failed' => 'Falha no upload',
                     'media_ready' => 'Mídia pronta',
                     'published' => 'Publicado',
                 ])
@@ -221,9 +224,25 @@ class LessonResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('title')->label('Aula')->searchable()->sortable(),
-                TextColumn::make('course.name')->label('Curso')->searchable()->sortable(),
-                TextColumn::make('module.name')->label('Módulo')->searchable()->sortable(),
-                TextColumn::make('track.name')->label('Trilha')->searchable()->sortable(),
+                TextColumn::make('linked_courses')
+                    ->label('Curso')
+                    ->getStateUsing(fn (Lesson $record): string => self::linkedCourseNames($record))
+                    ->searchable(query: fn ($query, string $search) => $query
+                        ->whereHas('course', fn ($query) => $query->where('name', 'like', "%{$search}%"))
+                        ->orWhereHas('modules.courses', fn ($query) => $query->where('courses.name', 'like', "%{$search}%"))
+                        ->orWhereHas('tracks.courses', fn ($query) => $query->where('courses.name', 'like', "%{$search}%"))),
+                TextColumn::make('linked_modules')
+                    ->label('Módulo')
+                    ->getStateUsing(fn (Lesson $record): string => self::linkedModuleNames($record))
+                    ->searchable(query: fn ($query, string $search) => $query
+                        ->whereHas('module', fn ($query) => $query->where('name', 'like', "%{$search}%"))
+                        ->orWhereHas('modules', fn ($query) => $query->where('course_modules.name', 'like', "%{$search}%"))),
+                TextColumn::make('linked_tracks')
+                    ->label('Trilha')
+                    ->getStateUsing(fn (Lesson $record): string => self::linkedTrackNames($record))
+                    ->searchable(query: fn ($query, string $search) => $query
+                        ->whereHas('track', fn ($query) => $query->where('name', 'like', "%{$search}%"))
+                        ->orWhereHas('tracks', fn ($query) => $query->where('course_module_tracks.name', 'like', "%{$search}%"))),
                 TextColumn::make('type')
                     ->label('Tipo')
                     ->badge()
@@ -250,6 +269,9 @@ class LessonResource extends Resource
                     ->formatStateUsing(fn (?string $state): string => match ($state) {
                         'structure_only' => 'Somente estrutura',
                         'awaiting_media' => 'Aguardando mídia',
+                        'upload_queued' => 'Upload na fila',
+                        'uploading' => 'Enviando ao Panda',
+                        'upload_failed' => 'Falha no upload',
                         'media_ready' => 'Mídia pronta',
                         'published' => 'Publicado',
                         default => (string) $state,
@@ -261,7 +283,14 @@ class LessonResource extends Resource
             ->filters([
                 SelectFilter::make('course_id')
                     ->label('Curso')
-                    ->options(Course::query()->orderBy('name')->pluck('name', 'id')),
+                    ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
+                    ->query(fn ($query, array $data) => filled($data['value'] ?? null)
+                        ? $query->where(function ($query) use ($data): void {
+                            $query->where('course_id', $data['value'])
+                                ->orWhereHas('modules.courses', fn ($query) => $query->whereKey($data['value']))
+                                ->orWhereHas('tracks.courses', fn ($query) => $query->whereKey($data['value']));
+                        })
+                        : $query),
                 SelectFilter::make('type')
                     ->options([
                         'video' => 'Vídeo',
@@ -281,6 +310,9 @@ class LessonResource extends Resource
                     ->options([
                         'structure_only' => 'Somente estrutura',
                         'awaiting_media' => 'Aguardando mídia',
+                        'upload_queued' => 'Upload na fila',
+                        'uploading' => 'Enviando ao Panda',
+                        'upload_failed' => 'Falha no upload',
                         'media_ready' => 'Mídia pronta',
                         'published' => 'Publicado',
                     ]),
@@ -314,5 +346,56 @@ class LessonResource extends Resource
             'create' => CreateLesson::route('/create'),
             'edit' => EditLesson::route('/{record}/edit'),
         ];
+    }
+
+    protected static function linkedCourseNames(Lesson $lesson): string
+    {
+        $names = collect();
+
+        if ($lesson->relationLoaded('course') ? $lesson->course : $lesson->course()->first()) {
+            $names->push($lesson->course->name);
+        }
+
+        $moduleCourses = ($lesson->relationLoaded('modules') ? $lesson->modules : $lesson->modules()->with('courses')->get())
+            ->flatMap(fn (CourseModule $module) => $module->courses);
+        $trackCourses = ($lesson->relationLoaded('tracks') ? $lesson->tracks : $lesson->tracks()->with('courses')->get())
+            ->flatMap(fn (CourseModuleTrack $track) => $track->courses);
+
+        return $names
+            ->merge($moduleCourses->pluck('name'))
+            ->merge($trackCourses->pluck('name'))
+            ->filter()
+            ->unique()
+            ->join(', ');
+    }
+
+    protected static function linkedModuleNames(Lesson $lesson): string
+    {
+        $names = collect();
+
+        if ($lesson->relationLoaded('module') ? $lesson->module : $lesson->module()->first()) {
+            $names->push($lesson->module->name);
+        }
+
+        return $names
+            ->merge(($lesson->relationLoaded('modules') ? $lesson->modules : $lesson->modules()->get())->pluck('name'))
+            ->filter()
+            ->unique()
+            ->join(', ');
+    }
+
+    protected static function linkedTrackNames(Lesson $lesson): string
+    {
+        $names = collect();
+
+        if ($lesson->relationLoaded('track') ? $lesson->track : $lesson->track()->first()) {
+            $names->push($lesson->track->name);
+        }
+
+        return $names
+            ->merge(($lesson->relationLoaded('tracks') ? $lesson->tracks : $lesson->tracks()->get())->pluck('name'))
+            ->filter()
+            ->unique()
+            ->join(', ');
     }
 }

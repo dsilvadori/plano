@@ -6,6 +6,7 @@ use App\Models\CourseModule;
 use App\Models\QuestionBank;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
+use App\Services\StudyPlanGenerator;
 use App\Support\StudyTime;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\View\View;
@@ -26,7 +27,9 @@ class StudyPlanViewer extends Component
     public function mount(StudyPlan $studyPlan): void
     {
         $this->authorize('view', $studyPlan);
-        $this->studyPlan = $studyPlan->load(['items.courseModule', 'items.lessons', 'course', 'studyTrack']);
+        $this->studyPlan = app(StudyPlanGenerator::class)
+            ->syncPublishedLessonsForPlan($studyPlan)
+            ->load(['items.courseModule', 'items.lessons', 'course', 'studyTrack']);
         $this->selectedWeek = (int) $this->studyPlan->items->min('week_number') ?: 1;
     }
 

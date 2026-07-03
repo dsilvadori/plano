@@ -309,8 +309,8 @@ class CourseSpreadsheetImportTest extends TestCase
             'course_id' => null,
             'course_module_id' => null,
             'course_module_track_id' => null,
-            'title' => 'Aula avulsa do Drive',
-            'slug' => 'aula-avulsa-do-drive',
+            'title' => '01___aula_avulsa_do_drive (720p)',
+            'slug' => '01-aula-avulsa-do-drive',
             'description' => 'Aula importada pelo Drive.',
             'type' => 'video',
             'thumbnail_url' => null,
@@ -340,7 +340,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $track = $module->tracks()->where('name', 'Windows 10')->firstOrFail();
         $existingLesson->refresh();
 
-        $this->assertSame(1, Lesson::query()->where('title', 'Aula avulsa do Drive')->count());
+        $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-drive-video')->count());
         $this->assertNull($existingLesson->course_id);
         $this->assertNull($existingLesson->course_module_id);
         $this->assertNull($existingLesson->course_module_track_id);
@@ -350,5 +350,158 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
         $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
         $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($module->id)->exists());
+    }
+
+    public function test_spreadsheet_import_links_lessons_by_approximate_name_ignoring_numbering(): void
+    {
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'AULA 09 - recursos_windows_10_configuracoes (720p)',
+            'slug' => 'aula-09-recursos-windows-10-configuracoes',
+            'description' => 'Aula importada pelo Drive.',
+            'type' => 'video',
+            'duration_seconds' => 1200,
+            'sort_order' => 9,
+            'panda_video_id' => 'panda-windows-recursos',
+            'panda_embed_url' => 'https://player.example.com/windows-recursos',
+            'panda_status' => 'CONVERTED',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => [
+                'source' => 'google_drive',
+                'drive_source_folder_path' => 'Windows 10',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-link-approximate-') . '.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso com Match Aproximado,Informática,basic,1,Windows 10,01 - Recursos e configurações do Windows 10,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Informática')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Windows 10')->firstOrFail();
+        $existingLesson->refresh();
+
+        $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-windows-recursos')->count());
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+        $this->assertSame('panda-windows-recursos', $existingLesson->panda_video_id);
+        $this->assertSame('media_ready', $existingLesson->source_status);
+        $this->assertSame('published', $existingLesson->status);
+    }
+
+    public function test_spreadsheet_import_prefers_ready_media_when_matching_existing_lessons(): void
+    {
+        Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Guia Inserir',
+            'slug' => 'guia-inserir-pendente',
+            'description' => 'Aula pendente.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'source_status' => 'upload_queued',
+            'status' => 'published',
+        ]);
+        $readyLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Guia Inserir',
+            'slug' => 'guia-inserir-pronta',
+            'description' => 'Aula pronta.',
+            'type' => 'video',
+            'duration_seconds' => 1200,
+            'sort_order' => 2,
+            'panda_video_id' => 'panda-ready-guia-inserir',
+            'panda_embed_url' => 'https://player.example.com/ready-guia-inserir',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-ready-priority-') . '.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Prioridade Midia,Informática,basic,1,Excel 2016,Guia Inserir,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $track = $course->modules()->where('name', 'Informática')->firstOrFail()
+            ->tracks()->where('name', 'Excel 2016')->firstOrFail();
+
+        $this->assertTrue($track->lessons()->whereKey($readyLesson->id)->exists());
+        $this->assertSame('published', $readyLesson->fresh()->status);
+        $this->assertSame(1, $track->lessons()->count());
+    }
+
+    public function test_spreadsheet_import_uses_track_context_for_generic_lesson_titles(): void
+    {
+        $excelLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '02 - Aula 2 - Guia Inserir',
+            'slug' => 'aula-2-guia-inserir',
+            'description' => 'Aula de Excel.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 2,
+            'source_status' => 'upload_queued',
+            'status' => 'published',
+            'metadata' => [
+                'drive_source_folder_path' => 'OFFICE 2016 - NOVAS/02 - Excel 2016',
+            ],
+        ]);
+        $pptLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '03 - Aula 3 - Guia Inserir',
+            'slug' => 'aula-3-guia-inserir',
+            'description' => 'Aula de Power Point.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 3,
+            'source_status' => 'upload_queued',
+            'status' => 'published',
+            'metadata' => [
+                'drive_source_folder_path' => 'OFFICE 2016 - NOVAS/03 - PPT 2016',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-track-context-') . '.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Contexto Trilha,Informática,basic,1,Power Point 2016,Guia Inserir,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $track = $course->modules()->where('name', 'Informática')->firstOrFail()
+            ->tracks()->where('name', 'Power Point 2016')->firstOrFail();
+
+        $this->assertTrue($track->lessons()->whereKey($pptLesson->id)->exists());
+        $this->assertFalse($track->lessons()->whereKey($excelLesson->id)->exists());
+        $this->assertSame(1, $track->lessons()->count());
     }
 }

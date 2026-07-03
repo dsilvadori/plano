@@ -19,16 +19,16 @@ class PandaVideoClient
         ] : [];
 
         try {
-            $response = $this->getWithAuthFallback($this->path('folders_path'), $query);
+            $response = $this->getAllWithAuthFallback($this->path('folders_path'), $query, 'folders_page_size');
         } catch (\Throwable $exception) {
             if ($query === [] || ! str_contains($exception->getMessage(), $parentQueryParam)) {
                 throw $exception;
             }
 
-            $response = $this->getWithAuthFallback($this->path('folders_path'));
+            $response = $this->getAllWithAuthFallback($this->path('folders_path'), [], 'folders_page_size');
         }
 
-        return $this->extractItems($response)
+        return $response
             ->map(fn (array $folder) => $this->normalizeFolder($folder))
             ->filter(fn (array $folder) => filled($folder['panda_folder_id']) && filled($folder['name']))
             ->values();
@@ -53,7 +53,14 @@ class PandaVideoClient
             return null;
         }
 
-        return $this->folders($parentFolderId)
+        $folder = $this->folders($parentFolderId)
+            ->first(fn (array $folder) => $this->normalizeName((string) $folder['name']) === $normalizedName);
+
+        if ($folder || blank($parentFolderId)) {
+            return $folder;
+        }
+
+        return $this->folders()
             ->first(fn (array $folder) => $this->normalizeName((string) $folder['name']) === $normalizedName);
     }
 
@@ -127,7 +134,7 @@ class PandaVideoClient
 
         return $this->videos($folderId)
             ->first(fn (array $video) => $this->normalizedTitleMatches((string) $video['title'], $normalizedTitle)
-                && $this->isProcessablePandaVideo($video));
+                && $this->isReusablePandaVideo($video));
     }
 
     public function processableVideo(string $videoId, ?string $folderId = null): ?array
@@ -139,6 +146,17 @@ class PandaVideoClient
         }
 
         return $video && $this->isProcessablePandaVideo($video) ? $video : null;
+    }
+
+    public function reusableVideo(string $videoId, ?string $folderId = null): ?array
+    {
+        try {
+            $video = $this->video($videoId, $folderId);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $video && $this->isReusablePandaVideo($video) ? $video : null;
     }
 
     public function uploadVideo(string $path, string $title, ?string $folderId = null): array
@@ -327,7 +345,7 @@ class PandaVideoClient
             try {
                 $lastVideo = $this->video($videoId, $folderId);
 
-                if ($lastVideo && $this->isProcessablePandaVideo($lastVideo)) {
+                if ($lastVideo && $this->isReusablePandaVideo($lastVideo)) {
                     return $lastVideo;
                 }
             } catch (\Throwable) {
@@ -337,6 +355,10 @@ class PandaVideoClient
             if ($attempt < $attempts && $delaySeconds > 0) {
                 sleep($delaySeconds);
             }
+        }
+
+        if ($lastVideo && $this->isReusablePandaVideo($lastVideo)) {
+            return $lastVideo;
         }
 
         if ($lastVideo) {
@@ -425,6 +447,14 @@ class PandaVideoClient
 
         return filled($video['panda_video_id'])
             && ! in_array($status, ['DRAFT', 'DELETING', 'DELETED', 'ERROR', 'FAILED'], true);
+    }
+
+    protected function isReusablePandaVideo(array $video): bool
+    {
+        $status = strtoupper((string) ($video['panda_status'] ?? ''));
+
+        return filled($video['panda_video_id'])
+            && ! in_array($status, ['DELETING', 'DELETED', 'ERROR', 'FAILED'], true);
     }
 
     public function video(string $videoId, ?string $folderId = null): ?array
@@ -529,6 +559,31 @@ class PandaVideoClient
             'Confira se a chave é uma API Key válida e se a API está liberada na conta. Última resposta: '.
             trim((string) $lastBody).' (status '.$lastStatus.')'
         );
+    }
+
+    protected function getAllWithAuthFallback(string $path, array $query = [], string $pageSizeConfig = 'page_size'): Collection
+    {
+        $response = $this->getWithAuthFallback($path, $query);
+        $items = $this->extractItems($response);
+        $nextQuery = $this->nextPageQuery($response, $query, $items->count(), $pageSizeConfig);
+        $visitedQueries = [];
+
+        while ($nextQuery !== null) {
+            $fingerprint = http_build_query($nextQuery);
+
+            if (isset($visitedQueries[$fingerprint])) {
+                break;
+            }
+
+            $visitedQueries[$fingerprint] = true;
+
+            $response = $this->getWithAuthFallback($path, $nextQuery);
+            $pageItems = $this->extractItems($response);
+            $items = $items->merge($pageItems);
+            $nextQuery = $this->nextPageQuery($response, $nextQuery, $pageItems->count(), $pageSizeConfig);
+        }
+
+        return $items->values();
     }
 
     protected function postWithAuthFallback(string $path, array $payload = []): array
@@ -756,7 +811,7 @@ class PandaVideoClient
 
     protected function extractItems(array $response): Collection
     {
-        foreach (['data', 'items', 'videos', 'results'] as $key) {
+        foreach (['data', 'items', 'videos', 'folders', 'results'] as $key) {
             $items = Arr::get($response, $key);
 
             if (is_array($items)) {
@@ -765,6 +820,71 @@ class PandaVideoClient
         }
 
         return collect(array_is_list($response) ? $response : []);
+    }
+
+    protected function nextPageQuery(array $response, array $query, int $pageItemCount, string $pageSizeConfig): ?array
+    {
+        $nextCursor = Arr::get($response, 'next_cursor')
+            ?? Arr::get($response, 'pagination.next_cursor')
+            ?? Arr::get($response, 'meta.next_cursor');
+
+        if (filled($nextCursor)) {
+            return array_merge($query, ['cursor' => $nextCursor]);
+        }
+
+        $nextPage = Arr::get($response, 'next_page')
+            ?? Arr::get($response, 'pagination.next_page')
+            ?? Arr::get($response, 'meta.next_page')
+            ?? Arr::get($response, 'links.next');
+
+        if (filled($nextPage) && is_numeric($nextPage)) {
+            return array_merge($query, ['page' => (int) $nextPage]);
+        }
+
+        $currentPage = Arr::get($response, 'current_page')
+            ?? Arr::get($response, 'page')
+            ?? Arr::get($response, 'pagination.current_page')
+            ?? Arr::get($response, 'meta.current_page');
+        $lastPage = Arr::get($response, 'last_page')
+            ?? Arr::get($response, 'total_pages')
+            ?? Arr::get($response, 'pagination.last_page')
+            ?? Arr::get($response, 'pagination.total_pages')
+            ?? Arr::get($response, 'meta.last_page')
+            ?? Arr::get($response, 'meta.total_pages');
+
+        if (is_numeric($currentPage) && is_numeric($lastPage) && (int) $currentPage < (int) $lastPage) {
+            return array_merge($query, ['page' => (int) $currentPage + 1]);
+        }
+
+        $total = Arr::get($response, 'total')
+            ?? Arr::get($response, 'pagination.total')
+            ?? Arr::get($response, 'meta.total');
+        $perPage = Arr::get($response, 'per_page')
+            ?? Arr::get($response, 'page_size')
+            ?? Arr::get($response, 'limit')
+            ?? Arr::get($response, 'pagination.per_page')
+            ?? Arr::get($response, 'pagination.page_size')
+            ?? Arr::get($response, 'pagination.limit')
+            ?? Arr::get($response, 'meta.per_page')
+            ?? Arr::get($response, 'meta.page_size')
+            ?? Arr::get($response, 'meta.limit')
+            ?? config("services.panda.{$pageSizeConfig}");
+
+        if (! is_numeric($total) || $pageItemCount <= 0) {
+            return null;
+        }
+
+        $page = is_numeric($currentPage) ? (int) $currentPage : (int) ($query['page'] ?? 1);
+        $pageSize = is_numeric($perPage) ? max(1, (int) $perPage) : $pageItemCount;
+
+        if ($page * $pageSize >= (int) $total) {
+            return null;
+        }
+
+        return array_merge($query, [
+            'page' => $page + 1,
+            'per_page' => $pageSize,
+        ]);
     }
 
     protected function extractSingleItem(array $response): array
@@ -822,13 +942,18 @@ class PandaVideoClient
     protected function normalizeFolder(array $folder): array
     {
         $pandaId = Arr::get($folder, 'id')
+            ?? Arr::get($folder, '_id')
             ?? Arr::get($folder, 'folder_id')
+            ?? Arr::get($folder, 'video_folder_id')
             ?? Arr::get($folder, 'panda_folder_id');
 
         return [
             'panda_folder_id' => filled($pandaId) ? (string) $pandaId : '',
-            'name' => (string) (Arr::get($folder, 'name') ?? Arr::get($folder, 'title') ?? ''),
-            'parent_id' => Arr::get($folder, 'parent_id') ?? Arr::get($folder, 'folder_id_parent') ?? Arr::get($folder, 'parent.id'),
+            'name' => (string) (Arr::get($folder, 'name') ?? Arr::get($folder, 'title') ?? Arr::get($folder, 'folder_name') ?? ''),
+            'parent_id' => Arr::get($folder, 'parent_id')
+                ?? Arr::get($folder, 'parent_folder_id')
+                ?? Arr::get($folder, 'folder_id_parent')
+                ?? Arr::get($folder, 'parent.id'),
             'status' => Arr::get($folder, 'status'),
             'payload' => $folder,
         ];

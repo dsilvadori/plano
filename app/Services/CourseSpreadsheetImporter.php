@@ -7,6 +7,7 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
+use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -177,7 +178,7 @@ class CourseSpreadsheetImporter
                 'slug' => $track->exists ? $track->slug : $slug,
                 'thumbnail_url' => $trackData['thumbnail_url'] ?? $track->thumbnail_url,
                 'sort_order' => $sortOrder,
-                'status' => $trackData['status'] ?? 'draft',
+                'status' => $trackData['status'] ?? 'published',
                 'panda_folder_id' => $trackData['panda_folder_id'] ?? $track->panda_folder_id,
                 'google_doc_url' => $trackData['google_doc_url'] ?? $track->google_doc_url,
                 'metadata' => [
@@ -197,6 +198,8 @@ class CourseSpreadsheetImporter
 
     protected function importLessons(Course $course, CourseModule $module, CourseModuleTrack $track, array $lessons): void
     {
+        $usedLessonIds = [];
+
         foreach (array_values($lessons) as $index => $lessonData) {
             $title = trim((string) ($lessonData['name'] ?? ''));
 
@@ -209,7 +212,7 @@ class CourseSpreadsheetImporter
             $minutes = max(0, (int) ($lessonData['minutes'] ?? 0));
 
             $pandaVideoId = filled($lessonData['panda_video_id'] ?? null) ? (string) $lessonData['panda_video_id'] : null;
-            $lesson = $this->resolveReusableLesson($module, $title, $slug, $lessonData, $track)
+            $lesson = $this->resolveReusableLesson($module, $title, $slug, $lessonData, $track, $usedLessonIds)
                 ?? ($pandaVideoId
                     ? Lesson::query()->firstOrNew(['panda_video_id' => $pandaVideoId])
                     : new Lesson([
@@ -228,6 +231,8 @@ class CourseSpreadsheetImporter
                 || filled($lesson->panda_video_id)
                 || filled($lesson->panda_embed_url)
                 || filled($lesson->panda_player_url);
+            $requestedStatus = filled($lessonData['status'] ?? null) ? (string) $lessonData['status'] : null;
+            $hasExplicitStatus = (bool) ($lessonData['status_explicit'] ?? false);
 
             $lesson->fill([
                 'course_id' => $isStandaloneLibraryLesson ? null : ($lessonExists ? $lesson->course_id : $course->id),
@@ -240,7 +245,9 @@ class CourseSpreadsheetImporter
                 'thumbnail_url' => $lessonData['thumbnail_url'] ?? $lesson->thumbnail_url,
                 'duration_seconds' => $minutes * 60,
                 'sort_order' => $sortOrder,
-                'status' => $this->normalizeLessonStatus((string) ($lessonData['status'] ?? 'draft')),
+                'status' => $hasReadyMedia && ! $hasExplicitStatus
+                    ? 'published'
+                    : ($requestedStatus ? $this->normalizeLessonStatus($requestedStatus) : ($lesson->status ?: 'draft')),
                 'panda_video_id' => $pandaVideoId ?: $lesson->panda_video_id,
                 'panda_embed_url' => $lessonData['panda_embed_url'] ?? $lesson->panda_embed_url,
                 'panda_player_url' => $lessonData['panda_player_url'] ?? $lesson->panda_player_url,
@@ -250,7 +257,7 @@ class CourseSpreadsheetImporter
                     'source' => 'spreadsheet',
                     'matched_existing_lesson' => $lessonExists,
                     'matched_standalone_library_lesson' => $isStandaloneLibraryLesson,
-                    'matched_by_name' => $lessonExists && $this->normalizeName($lesson->title) === $this->normalizeName($title),
+                    'matched_by_name' => $lessonExists && $this->lessonNamesMatch($lesson->title, $title),
                     'imported_at' => now()->toIso8601String(),
                 ],
             ]);
@@ -261,6 +268,17 @@ class CourseSpreadsheetImporter
             $lesson->tracks()->syncWithoutDetaching([
                 $track->id => ['sort_order' => $sortOrder],
             ]);
+            $conflictingLessonIds = $track->lessons()
+                ->wherePivot('sort_order', $sortOrder)
+                ->whereKeyNot($lesson->id)
+                ->pluck('lessons.id')
+                ->all();
+
+            if ($conflictingLessonIds !== []) {
+                $track->lessons()->detach($conflictingLessonIds);
+            }
+
+            $usedLessonIds[] = $lesson->id;
         }
     }
 
@@ -326,21 +344,14 @@ class CourseSpreadsheetImporter
             ->first(fn (CourseModuleTrack $track) => $this->normalizeName($track->name) === $normalizedName);
     }
 
-    protected function resolveReusableLesson(CourseModule $module, string $title, string $slug, array $lessonData, ?CourseModuleTrack $track = null): ?Lesson
+    protected function resolveReusableLesson(CourseModule $module, string $title, string $slug, array $lessonData, ?CourseModuleTrack $track = null, array $excludeLessonIds = []): ?Lesson
     {
         $pandaVideoId = filled($lessonData['panda_video_id'] ?? null) ? (string) $lessonData['panda_video_id'] : null;
 
         if ($pandaVideoId) {
-            $lesson = Lesson::query()->where('panda_video_id', $pandaVideoId)->first();
-
-            if ($lesson) {
-                return $lesson;
-            }
-        }
-
-        if ($track) {
-            $lesson = $track->lessons()
-                ->where('lessons.slug', $slug)
+            $lesson = Lesson::query()
+                ->where('panda_video_id', $pandaVideoId)
+                ->when($excludeLessonIds !== [], fn ($query) => $query->whereNotIn('id', $excludeLessonIds))
                 ->first();
 
             if ($lesson) {
@@ -348,20 +359,45 @@ class CourseSpreadsheetImporter
             }
         }
 
+        $fallbackLesson = null;
+
+        if ($track) {
+            $lesson = $track->lessons()
+                ->where('lessons.slug', $slug)
+                ->first();
+
+            if ($lesson && $this->lessonHasReadyMedia($lesson)) {
+                return $lesson;
+            }
+
+            $fallbackLesson = $lesson;
+        }
+
         $lesson = $module->onlineLessons()
             ->where('lessons.slug', $slug)
             ->first();
 
-        if ($lesson) {
+        if ($lesson && $this->lessonHasReadyMedia($lesson)) {
             return $lesson;
         }
 
-        $normalizedTitle = $this->normalizeName($title);
+        $fallbackLesson ??= $lesson;
 
         return Lesson::query()
+            ->when($excludeLessonIds !== [], fn ($query) => $query->whereNotIn('id', $excludeLessonIds))
             ->orderBy('id')
             ->get()
-            ->first(fn (Lesson $lesson) => $this->normalizeName($lesson->title) === $normalizedTitle);
+            ->map(fn (Lesson $lesson): array => [
+                'lesson' => $lesson,
+                'score' => $this->lessonMatchScore($lesson, $title, $module, $track),
+                'media_priority' => $this->lessonMediaPriority($lesson),
+            ])
+            ->filter(fn (array $candidate): bool => $candidate['score'] >= 72)
+            ->sort(function (array $left, array $right): int {
+                return [$right['media_priority'], $right['score'], -$right['lesson']->id]
+                    <=> [$left['media_priority'], $left['score'], -$left['lesson']->id];
+            })
+            ->first()['lesson'] ?? $fallbackLesson;
     }
 
     protected function lessonsFromModuleData(array $moduleData): array
@@ -384,5 +420,174 @@ class CourseSpreadsheetImporter
             ->replaceMatches('/[^a-z0-9]+/', ' ')
             ->squish()
             ->value();
+    }
+
+    protected function normalizeLessonName(string $value): string
+    {
+        return LessonTitleNormalizer::matchKey($value);
+    }
+
+    protected function lessonNamesMatch(string $left, string $right): bool
+    {
+        return LessonTitleNormalizer::matches($left, $right);
+    }
+
+    protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null): float
+    {
+        $score = LessonTitleNormalizer::matchScore($lesson->title, $title);
+
+        if ($score <= 0) {
+            return 0;
+        }
+
+        $lessonKey = LessonTitleNormalizer::matchKey($lesson->title);
+        $titleKey = LessonTitleNormalizer::matchKey($title);
+        $lessonNumber = LessonTitleNormalizer::leadingNumber($lesson->title);
+        $titleNumber = LessonTitleNormalizer::leadingNumber($title);
+
+        if ($lessonNumber && $titleNumber) {
+            $score += $lessonNumber === $titleNumber ? 8 : 0;
+        }
+
+        $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+        $path = LessonTitleNormalizer::matchKey((string) ($metadata['drive_source_folder_path'] ?? ''));
+        $trackKey = $track ? LessonTitleNormalizer::matchKey($track->name) : '';
+        $moduleKey = LessonTitleNormalizer::matchKey($module->name);
+        $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
+        $lessonProduct = $this->contentProduct($path) ?? $this->contentProduct($lessonKey);
+        $trackProduct = $this->contentProduct($trackKey);
+
+        if ($lessonProduct && $trackProduct && $lessonProduct !== $trackProduct) {
+            return 0;
+        }
+
+        if ($this->romanSuffix($lessonKey) !== $this->romanSuffix($titleKey)) {
+            return 0;
+        }
+
+        if ($this->isGenericLessonTitle($title) && $lessonKey !== $titleKey && ! $pathMatchesTrack) {
+            return 0;
+        }
+
+        if ($pathMatchesTrack) {
+            $score += 12;
+        }
+
+        if ($moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey)) {
+            $score += 4;
+        }
+
+        if ($this->isGenericLessonTitle($title) && $path !== '' && $trackKey !== '' && ! $this->pathMatchesContext($path, $trackKey)) {
+            $score -= 35;
+        }
+
+        return $score;
+    }
+
+    protected function lessonHasReadyMedia(Lesson $lesson): bool
+    {
+        return $this->lessonMediaPriority($lesson) >= 100;
+    }
+
+    protected function lessonMediaPriority(Lesson $lesson): int
+    {
+        if (filled($lesson->panda_video_id) || filled($lesson->panda_embed_url) || filled($lesson->panda_player_url)) {
+            return 120;
+        }
+
+        if ($lesson->source_status === 'media_ready') {
+            return 100;
+        }
+
+        if (in_array($lesson->source_status, ['uploading', 'upload_queued'], true)) {
+            return 20;
+        }
+
+        return 0;
+    }
+
+    protected function isGenericLessonTitle(string $title): bool
+    {
+        return count(array_filter(explode(' ', LessonTitleNormalizer::matchKey($title)))) <= 2;
+    }
+
+    protected function romanSuffix(string $key): ?string
+    {
+        $tokens = array_values(array_filter(explode(' ', $key)));
+        $last = end($tokens);
+
+        return in_array($last, ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x'], true)
+            ? $last
+            : null;
+    }
+
+    protected function pathMatchesContext(string $path, string $context): bool
+    {
+        if ($path === '' || $context === '') {
+            return false;
+        }
+
+        $pathVariants = $this->contextVariants($path);
+        $contextVariants = $this->contextVariants($context);
+
+        foreach ($pathVariants as $pathVariant) {
+            foreach ($contextVariants as $contextVariant) {
+                if ($pathVariant !== '' && $contextVariant !== '' && (str_contains($pathVariant, $contextVariant) || str_contains($contextVariant, $pathVariant))) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    protected function contextVariants(string $value): array
+    {
+        $variants = [$value];
+
+        $variants[] = Str::of($value)
+            ->replace('ppt', 'power point')
+            ->replace('powerpoint', 'power point')
+            ->replace('windowns', 'windows')
+            ->squish()
+            ->value();
+
+        $variants[] = Str::of($value)
+            ->replace('power point', 'ppt')
+            ->replace('powerpoint', 'ppt')
+            ->replace('windowns', 'windows')
+            ->squish()
+            ->value();
+
+        return array_values(array_unique($variants));
+    }
+
+    protected function contentProduct(string $value): ?string
+    {
+        if ($value === '') {
+            return null;
+        }
+
+        if (str_contains($value, 'excel')) {
+            return 'excel';
+        }
+
+        if (str_contains($value, 'word')) {
+            return 'word';
+        }
+
+        if (str_contains($value, 'power point') || str_contains($value, 'powerpoint') || str_contains($value, 'powerpont') || str_contains($value, 'ppt')) {
+            return 'powerpoint';
+        }
+
+        if (str_contains($value, 'windows') || str_contains($value, 'windowns')) {
+            return 'windows';
+        }
+
+        if (str_contains($value, 'internet') || str_contains($value, 'firefox') || str_contains($value, 'edge')) {
+            return 'internet';
+        }
+
+        return null;
     }
 }

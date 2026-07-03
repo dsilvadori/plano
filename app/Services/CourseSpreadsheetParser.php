@@ -115,12 +115,14 @@ class CourseSpreadsheetParser
                             ->values()
                             ->map(function (array $row, int $index) {
                                 $minutes = (int) round((float) str_replace(',', '.', $row['lesson_minutes'] ?? $row['minutos'] ?? 0));
+                                $status = $row['lesson_status'] ?? $row['status_aula'] ?? null;
 
                                 return [
                                     'name' => $this->normalizeLessonName($row['lesson_title'] ?? $row['aula']),
                                     'minutes' => max(0, $minutes),
                                     'type' => $row['lesson_type'] ?? $row['tipo_aula'] ?? 'video',
-                                    'status' => $row['lesson_status'] ?? $row['status_aula'] ?? 'draft',
+                                    'status' => filled($status) ? $status : 'draft',
+                                    'status_explicit' => filled($status),
                                     'thumbnail_url' => $row['thumbnail_url'] ?? null,
                                     'google_doc_url' => $row['lesson_google_doc_url'] ?? null,
                                     'panda_video_id' => $row['panda_video_id'] ?? null,

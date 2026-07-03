@@ -16,6 +16,80 @@ class LessonTitleNormalizer
         return str_pad((string) $position, 2, '0', STR_PAD_LEFT) . ' - ' . $title;
     }
 
+    public static function normalizePreservingNumber(string $title, int $fallbackPosition): string
+    {
+        return self::normalize($title, self::leadingNumber($title) ?? $fallbackPosition);
+    }
+
+    public static function matchKey(string $title): string
+    {
+        return Str::of(self::cleanTitle($title))
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/\baula\b/u', ' ')
+            ->replaceMatches('/\bparte\b/u', ' ')
+            ->replaceMatches('/^\s*0*\d{1,3}\b/u', ' ')
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
+            ->value();
+    }
+
+    public static function matches(string $left, string $right, int $minimumPercent = 72): bool
+    {
+        return self::matchScore($left, $right) >= $minimumPercent;
+    }
+
+    public static function matchScore(string $left, string $right): float
+    {
+        $leftKey = self::matchKey($left);
+        $rightKey = self::matchKey($right);
+
+        if ($leftKey === '' || $rightKey === '') {
+            return 0.0;
+        }
+
+        if ($leftKey === $rightKey) {
+            return 100.0;
+        }
+
+        similar_text($leftKey, $rightKey, $percent);
+
+        return max(self::tokenOverlapPercent($leftKey, $rightKey), $percent);
+    }
+
+    public static function leadingNumber(string $title): ?int
+    {
+        return preg_match('/^\s*(?:aula\s*)?0*(\d{1,3})\b/iu', $title, $matches) === 1
+            ? max(1, (int) $matches[1])
+            : null;
+    }
+
+    protected static function tokenOverlapPercent(string $leftKey, string $rightKey): float
+    {
+        $leftTokens = self::comparisonTokens($leftKey);
+        $rightTokens = self::comparisonTokens($rightKey);
+
+        if ($leftTokens === [] || $rightTokens === []) {
+            return 0.0;
+        }
+
+        $intersection = array_intersect($leftTokens, $rightTokens);
+        $union = array_unique([...$leftTokens, ...$rightTokens]);
+
+        return count($union) > 0 ? (count($intersection) / count($union)) * 100 : 0.0;
+    }
+
+    protected static function comparisonTokens(string $key): array
+    {
+        $ignored = ['a', 'as', 'ao', 'aos', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na', 'nas', 'no', 'nos', 'o', 'os', 'para', 'por', 'um', 'uma'];
+
+        return collect(explode(' ', $key))
+            ->filter(fn (string $token): bool => $token !== '' && ! in_array($token, $ignored, true))
+            ->unique()
+            ->values()
+            ->all();
+    }
+
     protected static function cleanTitle(string $title): string
     {
         return Str::of($title)

@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\Lesson;
 use App\Models\StudyTrack;
 use App\Models\User;
 use App\Services\StudyPlanGenerator;
@@ -55,6 +56,54 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertTrue($plan->items()->where('day_of_week', 'saturday')->exists());
         $saturdayItems = $plan->items()->where('day_of_week', 'saturday')->orderBy('sort_order')->get()->values();
         $this->assertTrue(in_array($saturdayItems->last()->type, ['questions', 'review'], true));
+    }
+
+    public function test_generator_publishes_ready_lessons_and_attaches_them_to_plan_items(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática',
+            'type' => 'basic',
+            'workload_minutes' => 15,
+            'sort_order' => 1,
+            'lessons' => [
+                ['name' => 'Windows 10 - Recursos e configurações', 'minutes' => 15],
+            ],
+        ]);
+        $lesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Windows 10 - Recursos e configurações',
+            'slug' => 'windows-10-recursos-configuracoes',
+            'description' => 'Aula com mídia pronta.',
+            'type' => 'video',
+            'duration_seconds' => 900,
+            'sort_order' => 1,
+            'status' => 'draft',
+            'source_status' => 'media_ready',
+            'panda_video_id' => 'panda-windows-ready',
+        ]);
+        $module->onlineLessons()->attach($lesson->id, ['sort_order' => 1]);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            now()->next('monday')->toDateString(),
+            now()->next('monday')->toDateString(),
+            ['monday'],
+            ['monday' => 60],
+            'balanced',
+        );
+
+        $item = $plan->items()->where('course_module_id', $module->id)->firstOrFail();
+
+        $this->assertSame('published', $lesson->fresh()->status);
+        $this->assertTrue($item->lessons()->whereKey($lesson->id)->exists());
     }
 
     public function test_generator_uses_calendar_weeks_from_monday_to_sunday(): void

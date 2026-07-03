@@ -49,6 +49,7 @@ class StudyPlanGenerator
                 $availableMinutesByDay,
                 $intensity,
             );
+            $this->syncPublishedLessonsForPlan($plan);
 
             return $plan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
         });
@@ -102,6 +103,7 @@ class StudyPlanGenerator
                 $availableMinutesByDay,
                 $intensity,
             );
+            $this->syncPublishedLessonsForPlan($studyPlan);
 
             return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
         });
@@ -166,6 +168,7 @@ class StudyPlanGenerator
                 $completedModules,
                 ((int) $studyPlan->items()->max('sort_order')) + 1,
             );
+            $this->syncPublishedLessonsForPlan($studyPlan);
         }
 
         return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
@@ -248,6 +251,7 @@ class StudyPlanGenerator
                     $completedModules,
                     ((int) $studyPlan->items()->max('sort_order')) + 1,
                 );
+                $this->syncPublishedLessonsForPlan($studyPlan);
             }
 
             $studyPlan->forceFill([
@@ -255,6 +259,44 @@ class StudyPlanGenerator
             ])->save();
 
             return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
+        });
+    }
+
+    public function syncPublishedLessonsForPlan(StudyPlan $studyPlan): StudyPlan
+    {
+        return DB::transaction(function () use ($studyPlan): StudyPlan {
+            $studyPlan->loadMissing(['course', 'items.courseModule']);
+
+            if (! $studyPlan->course) {
+                return $studyPlan;
+            }
+
+            $this->publishReadyLessonsForCourse($studyPlan->course);
+
+            $lessonIndexes = [];
+            $studyPlan->items()
+                ->with('courseModule')
+                ->orderBy('scheduled_date')
+                ->orderBy('sort_order')
+                ->orderBy('id')
+                ->get()
+                ->each(function (StudyPlanItem $item) use (&$lessonIndexes): void {
+                    $module = $item->courseModule;
+
+                    if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
+                        return;
+                    }
+
+                    $lessonNames = $this->lessonNamesForPlanItem($module, $item, $lessonIndexes);
+
+                    if ($lessonNames === []) {
+                        return;
+                    }
+
+                    $this->attachOnlineLessonsToItem($item, $module, $lessonNames);
+                });
+
+            return $studyPlan->fresh(['items.courseModule', 'items.lessons', 'course', 'studyTrack', 'user']);
         });
     }
 
@@ -1018,6 +1060,85 @@ class StudyPlanGenerator
             ->all();
 
         $item->lessons()->syncWithoutDetaching($syncPayload);
+    }
+
+    protected function lessonNamesForPlanItem(CourseModule $module, StudyPlanItem $item, array &$lessonIndexes): array
+    {
+        $moduleId = $module->id;
+        $lessons = $module->planning_lessons;
+        $index = $lessonIndexes[$moduleId] ?? 0;
+        $minutes = 0;
+        $lessonNames = [];
+
+        while ($index < count($lessons)) {
+            $lessonMinutes = (int) ($lessons[$index]['minutes'] ?? 0);
+
+            if ($lessonMinutes <= 0) {
+                $index++;
+
+                continue;
+            }
+
+            if (($minutes + $lessonMinutes) > (int) $item->estimated_minutes) {
+                break;
+            }
+
+            $lessonNames[] = (string) ($lessons[$index]['name'] ?? '');
+            $minutes += $lessonMinutes;
+            $index++;
+        }
+
+        $lessonIndexes[$moduleId] = $index;
+
+        return array_values(array_filter($lessonNames));
+    }
+
+    protected function publishReadyLessonsForCourse(Course $course): void
+    {
+        $trackLessonIds = DB::table('course_module_track_course')
+            ->join('course_module_track_lessons', 'course_module_track_lessons.course_module_track_id', '=', 'course_module_track_course.course_module_track_id')
+            ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
+            ->where('course_module_track_course.course_id', $course->id)
+            ->where($this->readyLessonFilter())
+            ->distinct()
+            ->pluck('lessons.id');
+
+        $moduleLessonIds = DB::table('course_module_course')
+            ->join('course_module_lessons', 'course_module_lessons.course_module_id', '=', 'course_module_course.course_module_id')
+            ->join('lessons', 'lessons.id', '=', 'course_module_lessons.lesson_id')
+            ->where('course_module_course.course_id', $course->id)
+            ->where($this->readyLessonFilter())
+            ->distinct()
+            ->pluck('lessons.id');
+
+        $lessonIds = $trackLessonIds
+            ->merge($moduleLessonIds)
+            ->unique()
+            ->values();
+
+        if ($lessonIds->isEmpty()) {
+            return;
+        }
+
+        Lesson::query()
+            ->whereIn('id', $lessonIds)
+            ->where('status', '!=', 'published')
+            ->update([
+                'status' => 'published',
+                'updated_at' => now(),
+            ]);
+    }
+
+    protected function readyLessonFilter(): callable
+    {
+        return function ($query): void {
+            $query->where(function ($query): void {
+                $query->whereNotNull('lessons.panda_video_id')
+                    ->orWhereNotNull('lessons.panda_embed_url')
+                    ->orWhereNotNull('lessons.panda_player_url')
+                    ->orWhere('lessons.source_status', 'media_ready');
+            });
+        };
     }
 
     protected function normalizeLessonName(string $value): string
