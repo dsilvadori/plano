@@ -24,7 +24,7 @@ return new class extends Migration
             $table->json('metadata')->nullable();
             $table->timestamps();
 
-            $table->unique(['course_module_id', 'slug']);
+            $table->unique(['course_module_id', 'slug'], 'cmt_module_slug_unique');
         });
 
         Schema::table('lessons', function (Blueprint $table) {
@@ -45,8 +45,8 @@ return new class extends Migration
             $table->string('status_override')->nullable()->index();
             $table->timestamps();
 
-            $table->unique(['course_module_track_id', 'lesson_id']);
-            $table->index(['lesson_id', 'course_module_track_id']);
+            $table->unique(['course_module_track_id', 'lesson_id'], 'cmtl_track_lesson_unique');
+            $table->index(['lesson_id', 'course_module_track_id'], 'cmtl_lesson_track_index');
         });
 
         DB::table('course_modules')
