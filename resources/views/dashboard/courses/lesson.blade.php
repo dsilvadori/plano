@@ -458,24 +458,6 @@
                     tutorUrl: @js($pandaTutorUrl),
                     tutorCandidateUrl: @js($pandaTutorCandidateUrl),
                     tutorConfigUrl: @js($pandaTutorConfigUrl),
-                    init() {
-                        this.detectTutorAvailability();
-                    },
-                    detectTutorAvailability() {
-                        if (this.tutorTabVisible || ! this.tutorConfigUrl || ! this.tutorCandidateUrl) {
-                            return;
-                        }
-
-                        fetch(this.tutorConfigUrl, { method: 'GET' })
-                            .then((response) => response.ok ? response.json() : null)
-                            .then((config) => {
-                                if (config?.assistant_id) {
-                                    this.tutorUrl = this.tutorCandidateUrl;
-                                    this.tutorTabVisible = true;
-                                }
-                            })
-                            .catch(() => {});
-                    },
                     openAiTab(tab) {
                         this.activeTab = tab;
 
@@ -538,9 +520,6 @@
                             <div class="lesson-ai-prose">
                                 @foreach ($summaryBlocks as $block)
                                     @if ($block['type'] === 'heading')
-                                        @php
-                                            $summaryTime = $timelineForSummaryText($block['text']);
-                                        @endphp
                                         @if ($block['level'] <= 1)
                                             <h2>
                                                 @foreach ($inlineSegments($block['text']) as $segment)
@@ -550,9 +529,6 @@
                                                         {{ $segment['text'] }}
                                                     @endif
                                                 @endforeach
-                                                @if ($summaryTime)
-                                                    <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
-                                                @endif
                                             </h2>
                                         @elseif ($block['level'] === 2)
                                             <h3>
@@ -563,9 +539,6 @@
                                                         {{ $segment['text'] }}
                                                     @endif
                                                 @endforeach
-                                                @if ($summaryTime)
-                                                    <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
-                                                @endif
                                             </h3>
                                         @else
                                             <h4>
@@ -576,17 +549,11 @@
                                                         {{ $segment['text'] }}
                                                     @endif
                                                 @endforeach
-                                                @if ($summaryTime)
-                                                    <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
-                                                @endif
                                             </h4>
                                         @endif
                                     @elseif ($block['type'] === 'list')
                                         <ul>
                                             @foreach ($block['items'] as $item)
-                                                @php
-                                                    $summaryTime = $timelineForSummaryText($item);
-                                                @endphp
                                                 <li>
                                                     @foreach ($inlineSegments($item) as $segment)
                                                         @if ($segment['bold'])
@@ -595,16 +562,10 @@
                                                             {{ $segment['text'] }}
                                                         @endif
                                                     @endforeach
-                                                    @if ($summaryTime)
-                                                        <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
-                                                    @endif
                                                 </li>
                                             @endforeach
                                         </ul>
                                     @else
-                                        @php
-                                            $summaryTime = $timelineForSummaryText($block['text']);
-                                        @endphp
                                         <p>
                                             @foreach ($inlineSegments($block['text']) as $segment)
                                                 @if ($segment['bold'])
@@ -613,9 +574,6 @@
                                                     {{ $segment['text'] }}
                                                 @endif
                                             @endforeach
-                                            @if ($summaryTime)
-                                                <button type="button" class="lesson-summary-inline-time" @click="seekLessonVideo({{ $summaryTime['seconds'] }})">{{ $summaryTime['time'] }}</button>
-                                            @endif
                                         </p>
                                     @endif
                                 @endforeach

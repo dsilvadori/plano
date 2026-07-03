@@ -528,9 +528,7 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('<strong>Substantivo</strong>', false)
             ->assertDontSee('**Substantivo**')
             ->assertDontSee('Momentos da aula')
-            ->assertSee('lesson-summary-inline-time', false)
-            ->assertSee('seekLessonVideo(168.075)', false)
-            ->assertSee('00:02:48.075')
+            ->assertDontSee('lesson-summary-inline-time', false)
             ->assertSee('tutorTabVisible: false', false)
             ->assertDontSee('Sincronizar IA da aula');
     }
@@ -791,6 +789,21 @@ class CourseCatalogFoundationTest extends TestCase
                 ->once()
                 ->with('vz-abc12345-abc', 'external-123')
                 ->andReturn(['assistant_id' => 'assistant-123']);
+            $mock->shouldReceive('tutorAssistant')
+                ->once()
+                ->with('assistant-123')
+                ->andReturn([
+                    'id' => 'assistant-123',
+                    'status' => 'ready',
+                    'videos' => [
+                        ['id' => 'video-123', 'video_external_id' => 'external-123'],
+                    ],
+                ]);
+            $mock->shouldReceive('updateTutorChatVisibility')
+                ->once()
+                ->with('assistant-123', 'video-123', true)
+                ->andReturn(['ok' => true]);
+            $mock->shouldNotReceive('updateTutorStatus');
         });
 
         $student->courses()->attach($course, ['source' => 'manual']);

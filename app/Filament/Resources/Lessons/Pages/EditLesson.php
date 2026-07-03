@@ -29,15 +29,7 @@ class EditLesson extends EditRecord
                     try {
                         $result = $activator->generate($this->record);
 
-                        Notification::make()
-                            ->title($result['created_artifacts'] > 0 ? 'IA do Panda sincronizada' : 'IA do Panda solicitada em PT-BR')
-                            ->body($result['created_artifacts'] > 0
-                                ? "{$result['created_artifacts']} recurso(s) de IA foram salvos para esta aula."
-                                : ($result['requested']
-                                    ? 'Os recursos antigos foram removidos, o Panda recebeu uma nova solicitação em português do Brasil e a sincronização foi agendada.'
-                                    : 'A geração já está em andamento no Panda. A plataforma tentou buscar o resultado e vai tentar novamente em background.'))
-                            ->success()
-                            ->send();
+                        LessonResource::notifyPandaAiResult($result);
                     } catch (Throwable $exception) {
                         report($exception);
 
@@ -59,13 +51,7 @@ class EditLesson extends EditRecord
                     try {
                         $result = $activator->activate($this->record);
 
-                        Notification::make()
-                            ->title($result['available'] ? 'Tutor IA ativado' : 'Tutor IA solicitado')
-                            ->body($result['available']
-                                ? 'O Tutor IA do Panda já está disponível para esta aula.'
-                                : 'O Panda recebeu a solicitação e a plataforma vai verificar novamente em background.')
-                            ->success()
-                            ->send();
+                        LessonResource::notifyPandaTutorResult($result);
                     } catch (Throwable $exception) {
                         report($exception);
 

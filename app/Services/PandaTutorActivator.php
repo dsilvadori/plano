@@ -81,9 +81,15 @@ class PandaTutorActivator
         $config = $this->panda->playerConfig($pullzoneName, $videoExternalId) ?? [];
         $assistantId = data_get($config, 'assistant_id');
         $available = filled($assistantId);
+        $knownAssistantId = data_get($lesson->metadata, 'panda_ai.tutor_assistant_id');
 
-        if (! $available) {
-            $assistantResult = $this->syncAssistantAvailability($lesson, $pullzoneName, $videoExternalId);
+        if (filled($knownAssistantId) || filled($assistantId)) {
+            $assistantResult = $this->syncAssistantAvailability(
+                $lesson,
+                $pullzoneName,
+                $videoExternalId,
+                (string) ($knownAssistantId ?: $assistantId),
+            );
 
             if ($assistantResult['known']) {
                 return $assistantResult;
@@ -110,10 +116,11 @@ class PandaTutorActivator
         ];
     }
 
-    protected function syncAssistantAvailability(Lesson $lesson, string $pullzoneName, string $videoExternalId): array
+    protected function syncAssistantAvailability(Lesson $lesson, string $pullzoneName, string $videoExternalId, ?string $assistantId = null): array
     {
         $metadata = $lesson->metadata ?? [];
-        $assistantId = data_get($metadata, 'panda_ai.tutor_assistant_id')
+        $assistantId = $assistantId
+            ?: data_get($metadata, 'panda_ai.tutor_assistant_id')
             ?: data_get($metadata, 'panda_ai.tutor_response.assistant.id')
             ?: data_get($metadata, 'panda_ai.tutor_response.data.assistant.id');
 
@@ -142,12 +149,15 @@ class PandaTutorActivator
         }
 
         $status = (string) data_get($assistant, 'status', '');
-        $available = $status === 'ready';
+        $assistantVideo = $this->assistantVideo($assistant, $pandaVideoId, $videoExternalId);
+        $videoReady = $this->assistantVideoIsReady($assistantVideo);
+        $available = $status === 'ready' && $videoReady;
+        $nextStatus = $available ? 'active' : ($this->assistantVideoStatus($assistantVideo) ?: $status ?: 'requested');
 
         $metadata = array_replace_recursive($metadata, [
             'panda_ai' => [
                 'tutor_available' => $available,
-                'tutor_status' => $available ? 'active' : ($status ?: 'requested'),
+                'tutor_status' => $nextStatus,
                 'tutor_assistant_id' => $assistantId,
                 'tutor_checked_at' => now()->toIso8601String(),
                 'tutor_pullzone_name' => $pullzoneName,
@@ -164,6 +174,52 @@ class PandaTutorActivator
             'assistant_id' => $assistantId,
             'known' => true,
         ];
+    }
+
+    protected function assistantVideo(array $assistant, ?string $pandaVideoId, string $videoExternalId): ?array
+    {
+        $videos = data_get($assistant, 'videos', []);
+
+        if (! is_array($videos)) {
+            return null;
+        }
+
+        foreach ($videos as $video) {
+            if (! is_array($video)) {
+                continue;
+            }
+
+            if (
+                (filled($pandaVideoId) && (string) data_get($video, 'id') === (string) $pandaVideoId)
+                || (string) data_get($video, 'video_external_id') === $videoExternalId
+            ) {
+                return $video;
+            }
+        }
+
+        return null;
+    }
+
+    protected function assistantVideoIsReady(?array $video): bool
+    {
+        if (! $video) {
+            return false;
+        }
+
+        $processStatus = strtolower((string) data_get($video, 'process_status', ''));
+
+        if (in_array($processStatus, ['processing', 'queued', 'failed'], true)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    protected function assistantVideoStatus(?array $video): ?string
+    {
+        $status = $video ? (string) data_get($video, 'process_status', '') : '';
+
+        return filled($status) ? strtolower($status) : null;
     }
 
     protected function nextSyncDelaySeconds(): int

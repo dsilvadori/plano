@@ -337,15 +337,7 @@ class LessonResource extends Resource
                         try {
                             $result = $activator->generate($record);
 
-                            Notification::make()
-                                ->title($result['created_artifacts'] > 0 ? 'IA do Panda sincronizada' : 'IA do Panda solicitada em PT-BR')
-                                ->body($result['created_artifacts'] > 0
-                                    ? "{$result['created_artifacts']} recurso(s) de IA foram salvos para esta aula."
-                                    : ($result['requested']
-                                        ? 'Os recursos antigos foram removidos, o Panda recebeu uma nova solicitação em português do Brasil e a sincronização foi agendada.'
-                                        : 'A geração já está em andamento no Panda. A plataforma tentou buscar o resultado e vai tentar novamente em background.'))
-                                ->success()
-                                ->send();
+                            self::notifyPandaAiResult($result);
                         } catch (Throwable $exception) {
                             report($exception);
 
@@ -367,13 +359,7 @@ class LessonResource extends Resource
                         try {
                             $result = $activator->activate($record);
 
-                            Notification::make()
-                                ->title($result['available'] ? 'Tutor IA ativado' : 'Tutor IA solicitado')
-                                ->body($result['available']
-                                    ? 'O Tutor IA do Panda já está disponível para esta aula.'
-                                    : 'O Panda recebeu a solicitação e a plataforma vai verificar novamente em background.')
-                                ->success()
-                                ->send();
+                            self::notifyPandaTutorResult($result);
                         } catch (Throwable $exception) {
                             report($exception);
 
@@ -395,11 +381,22 @@ class LessonResource extends Resource
                         ->modalHeading('Gerar recursos de IA em português')
                         ->modalDescription('Para aulas com geração em andamento, a plataforma tentará buscar o resultado. Para as demais, os recursos atuais serão removidos e uma nova geração em português do Brasil será solicitada.')
                         ->action(function (Collection $records, PandaAiResourceActivator $activator): void {
+                            if ($records->isEmpty()) {
+                                Notification::make()
+                                    ->title('Nenhuma aula selecionada')
+                                    ->body('Selecione uma ou mais aulas na tabela antes de usar a ação em massa.')
+                                    ->warning()
+                                    ->send();
+
+                                return;
+                            }
+
                             $requested = 0;
                             $syncedArtifacts = 0;
                             $skipped = 0;
                             $failed = 0;
                             $pending = 0;
+                            $alreadyReady = 0;
 
                             foreach ($records as $record) {
                                 if (! self::hasPandaVideo($record)) {
@@ -413,6 +410,7 @@ class LessonResource extends Resource
                                     $requested += $result['requested'] ? 1 : 0;
                                     $pending += $result['pending'] ? 1 : 0;
                                     $syncedArtifacts += (int) $result['created_artifacts'];
+                                    $alreadyReady += (! $result['requested'] && ! $result['pending'] && (int) $result['created_artifacts'] === 0) ? 1 : 0;
                                 } catch (Throwable $exception) {
                                     report($exception);
                                     $failed++;
@@ -421,7 +419,7 @@ class LessonResource extends Resource
 
                             $notification = Notification::make()
                                 ->title('Geração de IA Panda concluída')
-                                ->body("Solicitadas: {$requested}. Aguardando Panda: {$pending}. Artefatos sincronizados: {$syncedArtifacts}. Ignoradas sem vídeo Panda: {$skipped}. Falhas: {$failed}.");
+                                ->body("Solicitadas: {$requested}. Aguardando Panda: {$pending}. Já disponíveis: {$alreadyReady}. Artefatos sincronizados: {$syncedArtifacts}. Ignoradas sem vídeo Panda: {$skipped}. Falhas: {$failed}.");
 
                             ($failed > 0 ? $notification->warning() : $notification->success())->send();
                         })
@@ -433,6 +431,16 @@ class LessonResource extends Resource
                         ->modalHeading('Ativar Tutor IA do Panda')
                         ->modalDescription('Para aulas selecionadas, a plataforma verificará se o Tutor IA já está disponível no Panda. Se ainda não estiver, solicitará a geração dos recursos necessários.')
                         ->action(function (Collection $records, PandaTutorActivator $activator): void {
+                            if ($records->isEmpty()) {
+                                Notification::make()
+                                    ->title('Nenhuma aula selecionada')
+                                    ->body('Selecione uma ou mais aulas na tabela antes de usar a ação em massa.')
+                                    ->warning()
+                                    ->send();
+
+                                return;
+                            }
+
                             $activated = 0;
                             $requested = 0;
                             $skipped = 0;
@@ -512,6 +520,32 @@ class LessonResource extends Resource
     public static function hasPandaVideo(Lesson $lesson): bool
     {
         return filled($lesson->panda_video_id) || filled(data_get($lesson->metadata, 'payload.id'));
+    }
+
+    public static function notifyPandaAiResult(array $result): void
+    {
+        Notification::make()
+            ->title($result['created_artifacts'] > 0 ? 'IA do Panda sincronizada' : ($result['requested'] ? 'IA do Panda solicitada em PT-BR' : 'IA do Panda já disponível'))
+            ->body($result['created_artifacts'] > 0
+                ? "{$result['created_artifacts']} recurso(s) de IA foram salvos para esta aula."
+                : ($result['requested']
+                    ? 'O Panda recebeu uma nova solicitação em português do Brasil e a sincronização foi agendada.'
+                    : ($result['pending']
+                        ? 'A geração já está em andamento no Panda. A plataforma tentou buscar o resultado e vai tentar novamente em background.'
+                        : 'Os recursos de IA desta aula já estão disponíveis na plataforma.')))
+            ->success()
+            ->send();
+    }
+
+    public static function notifyPandaTutorResult(array $result): void
+    {
+        Notification::make()
+            ->title($result['available'] ? 'Tutor IA ativado' : 'Tutor IA em processamento')
+            ->body($result['available']
+                ? 'O Tutor IA do Panda já está disponível para esta aula.'
+                : 'O Tutor IA já foi solicitado ao Panda. A plataforma vai liberar o chat quando o processamento do vídeo no Tutor terminar.')
+            ->success()
+            ->send();
     }
 
     protected static function linkedModuleNames(Lesson $lesson): string

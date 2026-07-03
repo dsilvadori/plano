@@ -19,7 +19,41 @@ class PandaAiResourceActivator
 
     public function generate(Lesson $lesson): array
     {
-        if ($this->hasPendingGeneration($lesson) && $this->missingArtifactTypes($lesson) !== []) {
+        if ($this->missingArtifactTypes($lesson) === []) {
+            $metadata = array_replace_recursive($lesson->metadata ?? [], [
+                'panda_ai' => [
+                    'last_request_status' => 'already_ready',
+                    'last_payload_status' => 'ready',
+                    'last_synced_at' => data_get($lesson->metadata, 'panda_ai.last_synced_at') ?: now()->toIso8601String(),
+                ],
+            ]);
+
+            $lesson->forceFill(['metadata' => $metadata])->save();
+
+            return [
+                'created_artifacts' => 0,
+                'requested' => false,
+                'pending' => false,
+                'replaced_existing' => false,
+                'panda_video_id' => $this->pandaVideoId($lesson),
+            ];
+        }
+
+        $createdArtifacts = $this->syncReadyArtifacts($lesson);
+        $lesson->refresh();
+        $missingArtifacts = $this->missingArtifactTypes($lesson);
+
+        if ($missingArtifacts === []) {
+            return [
+                'created_artifacts' => $createdArtifacts,
+                'requested' => false,
+                'pending' => false,
+                'replaced_existing' => false,
+                'panda_video_id' => $this->pandaVideoId($lesson),
+            ];
+        }
+
+        if ($this->hasPendingGeneration($lesson)) {
             $createdArtifacts = $this->syncReadyArtifacts($lesson);
 
             if ($createdArtifacts === 0) {
@@ -36,7 +70,7 @@ class PandaAiResourceActivator
             ];
         }
 
-        return $this->activate($lesson, replaceExisting: true);
+        return $this->activate($lesson);
     }
 
     public function activate(Lesson $lesson, bool $forceRequest = true, bool $replaceExisting = false): array

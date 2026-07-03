@@ -13,6 +13,7 @@ use App\Models\QuestionBank;
 use App\Models\StudyPlanItem;
 use App\Models\User;
 use App\Services\PandaAiResourceActivator;
+use App\Services\PandaTutorActivator;
 use App\Services\PandaVideoClient;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
@@ -156,7 +157,7 @@ class CourseCatalogController extends Controller
         ]);
     }
 
-    public function lesson(Course $course, Lesson $lesson, PandaVideoClient $panda): View
+    public function lesson(Course $course, Lesson $lesson, PandaVideoClient $panda, PandaTutorActivator $tutor): View
     {
         $user = request()->user();
 
@@ -168,7 +169,7 @@ class CourseCatalogController extends Controller
         $lesson->load(['course', 'module']);
 
         $this->ensureLessonAiArtifactsAreCached($lesson, $panda);
-        $this->ensurePandaTutorAvailabilityIsCached($lesson, $panda);
+        $this->ensurePandaTutorAvailabilityIsCached($lesson, $tutor);
 
         $lesson->load('aiArtifacts');
 
@@ -800,7 +801,7 @@ class CourseCatalogController extends Controller
         $lesson->unsetRelation('aiArtifacts');
     }
 
-    protected function ensurePandaTutorAvailabilityIsCached(Lesson $lesson, PandaVideoClient $panda): void
+    protected function ensurePandaTutorAvailabilityIsCached(Lesson $lesson, PandaTutorActivator $tutor): void
     {
         if (! config('services.panda.tutor_auto_detect', true)) {
             return;
@@ -821,7 +822,7 @@ class CourseCatalogController extends Controller
             return;
         }
 
-        Cache::lock("lesson:{$lesson->id}:panda-tutor-detect", 30)->get(function () use ($lesson, $panda, $pullzoneName, $videoExternalId): void {
+        Cache::lock("lesson:{$lesson->id}:panda-tutor-detect", 30)->get(function () use ($lesson, $tutor): void {
             $lesson->refresh();
 
             $lastCheckedAt = data_get($lesson->metadata, 'panda_ai.tutor_checked_at');
@@ -831,23 +832,12 @@ class CourseCatalogController extends Controller
                 return;
             }
 
-            $metadata = $lesson->metadata ?? [];
-
             try {
-                $config = $panda->playerConfig($pullzoneName, $videoExternalId) ?? [];
-                $assistantId = data_get($config, 'assistant_id');
-                $available = filled($assistantId);
-
-                $metadata = array_replace_recursive($metadata, [
-                    'panda_ai' => [
-                        'tutor_available' => $available,
-                        'tutor_assistant_id' => $available ? (string) $assistantId : null,
-                        'tutor_checked_at' => now()->toIso8601String(),
-                    ],
-                ]);
+                $tutor->syncAvailability($lesson);
             } catch (Throwable $exception) {
                 report($exception);
 
+                $metadata = $lesson->metadata ?? [];
                 $metadata = array_replace_recursive($metadata, [
                     'panda_ai' => [
                         'tutor_available' => (bool) data_get($metadata, 'panda_ai.tutor_available', false),
@@ -855,9 +845,9 @@ class CourseCatalogController extends Controller
                         'tutor_last_error' => $exception->getMessage(),
                     ],
                 ]);
-            }
 
-            $lesson->forceFill(['metadata' => $metadata])->save();
+                $lesson->forceFill(['metadata' => $metadata])->save();
+            }
         });
     }
 
