@@ -9,16 +9,18 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('course_module_track_course', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('course_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('course_module_track_id')->constrained()->cascadeOnDelete();
-            $table->unsignedInteger('sort_order')->default(0);
-            $table->timestamps();
+        if (! Schema::hasTable('course_module_track_course')) {
+            Schema::create('course_module_track_course', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('course_id')->constrained()->cascadeOnDelete();
+                $table->foreignId('course_module_track_id')->constrained()->cascadeOnDelete();
+                $table->unsignedInteger('sort_order')->default(0);
+                $table->timestamps();
 
-            $table->unique(['course_id', 'course_module_track_id']);
-            $table->index(['course_module_track_id', 'course_id']);
-        });
+                $table->unique(['course_id', 'course_module_track_id'], 'cmtc_course_track_unique');
+                $table->index(['course_module_track_id', 'course_id'], 'cmtc_track_course_index');
+            });
+        }
 
         DB::table('course_module_course')
             ->join('course_module_tracks', 'course_module_tracks.course_module_id', '=', 'course_module_course.course_module_id')
