@@ -9,7 +9,9 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
+use App\Services\PandaAiResourceActivator;
 use BackedEnum;
+use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -21,12 +23,14 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
+use Filament\Notifications\Notification;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Str;
+use Throwable;
 
 class LessonResource extends Resource
 {
@@ -321,10 +325,78 @@ class LessonResource extends Resource
                     ]),
             ])
             ->recordActions([
+                Action::make('activatePandaAi')
+                    ->label('Gerar Recursos de IA')
+                    ->icon('heroicon-o-sparkles')
+                    ->requiresConfirmation()
+                    ->modalHeading('Gerar recursos de IA em português')
+                    ->modalDescription('Se já houver uma geração em andamento, a plataforma tentará buscar o resultado. Caso contrário, os recursos atuais serão removidos e uma nova geração em português do Brasil será solicitada.')
+                    ->visible(fn (Lesson $record): bool => self::hasPandaVideo($record))
+                    ->action(function (Lesson $record, PandaAiResourceActivator $activator): void {
+                        try {
+                            $result = $activator->generate($record);
+
+                            Notification::make()
+                                ->title($result['created_artifacts'] > 0 ? 'IA do Panda sincronizada' : 'IA do Panda solicitada em PT-BR')
+                                ->body($result['created_artifacts'] > 0
+                                    ? "{$result['created_artifacts']} recurso(s) de IA foram salvos para esta aula."
+                                    : ($result['requested']
+                                        ? 'Os recursos antigos foram removidos, o Panda recebeu uma nova solicitação em português do Brasil e a sincronização foi agendada.'
+                                        : 'A geração já está em andamento no Panda. A plataforma tentou buscar o resultado e vai tentar novamente em background.'))
+                                ->success()
+                                ->send();
+                        } catch (Throwable $exception) {
+                            report($exception);
+
+                            Notification::make()
+                                ->title('Não foi possível ativar a IA do Panda')
+                                ->body($exception->getMessage())
+                                ->danger()
+                                ->send();
+                        }
+                    }),
                 EditAction::make(),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
+                    BulkAction::make('activatePandaAi')
+                        ->label('Gerar Recursos de IA')
+                        ->icon('heroicon-o-sparkles')
+                        ->requiresConfirmation()
+                        ->modalHeading('Gerar recursos de IA em português')
+                        ->modalDescription('Para aulas com geração em andamento, a plataforma tentará buscar o resultado. Para as demais, os recursos atuais serão removidos e uma nova geração em português do Brasil será solicitada.')
+                        ->action(function (Collection $records, PandaAiResourceActivator $activator): void {
+                            $requested = 0;
+                            $syncedArtifacts = 0;
+                            $skipped = 0;
+                            $failed = 0;
+                            $pending = 0;
+
+                            foreach ($records as $record) {
+                                if (! self::hasPandaVideo($record)) {
+                                    $skipped++;
+
+                                    continue;
+                                }
+
+                                try {
+                                    $result = $activator->generate($record);
+                                    $requested += $result['requested'] ? 1 : 0;
+                                    $pending += $result['pending'] ? 1 : 0;
+                                    $syncedArtifacts += (int) $result['created_artifacts'];
+                                } catch (Throwable $exception) {
+                                    report($exception);
+                                    $failed++;
+                                }
+                            }
+
+                            $notification = Notification::make()
+                                ->title('Geração de IA Panda concluída')
+                                ->body("Solicitadas: {$requested}. Aguardando Panda: {$pending}. Artefatos sincronizados: {$syncedArtifacts}. Ignoradas sem vídeo Panda: {$skipped}. Falhas: {$failed}.");
+
+                            ($failed > 0 ? $notification->warning() : $notification->success())->send();
+                        })
+                        ->deselectRecordsAfterCompletion(),
                     BulkAction::make('publish')
                         ->label('Publicar selecionadas')
                         ->icon('heroicon-o-eye')
@@ -370,6 +442,11 @@ class LessonResource extends Resource
             ->filter()
             ->unique()
             ->join(', ');
+    }
+
+    public static function hasPandaVideo(Lesson $lesson): bool
+    {
+        return filled($lesson->panda_video_id) || filled(data_get($lesson->metadata, 'payload.id'));
     }
 
     protected static function linkedModuleNames(Lesson $lesson): string

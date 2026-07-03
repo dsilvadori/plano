@@ -16,6 +16,35 @@ class PandaImportTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_panda_client_requests_ai_package_in_brazilian_portuguese_by_default(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.ai_workflow_path' => '/aiworkflow',
+            'services.panda.ai_from_lang' => 'pt-BR',
+            'services.panda.ai_package_type' => 'ALL_TEXT_ITEMS',
+        ]);
+
+        Http::fake(function ($request) {
+            $this->assertSame('POST', $request->method());
+            $this->assertSame('https://panda.test/aiworkflow', $request->url());
+            $this->assertSame([
+                'video_id' => 'video-123',
+                'from_lang' => 'pt-BR',
+                'type' => 'ALL_TEXT_ITEMS',
+            ], $request->data());
+
+            return Http::response(['ok' => true], 200);
+        });
+
+        $response = app(PandaVideoClient::class)->createAiPackage('video-123');
+
+        $this->assertSame(['ok' => true], $response);
+    }
+
     public function test_panda_client_uploads_video_with_create_then_put_flow(): void
     {
         config([

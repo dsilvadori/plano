@@ -12,6 +12,7 @@ use App\Models\LessonProgress;
 use App\Models\QuestionBank;
 use App\Models\StudyPlanItem;
 use App\Models\User;
+use App\Services\PandaAiResourceActivator;
 use App\Services\PandaVideoClient;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
@@ -228,17 +229,13 @@ class CourseCatalogController extends Controller
         return back()->with('status', 'Aula marcada como concluída.');
     }
 
-    public function syncPandaAi(Course $course, Lesson $lesson, PandaVideoClient $panda): RedirectResponse
+    public function syncPandaAi(Course $course, Lesson $lesson, PandaAiResourceActivator $activator): RedirectResponse
     {
         $user = request()->user();
 
         abort_unless($user->isAdmin(), 403);
         abort_unless($course->is_active && $course->status === 'published', 404);
         abort_unless($lesson->status === 'published' && $this->lessonBelongsToCourse($lesson, $course), 404);
-
-        if ($this->missingLessonAiArtifactTypes($lesson) === []) {
-            return back()->with('status', 'A IA desta aula já está em cache para todos os alunos.');
-        }
 
         $pandaVideoId = $lesson->panda_video_id ?: (string) data_get($lesson->metadata, 'payload.id');
 
@@ -247,10 +244,11 @@ class CourseCatalogController extends Controller
         }
 
         try {
-            $createdArtifacts = $this->syncMissingLessonAiArtifacts($lesson, $panda, $pandaVideoId, forceRequest: true);
+            $result = $activator->generate($lesson);
+            $createdArtifacts = (int) $result['created_artifacts'];
 
             if ($createdArtifacts === 0) {
-                return back()->with('status', 'Pacote de IA solicitado. O resultado ainda não está disponível; tente sincronizar novamente em alguns minutos.');
+                return back()->with('status', 'Pacote de IA em português solicitado. O resultado ainda não está disponível; tente sincronizar novamente em alguns minutos.');
             }
 
             return back()->with('status', $createdArtifacts > 0
@@ -715,10 +713,16 @@ class CourseCatalogController extends Controller
         }
 
         if ($this->missingLessonAiArtifactTypes($lesson) !== [] && $this->shouldRequestLessonAiPackage($metadata, $forceRequest)) {
+            $this->clearLessonPandaAiCache($lesson);
+
             $metadata = array_replace_recursive($metadata, [
                 'panda_ai' => [
                     'auto_sync_enabled' => true,
                     'requested_at' => now()->toIso8601String(),
+                    'last_request_status' => 'requested',
+                    'last_request_language' => (string) config('services.panda.ai_from_lang', 'pt-BR'),
+                    'last_auto_sync_attempt_at' => now()->toIso8601String(),
+                    'last_payload_status' => 'regenerating',
                     'workflow_response' => $panda->createAiPackage($pandaVideoId),
                     'request_count' => ((int) data_get($metadata, 'panda_ai.request_count', 0)) + 1,
                 ],
@@ -751,6 +755,13 @@ class CourseCatalogController extends Controller
 
     protected function shouldPollLessonAiPackage(array $metadata): bool
     {
+        $requestedAt = data_get($metadata, 'panda_ai.requested_at');
+        $requestStatus = data_get($metadata, 'panda_ai.last_request_status');
+
+        if ($requestStatus === 'requested' && filled($requestedAt)) {
+            return now()->diffInMinutes(Carbon::parse($requestedAt)) >= (int) config('services.panda.ai_regeneration_poll_delay_minutes', 10);
+        }
+
         $lastAttempt = data_get($metadata, 'panda_ai.last_auto_sync_attempt_at');
 
         if (blank($lastAttempt)) {
@@ -773,6 +784,20 @@ class CourseCatalogController extends Controller
         }
 
         return now()->diffInMinutes(Carbon::parse($requestedAt)) >= 1;
+    }
+
+    protected function clearLessonPandaAiCache(Lesson $lesson): void
+    {
+        AiArtifact::query()
+            ->where('source_type', Lesson::class)
+            ->where('source_id', $lesson->id)
+            ->where('provider', 'panda')
+            ->whereIn('artifact_type', [...self::LESSON_AI_ARTIFACT_TYPES, 'panda_payload'])
+            ->delete();
+
+        Cache::forget("lesson:{$lesson->id}:ai-artifacts");
+        Cache::forget("lesson:{$lesson->id}:ai-payload");
+        $lesson->unsetRelation('aiArtifacts');
     }
 
     protected function ensurePandaTutorAvailabilityIsCached(Lesson $lesson, PandaVideoClient $panda): void

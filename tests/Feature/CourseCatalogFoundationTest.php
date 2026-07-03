@@ -709,8 +709,59 @@ class CourseCatalogFoundationTest extends TestCase
         $lesson->refresh();
 
         $this->assertNotNull(data_get($lesson->metadata, 'panda_ai.requested_at'));
-        $this->assertSame('not_ready', data_get($lesson->metadata, 'panda_ai.last_payload_status'));
+        $this->assertSame('regenerating', data_get($lesson->metadata, 'panda_ai.last_payload_status'));
         $this->assertSame(1, data_get($lesson->metadata, 'panda_ai.request_count'));
+    }
+
+    public function test_lesson_page_does_not_reimport_stale_panda_ai_package_right_after_regeneration_request(): void
+    {
+        config([
+            'services.panda.ai_auto_sync' => true,
+            'services.panda.api_key' => 'testing-key',
+            'services.panda.ai_regeneration_poll_delay_minutes' => 10,
+            'services.panda.tutor_auto_detect' => false,
+        ]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Administração geral',
+            'panda_video_id' => 'video-456',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-456',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+                ],
+                'panda_ai' => [
+                    'requested_at' => now()->toIso8601String(),
+                    'last_request_status' => 'requested',
+                    'last_payload_status' => 'regenerating',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldNotReceive('aiPackage');
+            $mock->shouldNotReceive('createAiPackage');
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Estamos preparando o resumo desta aula.');
+
+        $this->assertDatabaseMissing('ai_artifacts', [
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'provider' => 'panda',
+        ]);
     }
 
     public function test_lesson_page_embeds_panda_tutor_when_video_metadata_is_available(): void

@@ -515,12 +515,12 @@ class PandaVideoClient
         );
     }
 
-    public function createAiPackage(string $videoId, string $fromLang = 'auto', string $type = 'ALL_TEXT_ITEMS'): array
+    public function createAiPackage(string $videoId, ?string $fromLang = null, ?string $type = null): array
     {
         return $this->postWithAuthFallback($this->path('ai_workflow_path'), [
             'video_id' => $videoId,
-            'from_lang' => $fromLang,
-            'type' => $type,
+            'from_lang' => $fromLang ?: (string) config('services.panda.ai_from_lang', 'pt-BR'),
+            'type' => $type ?: (string) config('services.panda.ai_package_type', 'ALL_TEXT_ITEMS'),
         ]);
     }
 
