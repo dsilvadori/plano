@@ -244,6 +244,138 @@ class PandaCourseImporter
         return $run->fresh(['items']);
     }
 
+    public function importLessons(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $folderId, string $lessonStatus = 'draft'): PandaImportRun
+    {
+        if ($track && ! $module) {
+            $module = $track->module()->first();
+        }
+
+        if ($module && ! $course) {
+            $course = $module->course;
+        }
+
+        if ($course && $module) {
+            $module->courses()->syncWithoutDetaching([
+                $course->id => ['sort_order' => (int) $module->sort_order],
+            ]);
+        }
+
+        if ($course && $track) {
+            $track->courses()->syncWithoutDetaching([
+                $course->id => ['sort_order' => (int) $track->sort_order],
+            ]);
+        }
+
+        $run = PandaImportRun::create([
+            'course_id' => $course?->id,
+            'panda_folder_id' => $folderId,
+            'status' => 'running',
+            'started_at' => now(),
+        ]);
+
+        try {
+            $videos = $this->sortVideosNaturally($this->client->videos($folderId));
+
+            DB::transaction(function () use ($course, $module, $track, $folderId, $lessonStatus, $run, $videos): void {
+                $created = 0;
+                $updated = 0;
+                $planningLessons = [];
+
+                foreach ($videos->values() as $index => $video) {
+                    $sortOrder = $index + 1;
+                    $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $sortOrder);
+                    $lesson = Lesson::query()->firstOrNew([
+                        'panda_video_id' => $video['panda_video_id'],
+                    ]);
+                    $wasRecentlyCreated = ! $lesson->exists;
+
+                    $lesson->fill([
+                        'course_id' => $lesson->exists ? $lesson->course_id : $course?->id,
+                        'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module?->id,
+                        'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track?->id) : $track?->id,
+                        'title' => $normalizedTitle,
+                        'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $sortOrder),
+                        'description' => $video['description'] ?: 'Aula em vídeo.',
+                        'type' => 'video',
+                        'thumbnail_url' => $video['thumbnail_url'],
+                        'duration_seconds' => $video['duration_seconds'],
+                        'sort_order' => $sortOrder,
+                        'status' => $this->normalizeLessonStatus($lessonStatus),
+                        'panda_status' => $video['panda_status'],
+                        'panda_embed_url' => $video['panda_embed_url'],
+                        'panda_player_url' => $video['panda_player_url'],
+                        'source_status' => 'media_ready',
+                        'metadata' => [
+                            'source' => 'panda',
+                            'folder_id' => $folderId,
+                            'payload' => $video['payload'],
+                            'last_imported_at' => now()->toIso8601String(),
+                        ],
+                    ]);
+                    $lesson->save();
+
+                    if ($module) {
+                        $lesson->modules()->syncWithoutDetaching([
+                            $module->id => ['sort_order' => $sortOrder],
+                        ]);
+                        $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
+                    }
+
+                    if ($track) {
+                        $lesson->tracks()->syncWithoutDetaching([
+                            $track->id => ['sort_order' => $sortOrder],
+                        ]);
+                    }
+
+                    $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
+
+                    $run->items()->create([
+                        'external_type' => 'video',
+                        'external_id' => $video['panda_video_id'],
+                        'local_type' => 'lesson',
+                        'local_id' => $lesson->id,
+                        'status' => $wasRecentlyCreated ? 'created' : 'updated',
+                        'payload' => $video['payload'],
+                    ]);
+
+                    $wasRecentlyCreated ? $created++ : $updated++;
+                }
+
+                if ($module) {
+                    $module->forceFill(['panda_folder_id' => $folderId])->save();
+                    $this->syncModulePlanningLessons($module, $planningLessons);
+                }
+
+                if ($track) {
+                    $track->forceFill(['panda_folder_id' => $folderId])->save();
+                }
+
+                $run->forceFill([
+                    'status' => 'finished',
+                    'summary' => [
+                        'course_id' => $course?->id,
+                        'module_id' => $module?->id,
+                        'track_id' => $track?->id,
+                        'videos' => $videos->count(),
+                        'created' => $created,
+                        'updated' => $updated,
+                    ],
+                    'finished_at' => now(),
+                ])->save();
+            });
+        } catch (\Throwable $exception) {
+            $run->forceFill([
+                'status' => 'failed',
+                'error_message' => $exception->getMessage(),
+                'finished_at' => now(),
+            ])->save();
+
+            throw $exception;
+        }
+
+        return $run->fresh(['items']);
+    }
+
     public function importReplacingModuleByName(?Course $fallbackCourse, string $moduleName, string $folderId, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun
     {
         $module = $this->findModuleByName($moduleName);

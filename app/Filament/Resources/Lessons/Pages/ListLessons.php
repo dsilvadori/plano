@@ -8,6 +8,7 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\GoogleDriveImportRun;
+use App\Services\PandaCourseImporter;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
 use Filament\Forms\Components\Select;
@@ -26,6 +27,107 @@ class ListLessons extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('importPandaLessons')
+                ->label('Importar Panda')
+                ->icon('heroicon-o-video-camera')
+                ->modalHeading('Importar aulas do Panda')
+                ->modalDescription('Informe uma pasta do Panda. Os vídeos serão criados ou atualizados como aulas, com curso, módulo e trilha opcionais.')
+                ->form([
+                    Select::make('course_id')
+                        ->label('Curso')
+                        ->options(fn (): array => Course::query()
+                            ->orderBy('name')
+                            ->pluck('name', 'id')
+                            ->all())
+                        ->searchable()
+                        ->preload()
+                        ->live()
+                        ->nullable()
+                        ->afterStateUpdated(function (Set $set): void {
+                            $set('course_module_id', null);
+                            $set('course_module_track_id', null);
+                        }),
+                    Select::make('course_module_id')
+                        ->label('Módulo')
+                        ->options(fn (Get $get): array => filled($get('course_id'))
+                            ? CourseModule::query()
+                                ->where('course_id', $get('course_id'))
+                                ->orWhereHas('courses', fn ($query) => $query->whereKey($get('course_id')))
+                                ->orWhereNull('course_id')
+                                ->orderBy('sort_order')
+                                ->orderBy('name')
+                                ->pluck('name', 'id')
+                                ->all()
+                            : CourseModule::query()
+                                ->orderBy('sort_order')
+                                ->orderBy('name')
+                                ->pluck('name', 'id')
+                                ->all())
+                        ->searchable()
+                        ->preload()
+                        ->live()
+                        ->nullable()
+                        ->helperText('Opcional. Deixe vazio para importar aulas avulsas.')
+                        ->afterStateUpdated(fn (Set $set) => $set('course_module_track_id', null)),
+                    Select::make('course_module_track_id')
+                        ->label('Trilha')
+                        ->options(fn (Get $get): array => filled($get('course_module_id'))
+                            ? CourseModuleTrack::query()
+                                ->where('course_module_id', $get('course_module_id'))
+                                ->orderBy('sort_order')
+                                ->orderBy('name')
+                                ->pluck('name', 'id')
+                                ->all()
+                            : [])
+                        ->searchable()
+                        ->preload()
+                        ->nullable()
+                        ->helperText('Opcional. Se escolhida, as aulas também serão vinculadas à trilha.'),
+                    TextInput::make('panda_folder_id')
+                        ->label('ID da pasta no Panda')
+                        ->required(),
+                    Select::make('lesson_status')
+                        ->label('Status inicial das aulas')
+                        ->options([
+                            'draft' => 'Rascunho',
+                            'published' => 'Publicado',
+                        ])
+                        ->default('draft')
+                        ->required(),
+                ])
+                ->action(function (array $data, PandaCourseImporter $importer): void {
+                    try {
+                        $course = filled($data['course_id'] ?? null)
+                            ? Course::query()->findOrFail((int) $data['course_id'])
+                            : null;
+                        $module = filled($data['course_module_id'] ?? null)
+                            ? CourseModule::query()->findOrFail((int) $data['course_module_id'])
+                            : null;
+                        $track = filled($data['course_module_track_id'] ?? null)
+                            ? CourseModuleTrack::query()->findOrFail((int) $data['course_module_track_id'])
+                            : null;
+
+                        $run = $importer->importLessons(
+                            $course,
+                            $module,
+                            $track,
+                            (string) $data['panda_folder_id'],
+                            (string) ($data['lesson_status'] ?? 'draft'),
+                        );
+
+                        Notification::make()
+                            ->title('Aulas importadas do Panda.')
+                            ->body('Vídeos: '.($run->summary['videos'] ?? 0).'. Criadas: '.($run->summary['created'] ?? 0).'. Atualizadas: '.($run->summary['updated'] ?? 0).'.')
+                            ->success()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->title('Não foi possível importar aulas do Panda.')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
+                }),
             Action::make('importGoogleDriveLessons')
                 ->label('Importar Drive')
                 ->icon('heroicon-o-folder')

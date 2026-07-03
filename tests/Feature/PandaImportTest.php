@@ -876,4 +876,103 @@ class PandaImportTest extends TestCase
         $this->assertSame(20, $existingModule->fresh()->workload_minutes);
         $this->assertTrue($existingModule->fresh()->onlineLessons()->whereKey($lesson->id)->exists());
     }
+
+    public function test_panda_import_can_create_standalone_lessons_from_lessons_area(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'standalone-video-1',
+                        'title' => '01___aula_avulsa_do_panda (720p)',
+                        'duration_seconds' => 1200,
+                        'status' => 'CONVERTED',
+                        'embed_url' => 'https://player.test/standalone-video-1',
+                        'folder_id' => 'panda-folder-standalone',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $run = app(PandaCourseImporter::class)->importLessons(
+            null,
+            null,
+            null,
+            'panda-folder-standalone',
+            'published',
+        );
+
+        $lesson = Lesson::query()->where('panda_video_id', 'standalone-video-1')->firstOrFail();
+
+        $this->assertSame('finished', $run->status);
+        $this->assertSame(1, $run->summary['videos']);
+        $this->assertNull($lesson->course_id);
+        $this->assertNull($lesson->course_module_id);
+        $this->assertNull($lesson->course_module_track_id);
+        $this->assertSame('01 - Aula Avulsa do Panda', $lesson->title);
+        $this->assertSame('published', $lesson->status);
+        $this->assertSame('media_ready', $lesson->source_status);
+        $this->assertSame('panda-folder-standalone', $lesson->metadata['folder_id']);
+    }
+
+    public function test_panda_import_from_lessons_area_can_link_lessons_to_module_and_track(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'linked-video-1',
+                        'title' => '01 - Windows 10',
+                        'duration_seconds' => 900,
+                        'status' => 'CONVERTED',
+                        'embed_url' => 'https://player.test/linked-video-1',
+                        'folder_id' => 'panda-folder-windows',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Informática',
+        ]);
+        $track = \App\Models\CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $run = app(PandaCourseImporter::class)->importLessons(
+            $course,
+            $module,
+            $track,
+            'panda-folder-windows',
+            'draft',
+        );
+
+        $lesson = Lesson::query()->where('panda_video_id', 'linked-video-1')->firstOrFail();
+
+        $this->assertSame('finished', $run->status);
+        $this->assertTrue($module->fresh()->courses()->whereKey($course->id)->exists());
+        $this->assertTrue($track->fresh()->courses()->whereKey($course->id)->exists());
+        $this->assertTrue($module->fresh()->onlineLessons()->whereKey($lesson->id)->exists());
+        $this->assertTrue($track->fresh()->lessons()->whereKey($lesson->id)->exists());
+        $this->assertSame('panda-folder-windows', $module->fresh()->panda_folder_id);
+        $this->assertSame('panda-folder-windows', $track->fresh()->panda_folder_id);
+    }
 }
