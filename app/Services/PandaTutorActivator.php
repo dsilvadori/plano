@@ -82,6 +82,14 @@ class PandaTutorActivator
         $assistantId = data_get($config, 'assistant_id');
         $available = filled($assistantId);
 
+        if (! $available) {
+            $assistantResult = $this->syncAssistantAvailability($lesson, $pullzoneName, $videoExternalId);
+
+            if ($assistantResult['known']) {
+                return $assistantResult;
+            }
+        }
+
         $metadata = array_replace_recursive($lesson->metadata ?? [], [
             'panda_ai' => [
                 'tutor_available' => $available,
@@ -99,6 +107,62 @@ class PandaTutorActivator
             'available' => $available,
             'requested' => false,
             'assistant_id' => $available ? (string) $assistantId : null,
+        ];
+    }
+
+    protected function syncAssistantAvailability(Lesson $lesson, string $pullzoneName, string $videoExternalId): array
+    {
+        $metadata = $lesson->metadata ?? [];
+        $assistantId = data_get($metadata, 'panda_ai.tutor_assistant_id')
+            ?: data_get($metadata, 'panda_ai.tutor_response.assistant.id')
+            ?: data_get($metadata, 'panda_ai.tutor_response.data.assistant.id');
+
+        if (blank($assistantId)) {
+            return [
+                'available' => false,
+                'requested' => false,
+                'assistant_id' => null,
+                'known' => false,
+            ];
+        }
+
+        $assistantId = (string) $assistantId;
+        $pandaVideoId = $this->pandaVideoId($lesson);
+        $assistant = $this->panda->tutorAssistant($assistantId);
+
+        if (filled($pandaVideoId)) {
+            $assistantStatus = (string) data_get($assistant, 'status', '');
+
+            if ($assistantStatus !== 'ready') {
+                $this->panda->updateTutorStatus($assistantId, 'ready');
+                $assistant['status'] = 'ready';
+            }
+
+            $this->panda->updateTutorChatVisibility($assistantId, (string) $pandaVideoId, true);
+        }
+
+        $status = (string) data_get($assistant, 'status', '');
+        $available = $status === 'ready';
+
+        $metadata = array_replace_recursive($metadata, [
+            'panda_ai' => [
+                'tutor_available' => $available,
+                'tutor_status' => $available ? 'active' : ($status ?: 'requested'),
+                'tutor_assistant_id' => $assistantId,
+                'tutor_checked_at' => now()->toIso8601String(),
+                'tutor_pullzone_name' => $pullzoneName,
+                'tutor_video_external_id' => $videoExternalId,
+                'tutor_assistant_response' => $assistant,
+            ],
+        ]);
+
+        $lesson->forceFill(['metadata' => $metadata])->save();
+
+        return [
+            'available' => $available,
+            'requested' => ! $available,
+            'assistant_id' => $assistantId,
+            'known' => true,
         ];
     }
 

@@ -539,6 +539,32 @@ class PandaVideoClient
         return $this->postWithAuthFallback($this->path('tutor_create_path'), $payload);
     }
 
+    public function tutorAssistant(string $assistantId): array
+    {
+        $path = str_replace('{id}', rawurlencode($assistantId), $this->path('tutor_show_path'));
+        $response = $this->getWithAuthFallback($path);
+
+        return is_array($response['data'] ?? null) ? $response['data'] : $response;
+    }
+
+    public function updateTutorStatus(string $assistantId, string $status = 'ready'): array
+    {
+        $path = str_replace('{id}', rawurlencode($assistantId), $this->path('tutor_update_path'));
+
+        return $this->putWithAuthFallback($path, [
+            'status' => $status,
+        ]);
+    }
+
+    public function updateTutorChatVisibility(string $assistantId, string $videoId, bool $visible = true): array
+    {
+        return $this->postWithAuthFallback($this->path('tutor_chat_visibility_path'), [
+            'assistant_id' => $assistantId,
+            'video_id' => $videoId,
+            'chat_is_visible' => $visible,
+        ]);
+    }
+
     public function aiPackage(string $pullzoneName, string $videoExternalId): ?array
     {
         $response = Http::baseUrl(rtrim((string) config('services.panda.ai_config_base_url'), '/'))
@@ -648,7 +674,7 @@ class PandaVideoClient
             $response = $this->http($attempt['headers'])->post($requestPath, $payload);
 
             if ($response->successful()) {
-                return $response->json() ?? [];
+                return $this->jsonResponseArray($response);
             }
 
             $lastStatus = $response->status();
@@ -664,6 +690,58 @@ class PandaVideoClient
             'Confira a chave da API e permissões da conta. Última resposta: '.
             trim((string) $lastBody).' (status '.$lastStatus.')'
         );
+    }
+
+    protected function putWithAuthFallback(string $path, array $payload = []): array
+    {
+        $apiKey = config('services.panda.api_key');
+
+        if (blank($apiKey)) {
+            throw new RuntimeException('Configure PANDA_API_KEY antes de usar a IA da aula.');
+        }
+
+        $attempts = $this->authAttempts((string) $apiKey);
+        $lastStatus = null;
+        $lastBody = null;
+
+        foreach ($attempts as $attempt) {
+            $requestPath = $attempt['query'] === []
+                ? $path
+                : $path.'?'.http_build_query($attempt['query']);
+            $response = $this->http($attempt['headers'])->put($requestPath, $payload);
+
+            if ($response->successful()) {
+                return $this->jsonResponseArray($response);
+            }
+
+            $lastStatus = $response->status();
+            $lastBody = $response->body();
+
+            if ($response->status() !== 401) {
+                $response->throw();
+            }
+        }
+
+        throw new RuntimeException(
+            'O provedor de vídeo retornou 401 Unauthorized em todas as tentativas de autenticação da IA. '.
+            'Confira a chave da API e permissões da conta. Última resposta: '.
+            trim((string) $lastBody).' (status '.$lastStatus.')'
+        );
+    }
+
+    protected function jsonResponseArray($response): array
+    {
+        $json = $response->json();
+
+        if (is_array($json)) {
+            return $json;
+        }
+
+        if ($json !== null) {
+            return ['ok' => (bool) $json, 'response' => $json];
+        }
+
+        return [];
     }
 
     protected function multipartPostWithAuthFallback(string $path, array $payload, string $fileField, string $filePath): array
