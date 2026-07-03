@@ -64,6 +64,8 @@ return [
         'queue_drive_uploads' => env('PANDA_QUEUE_DRIVE_UPLOADS', false),
         'video_upload_job_delay_seconds' => env('PANDA_VIDEO_UPLOAD_JOB_DELAY_SECONDS', 120),
         'video_upload_job_backoff_seconds' => env('PANDA_VIDEO_UPLOAD_JOB_BACKOFF_SECONDS', '300,600,1200,2400'),
+        'video_status_sync_delay_seconds' => env('PANDA_VIDEO_STATUS_SYNC_DELAY_SECONDS', 300),
+        'video_status_sync_backoff_seconds' => env('PANDA_VIDEO_STATUS_SYNC_BACKOFF_SECONDS', '300,600,1200,2400,3600'),
         'uploader_base_url' => env('PANDA_UPLOADER_BASE_URL', 'https://uploader.pandavideo.com'),
         'uploader_path' => env('PANDA_UPLOADER_PATH', '/files/'),
         'uploader_auth_scheme' => env('PANDA_UPLOADER_AUTH_SCHEME', env('PANDA_AUTH_SCHEME', '')),

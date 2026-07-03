@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Jobs\SyncPandaVideoStatus;
 use App\Jobs\UploadLessonToPanda;
 use App\Models\Course;
 use App\Models\CourseModule;
@@ -124,6 +125,9 @@ class GoogleDriveTrackImporter
 
                         if ($pandaVideo) {
                             $pandaVideosSkipped++;
+                            if (! $this->pandaVideoIsReady($pandaVideo)) {
+                                $pandaVideosFailed++;
+                            }
                         } else {
                             $lesson->forceFill([
                                 'panda_video_id' => null,
@@ -140,12 +144,18 @@ class GoogleDriveTrackImporter
 
                             if ($pandaVideo) {
                                 $pandaVideosSkipped++;
+                                if (! $this->pandaVideoIsReady($pandaVideo)) {
+                                    $pandaVideosFailed++;
+                                }
                             } else {
                                 $pandaVideo = $this->uploadDriveVideoToPanda($file, $title, $trackPandaFolderId);
                                 if (($pandaVideo['was_reused'] ?? false) === true) {
                                     $pandaVideosSkipped++;
                                 } else {
                                     $pandaVideosUploaded++;
+                                }
+                                if (! $this->pandaVideoIsReady($pandaVideo)) {
+                                    $pandaVideosFailed++;
                                 }
                                 $this->pauseAfterPandaUploadIfConfigured();
                             }
@@ -173,7 +183,7 @@ class GoogleDriveTrackImporter
                     'panda_player_url' => $pandaVideo['panda_player_url'] ?? $lesson->panda_player_url,
                     'panda_status' => $pandaVideo['panda_status'] ?? $lesson->panda_status,
                     'google_doc_url' => $file['webViewLink'] ?? $lesson->google_doc_url,
-                    'source_status' => $pandaVideo || filled($lesson->panda_video_id) || $type === 'pdf' ? 'media_ready' : 'awaiting_media',
+                    'source_status' => $this->sourceStatusForImportedLesson($type, $pandaVideo, $lesson, false),
                     'metadata' => [
                         'source' => 'google_drive',
                         'drive_file_id' => $file['id'] ?? null,
@@ -187,6 +197,9 @@ class GoogleDriveTrackImporter
                     ],
                 ]);
                 $lesson->save();
+                if ($pandaVideo && ! $this->pandaVideoIsReady($pandaVideo)) {
+                    $this->dispatchPandaStatusSync($lesson, $run);
+                }
                 $lesson->modules()->syncWithoutDetaching([
                     $module->id => ['sort_order' => $lessonIndex + 1],
                 ]);
@@ -341,6 +354,9 @@ class GoogleDriveTrackImporter
 
                         if ($pandaVideo) {
                             $pandaVideosSkipped++;
+                            if (! $this->pandaVideoIsReady($pandaVideo)) {
+                                $pandaVideosFailed++;
+                            }
                         } elseif ($this->shouldQueuePandaUploads()) {
                             $pandaUploadQueued = true;
                             $pandaVideosFailed++;
@@ -350,6 +366,9 @@ class GoogleDriveTrackImporter
                                 $pandaVideosSkipped++;
                             } else {
                                 $pandaVideosUploaded++;
+                            }
+                            if (! $this->pandaVideoIsReady($pandaVideo)) {
+                                $pandaVideosFailed++;
                             }
                             $this->pauseAfterPandaUploadIfConfigured();
                         }
@@ -401,6 +420,8 @@ class GoogleDriveTrackImporter
 
             if ($pandaUploadQueued) {
                 $this->dispatchPandaUpload($lesson, $run);
+            } elseif ($pandaVideo && ! $this->pandaVideoIsReady($pandaVideo)) {
+                $this->dispatchPandaStatusSync($lesson, $run);
             }
 
             if ($module) {
@@ -662,6 +683,9 @@ class GoogleDriveTrackImporter
 
                     if ($pandaVideo) {
                         $pandaVideosSkipped++;
+                        if (! $this->pandaVideoIsReady($pandaVideo)) {
+                            $pandaVideosFailed++;
+                        }
                     } elseif ($this->shouldQueuePandaUploads()) {
                         $pandaUploadQueued = true;
                         $pandaVideosFailed++;
@@ -672,6 +696,9 @@ class GoogleDriveTrackImporter
                             $pandaVideosSkipped++;
                         } else {
                             $pandaVideosUploaded++;
+                        }
+                        if (! $this->pandaVideoIsReady($pandaVideo)) {
+                            $pandaVideosFailed++;
                         }
 
                         $this->pauseAfterPandaUploadIfConfigured();
@@ -690,7 +717,7 @@ class GoogleDriveTrackImporter
                 'panda_player_url' => $pandaVideo['panda_player_url'] ?? $lesson->panda_player_url,
                 'panda_status' => $pandaVideo['panda_status'] ?? $lesson->panda_status,
                 'duration_seconds' => $this->durationSecondsFromPandaVideo($pandaVideo, $lesson),
-                'source_status' => $pandaUploadQueued ? 'upload_queued' : ($pandaVideo || filled($lesson->panda_video_id) ? 'media_ready' : 'awaiting_media'),
+                'source_status' => $this->sourceStatusForImportedLesson('video', $pandaVideo, $lesson, $pandaUploadQueued),
                 'metadata' => [
                     ...$metadata,
                     'panda_upload' => $pandaVideo['payload'] ?? ($metadata['panda_upload'] ?? null),
@@ -704,6 +731,8 @@ class GoogleDriveTrackImporter
 
             if ($pandaUploadQueued) {
                 $this->dispatchPandaUpload($lesson, $run);
+            } elseif ($pandaVideo && ! $this->pandaVideoIsReady($pandaVideo)) {
+                $this->dispatchPandaStatusSync($lesson, $run);
             }
 
             $this->updateRun($run, [
@@ -822,6 +851,20 @@ class GoogleDriveTrackImporter
         return $actualFolderId === '' || $actualFolderId === (string) $expectedPandaFolderId;
     }
 
+    protected function pandaVideoIsReady(array $video): bool
+    {
+        $status = strtoupper((string) ($video['panda_status'] ?? ''));
+
+        if (in_array($status, ['CONVERTED', 'READY', 'AVAILABLE', 'ACTIVE', 'PUBLISHED'], true)) {
+            return true;
+        }
+
+        return filled($video['panda_video_id'])
+            && (filled($video['panda_embed_url'] ?? null) || filled($video['panda_player_url'] ?? null))
+            && (int) ($video['duration_seconds'] ?? 0) > 0
+            && ! in_array($status, ['ERROR', 'FAILED', 'DELETED'], true);
+    }
+
     protected function durationSecondsFromPandaVideo(?array $pandaVideo, Lesson $lesson): int
     {
         $duration = $pandaVideo['duration_seconds'] ?? null;
@@ -877,13 +920,14 @@ class GoogleDriveTrackImporter
             'panda_player_url' => $pandaVideo['panda_player_url'] ?? $lesson->panda_player_url,
             'panda_status' => $pandaVideo['panda_status'] ?? $lesson->panda_status,
             'duration_seconds' => $this->durationSecondsFromPandaVideo($pandaVideo, $lesson),
-            'source_status' => 'media_ready',
+            'source_status' => $this->pandaVideoIsReady($pandaVideo) ? 'media_ready' : 'panda_processing',
             'metadata' => [
                 ...$metadata,
                 'panda_folder_id' => $pandaFolderId,
                 'panda_upload' => $pandaVideo['payload'] ?? ($metadata['panda_upload'] ?? null),
                 'panda_upload_error' => null,
                 'panda_upload_completed_at' => now()->toIso8601String(),
+                'panda_status_sync_queued_at' => $this->pandaVideoIsReady($pandaVideo) ? null : now()->toIso8601String(),
             ],
         ])->save();
 
@@ -900,7 +944,7 @@ class GoogleDriveTrackImporter
                 $updates['panda_videos_uploaded'] = DB::raw('panda_videos_uploaded + 1');
             }
 
-            if ($run->panda_videos_failed > 0) {
+            if ($this->pandaVideoIsReady($pandaVideo) && $run->panda_videos_failed > 0) {
                 $updates['panda_videos_failed'] = DB::raw('panda_videos_failed - 1');
             }
 
@@ -951,13 +995,28 @@ class GoogleDriveTrackImporter
         UploadLessonToPanda::dispatch($lesson->id, $run?->id);
     }
 
+    protected function dispatchPandaStatusSync(Lesson $lesson, ?GoogleDriveImportRun $run): void
+    {
+        SyncPandaVideoStatus::dispatch($lesson->id, $run?->id)
+            ->delay(now()->addSeconds(max(0, (int) config('services.panda.video_status_sync_delay_seconds', 300))))
+            ->afterResponse();
+    }
+
     protected function sourceStatusForImportedLesson(string $type, ?array $pandaVideo, Lesson $lesson, bool $pandaUploadQueued): string
     {
         if ($pandaUploadQueued) {
             return 'upload_queued';
         }
 
-        if ($pandaVideo || filled($lesson->panda_video_id) || $type === 'pdf') {
+        if ($type === 'pdf') {
+            return 'media_ready';
+        }
+
+        if ($pandaVideo) {
+            return $this->pandaVideoIsReady($pandaVideo) ? 'media_ready' : 'panda_processing';
+        }
+
+        if (filled($lesson->panda_video_id) && $lesson->source_status === 'media_ready') {
             return 'media_ready';
         }
 

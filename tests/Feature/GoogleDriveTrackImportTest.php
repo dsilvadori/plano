@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\ImportGoogleDriveLessons;
 use App\Jobs\ImportGoogleDriveModuleTracks;
 use App\Jobs\ReprocessGoogleDrivePendingLessons;
+use App\Jobs\SyncPandaVideoStatus;
 use App\Jobs\UploadLessonToPanda;
 use App\Models\Course;
 use App\Models\CourseModule;
@@ -848,13 +849,14 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame(2, $summary['total_lessons']);
         $this->assertSame(1, $summary['panda_folders']);
         $this->assertSame(1, $summary['panda_videos_uploaded']);
+        $this->assertSame(1, $summary['panda_videos_failed']);
         $this->assertDatabaseHas('lessons', [
             'course_id' => null,
             'course_module_id' => null,
             'course_module_track_id' => null,
             'title' => '01 - Aula avulsa',
             'type' => 'video',
-            'source_status' => 'media_ready',
+            'source_status' => 'panda_processing',
             'panda_video_id' => 'panda-video-standalone-01',
         ]);
         $this->assertDatabaseHas('lessons', [
@@ -1355,6 +1357,60 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertNull($lesson->metadata['panda_upload_error']);
         $this->assertSame(1, $run->panda_videos_uploaded);
         $this->assertSame(0, $run->panda_videos_failed);
+    }
+
+    public function test_panda_status_job_marks_processing_lesson_ready_when_conversion_finishes(): void
+    {
+        $panda = Mockery::mock(PandaVideoClient::class);
+        $lesson = Lesson::query()->create([
+            'title' => 'AULA 01 - INTRODUCAO',
+            'slug' => 'aula-01-introducao-status',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-video-excel-01',
+            'panda_status' => 'CONVERTING',
+            'source_status' => 'panda_processing',
+            'metadata' => [
+                'panda_folder_id' => 'panda-folder-excel-2016',
+            ],
+        ]);
+        $run = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'root-folder',
+            'folder_id' => 'root-folder',
+            'status' => 'finished',
+            'panda_videos_failed' => 1,
+        ]);
+
+        $video = [
+            'panda_video_id' => 'panda-video-excel-01',
+            'title' => 'AULA 01 - INTRODUCAO',
+            'duration_seconds' => 1320,
+            'panda_status' => 'CONVERTED',
+            'panda_embed_url' => 'https://player.test/embed/panda-video-excel-01',
+            'panda_player_url' => 'https://player.test/panda-video-excel-01',
+            'folder_id' => 'panda-folder-excel-2016',
+            'payload' => ['id' => 'panda-video-excel-01'],
+        ];
+
+        $panda->shouldReceive('video')
+            ->once()
+            ->with('panda-video-excel-01', 'panda-folder-excel-2016')
+            ->andReturn($video);
+        $panda->shouldReceive('videoIsFailed')->once()->with($video)->andReturn(false);
+        $panda->shouldReceive('videoIsReady')->twice()->with($video)->andReturn(true);
+
+        (new SyncPandaVideoStatus($lesson->id, $run->id))->handle($panda);
+
+        $lesson->refresh();
+        $run->refresh();
+
+        $this->assertSame('media_ready', $lesson->source_status);
+        $this->assertSame('CONVERTED', $lesson->panda_status);
+        $this->assertSame(1320, $lesson->duration_seconds);
+        $this->assertSame(0, $run->panda_videos_failed);
+        $this->assertSame('Vídeo pronto no Panda: AULA 01 - INTRODUCAO', $run->latest_message);
     }
 
     public function test_background_job_runs_drive_import_with_expected_parameters(): void

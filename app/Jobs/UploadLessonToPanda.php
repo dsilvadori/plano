@@ -40,6 +40,13 @@ class UploadLessonToPanda implements ShouldQueue
 
         try {
             $importer->uploadQueuedLessonToPanda($lesson, $run);
+
+            if (($lesson->fresh()?->source_status) === 'panda_processing') {
+                SyncPandaVideoStatus::dispatch($lesson->id, $run?->id)
+                    ->delay(now()->addSeconds(max(0, (int) config('services.panda.video_status_sync_delay_seconds', 300))))
+                    ->afterResponse();
+            }
+
             $this->pauseAfterUpload();
         } catch (Throwable $exception) {
             if ($this->isPandaUploadConcurrencyLimit($exception)) {

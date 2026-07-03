@@ -159,6 +159,34 @@ class PandaVideoClient
         return $video && $this->isReusablePandaVideo($video) ? $video : null;
     }
 
+    public function videoIsReady(array $video): bool
+    {
+        $status = strtoupper((string) ($video['panda_status'] ?? ''));
+
+        if (in_array($status, ['CONVERTED', 'READY', 'AVAILABLE', 'ACTIVE', 'PUBLISHED'], true)) {
+            return true;
+        }
+
+        return filled($video['panda_video_id'])
+            && (filled($video['panda_embed_url']) || filled($video['panda_player_url']))
+            && (int) ($video['duration_seconds'] ?? 0) > 0
+            && ! $this->videoIsFailed($video);
+    }
+
+    public function videoIsFailed(array $video): bool
+    {
+        $status = strtoupper((string) ($video['panda_status'] ?? ''));
+
+        return in_array($status, ['ERROR', 'FAILED', 'DELETED'], true);
+    }
+
+    public function videoIsProcessing(array $video): bool
+    {
+        return filled($video['panda_video_id'])
+            && ! $this->videoIsReady($video)
+            && ! $this->videoIsFailed($video);
+    }
+
     public function uploadVideo(string $path, string $title, ?string $folderId = null): array
     {
         if (! is_file($path)) {
