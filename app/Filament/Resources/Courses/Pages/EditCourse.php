@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Courses\Pages;
 
 use App\Filament\Resources\Courses\CourseResource;
 use App\Services\CourseSpreadsheetImporter;
+use App\Services\LessonCourseLinker;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Forms\Components\FileUpload;
@@ -25,6 +26,27 @@ class EditCourse extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('syncLessonLinks')
+                ->label('Atualizar vínculos')
+                ->icon('heroicon-o-arrow-path')
+                ->color('gray')
+                ->action(function (LessonCourseLinker $linker): void {
+                    try {
+                        $stats = $linker->sync($this->record);
+
+                        Notification::make()
+                            ->title('Vínculos do curso atualizados.')
+                            ->body(self::formatSyncStats($stats))
+                            ->success()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->title('Não foi possível atualizar os vínculos.')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
+                }),
             Action::make('importStructure')
                 ->label('Importar estrutura')
                 ->icon('heroicon-o-arrow-up-tray')
@@ -180,5 +202,16 @@ class EditCourse extends EditRecord
         }
 
         return null;
+    }
+
+    protected static function formatSyncStats(array $stats): string
+    {
+        return sprintf(
+            '%d aula(s) vinculada(s), %d placeholder(s) substituído(s), %d aula(s) publicada(s) e %d plano(s) atualizado(s).',
+            (int) ($stats['linked'] ?? 0),
+            (int) ($stats['replaced'] ?? 0),
+            (int) ($stats['published'] ?? 0),
+            (int) ($stats['plans_synced'] ?? 0),
+        );
     }
 }

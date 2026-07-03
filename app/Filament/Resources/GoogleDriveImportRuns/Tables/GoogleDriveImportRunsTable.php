@@ -4,6 +4,7 @@ namespace App\Filament\Resources\GoogleDriveImportRuns\Tables;
 
 use App\Jobs\ReprocessGoogleDrivePendingLessons;
 use App\Models\GoogleDriveImportRun;
+use App\Services\LessonCourseLinker;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -102,6 +103,33 @@ class GoogleDriveImportRunsTable
                 EditAction::make(),
             ])
             ->toolbarActions([
+                Action::make('syncCourseLessons')
+                    ->label('Atualizar cursos')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('gray')
+                    ->action(function (LessonCourseLinker $linker): void {
+                        try {
+                            $stats = $linker->sync();
+
+                            Notification::make()
+                                ->title('Cursos atualizados.')
+                                ->body(sprintf(
+                                    '%d aula(s) vinculada(s), %d placeholder(s) substituído(s), %d aula(s) publicada(s) e %d plano(s) atualizado(s).',
+                                    (int) ($stats['linked'] ?? 0),
+                                    (int) ($stats['replaced'] ?? 0),
+                                    (int) ($stats['published'] ?? 0),
+                                    (int) ($stats['plans_synced'] ?? 0),
+                                ))
+                                ->success()
+                                ->send();
+                        } catch (Throwable $exception) {
+                            Notification::make()
+                                ->title('Não foi possível atualizar os cursos.')
+                                ->body($exception->getMessage())
+                                ->danger()
+                                ->send();
+                        }
+                    }),
                 BulkActionGroup::make([
                     DeleteBulkAction::make(),
                 ]),
