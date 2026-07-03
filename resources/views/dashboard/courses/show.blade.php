@@ -103,11 +103,37 @@
                                 $trackLessonCount = $track->lessons->count();
                                 $trackCompletedCount = $track->lessons->filter(fn ($lesson) => $completedLessonIds->contains($lesson->id))->count();
                                 $trackProgress = $trackLessonCount > 0 ? (int) round(($trackCompletedCount / $trackLessonCount) * 100) : 0;
+                                $trackEntryLesson = $trackEntryLessons->get($track->id);
+                                $trackHasInProgressLesson = $trackEntryLesson && $inProgressLessonIds->contains($trackEntryLesson->id);
                             @endphp
-                            <details class="w-[18rem] shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/60" open>
-                                <summary class="cursor-pointer list-none">
+                            @if ($hasAccess && $trackEntryLesson)
+                                <a href="{{ route('courses.lessons.show', [$course->slug, $trackEntryLesson]) }}" class="group flex w-[18rem] shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950/60 transition hover:-translate-y-0.5 hover:border-sky-400/40 hover:bg-slate-900/80">
                                     <img src="{{ $track->thumbnail_display_url }}" alt="{{ $track->name }}" class="aspect-video w-full object-cover">
-                                    <div class="p-4">
+                                    <div class="flex flex-1 flex-col p-4">
+                                        <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Trilha</p>
+                                        <h4 class="mt-2 min-h-12 text-base font-semibold text-white">{{ $track->name }}</h4>
+                                        <div class="mt-4 flex items-center justify-between text-xs font-semibold text-slate-300">
+                                            <span>{{ $trackLessonCount }} aula(s)</span>
+                                            <span>{{ $trackProgress }}%</span>
+                                        </div>
+                                        <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+                                            <div class="h-full rounded-full bg-sky-400" style="width: {{ min(100, $trackProgress) }}%"></div>
+                                        </div>
+                                        <div class="mt-4 rounded-xl border border-white/10 bg-white/5 p-3">
+                                            <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                                                {{ $trackHasInProgressLesson || ($trackProgress > 0 && $trackProgress < 100) ? 'Continuar em' : ($trackProgress >= 100 ? 'Rever desde' : 'Começar por') }}
+                                            </p>
+                                            <p class="mt-1 line-clamp-2 text-sm font-semibold text-slate-100">{{ $trackEntryLesson->title }}</p>
+                                        </div>
+                                        <span class="mt-auto inline-flex w-full justify-center rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-center text-sm font-semibold text-sky-100 transition group-hover:bg-sky-400/20">
+                                            {{ $trackHasInProgressLesson || ($trackProgress > 0 && $trackProgress < 100) ? 'Continuar trilha' : ($trackProgress >= 100 ? 'Rever trilha' : 'Começar trilha') }}
+                                        </span>
+                                    </div>
+                                </a>
+                            @else
+                                <div class="flex w-[18rem] shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950/60">
+                                    <img src="{{ $track->thumbnail_display_url }}" alt="{{ $track->name }}" class="aspect-video w-full object-cover opacity-80">
+                                    <div class="flex flex-1 flex-col p-4">
                                         <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Trilha</p>
                                         <h4 class="mt-2 min-h-12 text-base font-semibold text-white">{{ $track->name }}</h4>
                                         <div class="mt-4 flex items-center justify-between text-xs font-semibold text-slate-300">
@@ -121,46 +147,12 @@
                                                 <div class="h-full rounded-full bg-sky-400" style="width: {{ min(100, $trackProgress) }}%"></div>
                                             </div>
                                         @endif
+                                        <span class="mt-auto inline-flex w-full justify-center rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-center text-sm font-semibold text-slate-400">
+                                            {{ $hasAccess ? 'Sem aulas publicadas' : 'Bloqueada' }}
+                                        </span>
                                     </div>
-                                </summary>
-
-                                <div class="space-y-2 border-t border-white/10 p-4">
-                                    @forelse ($track->lessons as $lesson)
-                                        @php
-                                            $lessonCompleted = $completedLessonIds->contains($lesson->id);
-                                        @endphp
-                                        <div class="rounded-xl border border-white/10 bg-white/5 p-3">
-                                            <div class="flex flex-wrap gap-2">
-                                                <span class="rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-1 text-[0.7rem] font-semibold text-sky-100">{{ match ($lesson->type) {
-                                                    'video' => 'Vídeo',
-                                                    'pdf' => 'PDF',
-                                                    'mixed' => 'Mista',
-                                                    'text' => 'Texto',
-                                                    'quiz' => 'Questões',
-                                                    default => $lesson->type,
-                                                } }}</span>
-                                                <span class="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[0.7rem] font-semibold text-slate-200">{{ $lesson->duration_minutes }} min</span>
-                                                @if ($lessonCompleted)
-                                                    <span class="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-[0.7rem] font-semibold text-emerald-200">Concluída</span>
-                                                @endif
-                                            </div>
-                                            <p class="mt-3 text-sm font-semibold text-white">{{ $lesson->title }}</p>
-
-                                            @if ($hasAccess)
-                                                <a href="{{ route('courses.lessons.show', [$course->slug, $lesson]) }}" class="mt-3 inline-flex w-full justify-center rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-center text-sm font-semibold text-sky-100">
-                                                    {{ $lessonCompleted ? 'Rever aula' : 'Assistir aula' }}
-                                                </a>
-                                            @else
-                                                <button type="button" disabled class="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-slate-400">
-                                                    Bloqueada
-                                                </button>
-                                            @endif
-                                        </div>
-                                    @empty
-                                        <p class="text-sm text-slate-400">Nenhuma aula publicada nesta trilha ainda.</p>
-                                    @endforelse
                                 </div>
-                            </details>
+                            @endif
                         @empty
                             <div class="w-full rounded-2xl border border-white/10 bg-white/5 p-4">
                                 <p class="text-sm text-slate-400">Nenhuma trilha publicada neste módulo ainda.</p>

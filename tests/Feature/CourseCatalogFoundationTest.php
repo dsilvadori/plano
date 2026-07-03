@@ -166,7 +166,76 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.show', $course->slug))
             ->assertOk()
             ->assertSee('1 de 1 aula(s) concluída(s).')
-            ->assertSee('Concluída');
+            ->assertSee('Rever trilha')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
+    }
+
+    public function test_course_track_card_links_to_in_progress_lesson_before_first_lesson(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com progresso por trilha',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática',
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Introdução',
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Configurações',
+            'status' => 'published',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+        $module->onlineLessons()->syncWithoutDetaching([
+            $firstLesson->id => ['sort_order' => 1],
+            $secondLesson->id => ['sort_order' => 2],
+        ]);
+        $track->lessons()->syncWithoutDetaching([
+            $firstLesson->id => ['sort_order' => 1],
+            $secondLesson->id => ['sort_order' => 2],
+        ]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        LessonProgress::query()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'lesson_id' => $secondLesson->id,
+            'status' => 'in_progress',
+            'progress_seconds' => 120,
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Continuar trilha')
+            ->assertSee('02 - Configurações')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $secondLesson]), false)
+            ->assertDontSee('Assistir aula');
     }
 
     public function test_courses_only_show_tracks_explicitly_linked_to_them(): void

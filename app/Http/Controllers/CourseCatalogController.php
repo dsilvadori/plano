@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\AiArtifact;
 use App\Models\Course;
+use App\Models\CourseModule;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
 use App\Models\Lesson;
@@ -148,7 +149,9 @@ class CourseCatalogController extends Controller
             'hasAccess' => $hasAccess,
             'progressSummary' => $this->progressForCourse($course, $user),
             'completedLessonIds' => $this->completedLessonIdsForCourse($course, $user),
+            'inProgressLessonIds' => $this->inProgressLessonIdsForCourse($course, $user),
             'continueLesson' => $hasAccess ? $this->continueLessonForCourse($course, $user) : null,
+            'trackEntryLessons' => $hasAccess ? $this->trackEntryLessonsForCourse($course, $user) : collect(),
         ]);
     }
 
@@ -335,6 +338,16 @@ class CourseCatalogController extends Controller
             ->pluck('lesson_id');
     }
 
+    protected function inProgressLessonIdsForCourse(Course $course, User $user): Collection
+    {
+        return LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->where('course_id', $course->id)
+            ->where('status', 'in_progress')
+            ->whereNull('completed_at')
+            ->pluck('lesson_id');
+    }
+
     protected function continueLessonForCourse(Course $course, User $user): ?Lesson
     {
         $completedLessonIds = $this->completedLessonIdsForCourse($course, $user);
@@ -342,6 +355,93 @@ class CourseCatalogController extends Controller
         return $this->publishedLessonsForCourse($course)
             ->when($completedLessonIds->isNotEmpty(), fn (Builder $query) => $query->whereNotIn('lessons.id', $completedLessonIds))
             ->first();
+    }
+
+    protected function trackEntryLessonsForCourse(Course $course, User $user): Collection
+    {
+        $trackIds = $course->modules
+            ->flatMap(fn (CourseModule $module) => $module->tracks)
+            ->pluck('id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($trackIds->isEmpty()) {
+            return collect();
+        }
+
+        $orderedLessonsByTrack = DB::table('course_module_track_lessons')
+            ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
+            ->whereIn('course_module_track_lessons.course_module_track_id', $trackIds)
+            ->where('lessons.status', 'published')
+            ->select([
+                'course_module_track_lessons.course_module_track_id',
+                'lessons.id as lesson_id',
+                'course_module_track_lessons.sort_order',
+                'lessons.sort_order as lesson_sort_order',
+                'lessons.title',
+            ])
+            ->orderBy('course_module_track_lessons.course_module_track_id')
+            ->orderBy('course_module_track_lessons.sort_order')
+            ->orderBy('lessons.sort_order')
+            ->orderBy('lessons.title')
+            ->get()
+            ->groupBy('course_module_track_id');
+
+        $lessonIds = $orderedLessonsByTrack
+            ->flatMap(fn (Collection $lessons) => $lessons->pluck('lesson_id'))
+            ->unique()
+            ->values();
+
+        if ($lessonIds->isEmpty()) {
+            return collect();
+        }
+
+        $lessonsById = Lesson::query()
+            ->whereIn('id', $lessonIds)
+            ->get()
+            ->keyBy('id');
+
+        $progressByLesson = LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->where('course_id', $course->id)
+            ->whereIn('lesson_id', $lessonIds)
+            ->orderByDesc('updated_at')
+            ->get()
+            ->keyBy('lesson_id');
+
+        return $orderedLessonsByTrack
+            ->mapWithKeys(function (Collection $trackLessons, int $trackId) use ($lessonsById, $progressByLesson): array {
+                $inProgressLessonId = $trackLessons
+                    ->pluck('lesson_id')
+                    ->filter(function (int $lessonId) use ($progressByLesson): bool {
+                        $progress = $progressByLesson->get($lessonId);
+
+                        return $progress
+                            && $progress->status === 'in_progress'
+                            && $progress->completed_at === null;
+                    })
+                    ->sortByDesc(fn (int $lessonId) => $progressByLesson->get($lessonId)?->updated_at?->timestamp ?? 0)
+                    ->first();
+
+                if ($inProgressLessonId) {
+                    $lesson = $lessonsById->get($inProgressLessonId);
+
+                    return $lesson ? [$trackId => $lesson] : [];
+                }
+
+                $nextLessonId = $trackLessons
+                    ->pluck('lesson_id')
+                    ->first(function (int $lessonId) use ($progressByLesson): bool {
+                        $progress = $progressByLesson->get($lessonId);
+
+                        return ! $progress || $progress->status !== 'completed';
+                    });
+
+                $lesson = $lessonsById->get($nextLessonId ?: (int) $trackLessons->first()->lesson_id);
+
+                return $lesson ? [$trackId => $lesson] : [];
+            });
     }
 
     protected function publishedLessonsForCourse(Course $course): Builder
