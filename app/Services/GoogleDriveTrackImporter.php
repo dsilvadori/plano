@@ -9,6 +9,7 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\GoogleDriveImportRun;
 use App\Models\Lesson;
+use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -613,7 +614,7 @@ class GoogleDriveTrackImporter
             }
         }
 
-        $normalizedTitle = $this->normalizeImportName($title);
+        $normalizedTitle = LessonTitleNormalizer::matchKey($title);
 
         if ($normalizedTitle === '') {
             return null;
@@ -625,8 +626,8 @@ class GoogleDriveTrackImporter
             ->get()
             ->first(function (Lesson $lesson) use ($normalizedTitle, $slug): bool {
                 return $lesson->slug === $slug
-                    || $this->normalizeImportName($lesson->title) === $normalizedTitle
-                    || $this->normalizeImportName(pathinfo($lesson->title, PATHINFO_FILENAME)) === $normalizedTitle;
+                    || LessonTitleNormalizer::matchKey($lesson->title) === $normalizedTitle
+                    || LessonTitleNormalizer::matchKey(pathinfo($lesson->title, PATHINFO_FILENAME)) === $normalizedTitle;
             });
     }
 
@@ -1047,7 +1048,9 @@ class GoogleDriveTrackImporter
     {
         $title = trim(pathinfo($name, PATHINFO_FILENAME));
 
-        return $title !== '' ? $title : 'Aula '.$fallbackIndex;
+        return $title !== ''
+            ? LessonTitleNormalizer::normalizePreservingNumber($title, $fallbackIndex)
+            : LessonTitleNormalizer::normalize('Aula '.$fallbackIndex, $fallbackIndex);
     }
 
     protected function lessonTypeForMimeType(string $mimeType): string

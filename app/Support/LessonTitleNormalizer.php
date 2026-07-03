@@ -59,7 +59,14 @@ class LessonTitleNormalizer
 
     public static function leadingNumber(string $title): ?int
     {
-        return preg_match('/^\s*(?:aula\s*)?0*(\d{1,3})\b/iu', $title, $matches) === 1
+        $normalizedTitle = Str::of($title)
+            ->replaceMatches('/\.(mp4|mov|m4v|avi|mkv|webm)$/i', '')
+            ->replaceMatches('/\(\s*\d{3,4}p\s*\)/i', '')
+            ->replace(['_', '–', '—'], [' ', '-', '-'])
+            ->squish()
+            ->value();
+
+        return preg_match('/^\s*(?:aula\s*)?0*(\d{1,3})(?:\b|[\s.-])/iu', $normalizedTitle, $matches) === 1
             ? max(1, (int) $matches[1])
             : null;
     }
@@ -95,10 +102,12 @@ class LessonTitleNormalizer
         return Str::of($title)
             ->replaceMatches('/\.(mp4|mov|m4v|avi|mkv|webm)$/i', '')
             ->replaceMatches('/\(\s*\d{3,4}p\s*\)/i', '')
-            ->replace(['_', '–', '—'], [' ', '-', '-'])
-            ->replaceMatches('/^\s*\d{1,3}\s*[-.]?\s*/', '')
-            ->replaceMatches('/\b(Raciocínio\s+Lógico)\s+\d{1,3}\s*-\s*/iu', '$1 - ')
+            ->replace(['–', '—'], '-')
+            ->replaceMatches('/_{3,}/u', ' - ')
+            ->replaceMatches('/[_]+/u', ' ')
             ->replaceMatches('/\s*-\s*/', ' - ')
+            ->replaceMatches('/^\s*(?:aula\s*)?\d{1,3}\s*(?:[-.]|\s+-\s+)?\s*/iu', '')
+            ->replaceMatches('/\b(Raciocínio\s+Lógico)\s+\d{1,3}\s*-\s*/iu', '$1 - ')
             ->replaceMatches('/\s+/', ' ')
             ->trim(" \t\n\r\0\x0B-")
             ->value();
@@ -106,7 +115,7 @@ class LessonTitleNormalizer
 
     protected static function titleCase(string $title): string
     {
-        $minorWords = ['a', 'as', 'com', 'como', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na', 'nas', 'no', 'nos', 'o', 'os', 'para', 'por', 'um', 'uma'];
+        $minorWords = ['a', 'as', 'ao', 'aos', 'com', 'como', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na', 'nas', 'no', 'nos', 'o', 'os', 'para', 'por', 'um', 'uma'];
         $parts = preg_split('/(\s+)/u', mb_strtolower($title, 'UTF-8'), -1, PREG_SPLIT_DELIM_CAPTURE) ?: [];
         $isFirstWord = true;
 
@@ -149,7 +158,9 @@ class LessonTitleNormalizer
             '/\bInterpessoal\b/iu' => 'Interpessoal',
             '/\bInperpessoal\b/iu' => 'Interpessoal',
             '/\bIntepessoal\b/iu' => 'Interpessoal',
+            '/\bIntroducao\b/iu' => 'Introdução',
             '/\bLogico\b/iu' => 'Lógico',
+            '/\bPowerpoint\b/iu' => 'PowerPoint',
             '/\bNegacoes\b/iu' => 'Negações',
             '/\bOrganizacional\b/iu' => 'Organizacional',
             '/\bPeriodo\b/iu' => 'Período',
