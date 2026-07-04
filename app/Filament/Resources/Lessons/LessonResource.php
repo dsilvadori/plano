@@ -229,10 +229,11 @@ class LessonResource extends Resource
     {
         return $table
             ->columns([
-                TextColumn::make('title')->label('Aula')->searchable()->sortable(),
+                TextColumn::make('title')->label('Aula')->searchable()->sortable()->toggleable(),
                 TextColumn::make('linked_courses')
                     ->label('Curso')
                     ->getStateUsing(fn (Lesson $record): string => self::linkedCourseNames($record))
+                    ->toggleable(isToggledHiddenByDefault: true)
                     ->searchable(query: fn ($query, string $search) => $query
                         ->whereHas('course', fn ($query) => $query->where('name', 'like', "%{$search}%"))
                         ->orWhereHas('modules.courses', fn ($query) => $query->where('courses.name', 'like', "%{$search}%"))
@@ -240,18 +241,21 @@ class LessonResource extends Resource
                 TextColumn::make('linked_modules')
                     ->label('Módulo')
                     ->getStateUsing(fn (Lesson $record): string => self::linkedModuleNames($record))
+                    ->toggleable(isToggledHiddenByDefault: true)
                     ->searchable(query: fn ($query, string $search) => $query
                         ->whereHas('module', fn ($query) => $query->where('name', 'like', "%{$search}%"))
                         ->orWhereHas('modules', fn ($query) => $query->where('course_modules.name', 'like', "%{$search}%"))),
                 TextColumn::make('linked_tracks')
                     ->label('Trilha')
                     ->getStateUsing(fn (Lesson $record): string => self::linkedTrackNames($record))
+                    ->toggleable(isToggledHiddenByDefault: true)
                     ->searchable(query: fn ($query, string $search) => $query
                         ->whereHas('track', fn ($query) => $query->where('name', 'like', "%{$search}%"))
                         ->orWhereHas('tracks', fn ($query) => $query->where('course_module_tracks.name', 'like', "%{$search}%"))),
                 TextColumn::make('type')
                     ->label('Tipo')
                     ->badge()
+                    ->toggleable()
                     ->formatStateUsing(fn (string $state): string => match ($state) {
                         'video' => 'Vídeo',
                         'pdf' => 'PDF',
@@ -263,6 +267,7 @@ class LessonResource extends Resource
                 TextColumn::make('status')
                     ->label('Status')
                     ->badge()
+                    ->toggleable()
                     ->formatStateUsing(fn (string $state): string => match ($state) {
                         'draft' => 'Rascunho',
                         'published' => 'Publicado',
@@ -272,6 +277,7 @@ class LessonResource extends Resource
                 TextColumn::make('source_status')
                     ->label('Mídia')
                     ->badge()
+                    ->toggleable()
                     ->formatStateUsing(fn (?string $state): string => match ($state) {
                         'structure_only' => 'Somente estrutura',
                         'awaiting_media' => 'Aguardando mídia',
@@ -283,9 +289,32 @@ class LessonResource extends Resource
                         'published' => 'Publicado',
                         default => (string) $state,
                     }),
-                TextColumn::make('duration_minutes')->label('Min')->sortable(query: fn ($query, $direction) => $query->orderBy('duration_seconds', $direction)),
-                TextColumn::make('sort_order')->label('Ordem')->sortable(),
-                TextColumn::make('panda_video_id')->label('ID do provedor')->searchable()->toggleable(),
+                TextColumn::make('ai_resources_status')
+                    ->label('IA')
+                    ->badge()
+                    ->toggleable()
+                    ->getStateUsing(fn (Lesson $record): string => self::aiResourcesStatus($record))
+                    ->color(fn (string $state): string => match ($state) {
+                        'Completa' => 'success',
+                        'Parcial' => 'warning',
+                        'Gerando' => 'info',
+                        default => 'gray',
+                    }),
+                TextColumn::make('tutor_status_flag')
+                    ->label('Tutor')
+                    ->badge()
+                    ->toggleable()
+                    ->getStateUsing(fn (Lesson $record): string => self::tutorStatusFlag($record))
+                    ->color(fn (string $state): string => match ($state) {
+                        'Ativo' => 'success',
+                        'Processando' => 'warning',
+                        'Solicitado' => 'info',
+                        'Falhou' => 'danger',
+                        default => 'gray',
+                    }),
+                TextColumn::make('duration_minutes')->label('Min')->sortable(query: fn ($query, $direction) => $query->orderBy('duration_seconds', $direction))->toggleable(),
+                TextColumn::make('sort_order')->label('Ordem')->sortable()->toggleable(),
+                TextColumn::make('panda_video_id')->label('ID do provedor')->searchable()->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
                 SelectFilter::make('course_id')
@@ -520,6 +549,44 @@ class LessonResource extends Resource
     public static function hasPandaVideo(Lesson $lesson): bool
     {
         return filled($lesson->panda_video_id) || filled(data_get($lesson->metadata, 'payload.id'));
+    }
+
+    public static function aiResourcesStatus(Lesson $lesson): string
+    {
+        $readyTypes = $lesson->aiArtifacts()
+            ->where('status', 'ready')
+            ->whereIn('artifact_type', ['summary', 'quiz', 'mindmap'])
+            ->pluck('artifact_type')
+            ->unique();
+
+        if ($readyTypes->count() >= 3) {
+            return 'Completa';
+        }
+
+        if ($readyTypes->isNotEmpty()) {
+            return 'Parcial';
+        }
+
+        if (data_get($lesson->metadata, 'panda_ai.last_request_status') === 'requested'
+            || data_get($lesson->metadata, 'panda_ai.last_payload_status') === 'regenerating') {
+            return 'Gerando';
+        }
+
+        return 'Sem IA';
+    }
+
+    public static function tutorStatusFlag(Lesson $lesson): string
+    {
+        if ((bool) data_get($lesson->metadata, 'panda_ai.tutor_available', false)) {
+            return 'Ativo';
+        }
+
+        return match ((string) data_get($lesson->metadata, 'panda_ai.tutor_status', '')) {
+            'processing', 'queued' => 'Processando',
+            'requested', 'ready' => 'Solicitado',
+            'failed' => 'Falhou',
+            default => 'Sem Tutor',
+        };
     }
 
     public static function notifyPandaAiResult(array $result): void

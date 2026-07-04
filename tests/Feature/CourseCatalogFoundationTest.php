@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\Lessons\LessonResource;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
@@ -702,7 +703,8 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
-            ->assertSee('Estamos preparando o resumo desta aula.');
+            ->assertDontSee('Assistente da aula')
+            ->assertDontSee('Estamos preparando o resumo desta aula.');
 
         $lesson->refresh();
 
@@ -753,7 +755,8 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
-            ->assertSee('Estamos preparando o resumo desta aula.');
+            ->assertDontSee('Assistente da aula')
+            ->assertDontSee('Estamos preparando o resumo desta aula.');
 
         $this->assertDatabaseMissing('ai_artifacts', [
             'source_type' => Lesson::class,
@@ -855,13 +858,41 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
-            ->assertSee('tutorTabVisible: false', false)
-            ->assertSee('tutorConfigUrl:', false)
-            ->assertSee('tutorCandidateUrl:', false);
+            ->assertDontSee('Assistente da aula')
+            ->assertDontSee('Estude este conteúdo com IA')
+            ->assertDontSee('tutorTabVisible:', false)
+            ->assertDontSee('tutorConfigUrl:', false)
+            ->assertDontSee('tutorCandidateUrl:', false);
 
         $lesson->refresh();
 
         $this->assertFalse((bool) data_get($lesson->metadata, 'panda_ai.tutor_available'));
         $this->assertNotEmpty(data_get($lesson->metadata, 'panda_ai.tutor_checked_at'));
+    }
+
+    public function test_lesson_admin_ai_and_tutor_flags_reflect_ready_resources(): void
+    {
+        $lesson = Lesson::factory()->create([
+            'metadata' => [
+                'panda_ai' => [
+                    'tutor_available' => true,
+                    'tutor_status' => 'active',
+                ],
+            ],
+        ]);
+
+        foreach (['summary', 'quiz', 'mindmap'] as $type) {
+            AiArtifact::query()->create([
+                'source_type' => Lesson::class,
+                'source_id' => $lesson->id,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+                'status' => 'ready',
+                'content' => ['text' => "Conteúdo {$type}"],
+            ]);
+        }
+
+        $this->assertSame('Completa', LessonResource::aiResourcesStatus($lesson));
+        $this->assertSame('Ativo', LessonResource::tutorStatusFlag($lesson));
     }
 }

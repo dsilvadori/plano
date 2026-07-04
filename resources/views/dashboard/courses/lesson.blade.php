@@ -354,6 +354,7 @@
         'mindmap' => $mindMapBranches !== [],
         'question' => (bool) $pandaTutorUrl,
     ];
+    $hasLessonAiPanel = in_array(true, $cachedAiTabs, true);
 @endphp
 
 <x-app-layout>
@@ -446,273 +447,273 @@
                 </form>
             </div>
 
-            <div
-                class="lesson-ai-panel mt-6"
-                x-data="{
-                    activeTab: null,
-                    cachedTabs: @js($cachedAiTabs),
-                    readyTabs: {},
-                    loadingTabs: {},
-                    loadingTimers: {},
-                    tutorTabVisible: @js((bool) $pandaTutorUrl),
-                    tutorUrl: @js($pandaTutorUrl),
-                    tutorCandidateUrl: @js($pandaTutorCandidateUrl),
-                    tutorConfigUrl: @js($pandaTutorConfigUrl),
-                    openAiTab(tab) {
-                        this.activeTab = tab;
+            @if ($hasLessonAiPanel)
+                <div
+                    class="lesson-ai-panel mt-6"
+                    x-data="{
+                        activeTab: null,
+                        cachedTabs: @js($cachedAiTabs),
+                        readyTabs: {},
+                        loadingTabs: {},
+                        loadingTimers: {},
+                        tutorTabVisible: @js((bool) $pandaTutorUrl),
+                        tutorUrl: @js($pandaTutorUrl),
+                        tutorCandidateUrl: @js($pandaTutorCandidateUrl),
+                        tutorConfigUrl: @js($pandaTutorConfigUrl),
+                        openAiTab(tab) {
+                            this.activeTab = tab;
 
-                        if (this.readyTabs[tab]) {
-                            return;
-                        }
+                            if (this.readyTabs[tab]) {
+                                return;
+                            }
 
-                        if (! this.cachedTabs[tab] || tab === 'question') {
-                            this.readyTabs[tab] = true;
-                            return;
-                        }
+                            if (! this.cachedTabs[tab] || tab === 'question') {
+                                this.readyTabs[tab] = true;
+                                return;
+                            }
 
-                        this.loadingTabs[tab] = true;
-                        clearTimeout(this.loadingTimers[tab]);
-                        this.loadingTimers[tab] = setTimeout(() => {
-                            this.readyTabs[tab] = true;
-                            this.loadingTabs[tab] = false;
-                        }, 2500);
-                    },
-                    isTabLoading(tab) {
-                        return this.activeTab === tab && this.loadingTabs[tab] && ! this.readyTabs[tab];
-                    },
-                    isTabReady(tab) {
-                        return this.activeTab === tab && this.readyTabs[tab];
-                    },
-                    seekLessonVideo(seconds) {
-                        const frame = document.getElementById('lesson-player');
-                        const wrapper = document.getElementById('lesson-video-frame');
+                            this.loadingTabs[tab] = true;
+                            clearTimeout(this.loadingTimers[tab]);
+                            this.loadingTimers[tab] = setTimeout(() => {
+                                this.readyTabs[tab] = true;
+                                this.loadingTabs[tab] = false;
+                            }, 2500);
+                        },
+                        isTabLoading(tab) {
+                            return this.activeTab === tab && this.loadingTabs[tab] && ! this.readyTabs[tab];
+                        },
+                        isTabReady(tab) {
+                            return this.activeTab === tab && this.readyTabs[tab];
+                        },
+                        seekLessonVideo(seconds) {
+                            const frame = document.getElementById('lesson-player');
+                            const wrapper = document.getElementById('lesson-video-frame');
 
-                        if (! frame?.contentWindow) return;
+                            if (! frame?.contentWindow) return;
 
-                        frame.contentWindow.postMessage({ type: 'currentTime', parameter: seconds }, '*');
-                        frame.contentWindow.postMessage({ type: 'play' }, '*');
-                        wrapper?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    },
-                }"
-            >
-                <div class="flex flex-col gap-3 border-b border-white/10 p-5 lg:flex-row lg:items-center lg:justify-between">
-                    <div>
-                        <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Assistente da aula</p>
-                        <h2 class="mt-2 text-2xl font-semibold text-white">Estude este conteúdo com IA</h2>
-                    </div>
-                </div>
-
-                <div class="lesson-ai-tabs" role="tablist" aria-label="Recursos da aula">
-                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'summary' }" @click="openAiTab('summary')">Resumo</button>
-                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'quiz' }" @click="openAiTab('quiz')">Questões para fixação</button>
-                    <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'mindmap' }" @click="openAiTab('mindmap')">Mapa mental</button>
-                    <button x-show="tutorTabVisible" x-cloak type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'question' }" @click="openAiTab('question')">Tirar dúvidas</button>
-                </div>
-
-                <div class="p-5">
-                    <div x-show="isTabLoading('summary')" x-cloak class="lesson-ai-loading">
-                        <span></span>
-                        Gerando resumo da aula...
+                            frame.contentWindow.postMessage({ type: 'currentTime', parameter: seconds }, '*');
+                            frame.contentWindow.postMessage({ type: 'play' }, '*');
+                            wrapper?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        },
+                    }"
+                >
+                    <div class="flex flex-col gap-3 border-b border-white/10 p-5 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                            <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Assistente da aula</p>
+                            <h2 class="mt-2 text-2xl font-semibold text-white">Estude este conteúdo com IA</h2>
+                        </div>
                     </div>
 
-                    <div x-show="isTabReady('summary')" x-cloak>
+                    <div class="lesson-ai-tabs" role="tablist" aria-label="Recursos da aula">
                         @if ($summaryBlocks !== [])
-                            <div class="lesson-ai-prose">
-                                @foreach ($summaryBlocks as $block)
-                                    @if ($block['type'] === 'heading')
-                                        @if ($block['level'] <= 1)
-                                            <h2>
-                                                @foreach ($inlineSegments($block['text']) as $segment)
-                                                    @if ($segment['bold'])
-                                                        <strong>{{ $segment['text'] }}</strong>
-                                                    @else
-                                                        {{ $segment['text'] }}
-                                                    @endif
-                                                @endforeach
-                                            </h2>
-                                        @elseif ($block['level'] === 2)
-                                            <h3>
-                                                @foreach ($inlineSegments($block['text']) as $segment)
-                                                    @if ($segment['bold'])
-                                                        <strong>{{ $segment['text'] }}</strong>
-                                                    @else
-                                                        {{ $segment['text'] }}
-                                                    @endif
-                                                @endforeach
-                                            </h3>
-                                        @else
-                                            <h4>
-                                                @foreach ($inlineSegments($block['text']) as $segment)
-                                                    @if ($segment['bold'])
-                                                        <strong>{{ $segment['text'] }}</strong>
-                                                    @else
-                                                        {{ $segment['text'] }}
-                                                    @endif
-                                                @endforeach
-                                            </h4>
-                                        @endif
-                                    @elseif ($block['type'] === 'list')
-                                        <ul>
-                                            @foreach ($block['items'] as $item)
-                                                <li>
-                                                    @foreach ($inlineSegments($item) as $segment)
+                            <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'summary' }" @click="openAiTab('summary')">Resumo</button>
+                        @endif
+                        @if ($quizItems !== [])
+                            <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'quiz' }" @click="openAiTab('quiz')">Questões para fixação</button>
+                        @endif
+                        @if ($mindMapBranches !== [])
+                            <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'mindmap' }" @click="openAiTab('mindmap')">Mapa mental</button>
+                        @endif
+                        @if ($pandaTutorUrl)
+                            <button type="button" class="lesson-ai-tab" :class="{ 'is-active': activeTab === 'question' }" @click="openAiTab('question')">Tirar dúvidas</button>
+                        @endif
+                    </div>
+
+                    <div class="p-5">
+                        @if ($summaryBlocks !== [])
+                            <div x-show="isTabLoading('summary')" x-cloak class="lesson-ai-loading">
+                                <span></span>
+                                Gerando resumo da aula...
+                            </div>
+
+                            <div x-show="isTabReady('summary')" x-cloak>
+                                <div class="lesson-ai-prose">
+                                    @foreach ($summaryBlocks as $block)
+                                        @if ($block['type'] === 'heading')
+                                            @if ($block['level'] <= 1)
+                                                <h2>
+                                                    @foreach ($inlineSegments($block['text']) as $segment)
                                                         @if ($segment['bold'])
                                                             <strong>{{ $segment['text'] }}</strong>
                                                         @else
                                                             {{ $segment['text'] }}
                                                         @endif
                                                     @endforeach
-                                                </li>
-                                            @endforeach
-                                        </ul>
-                                    @else
-                                        <p>
-                                            @foreach ($inlineSegments($block['text']) as $segment)
-                                                @if ($segment['bold'])
-                                                    <strong>{{ $segment['text'] }}</strong>
-                                                @else
-                                                    {{ $segment['text'] }}
-                                                @endif
-                                            @endforeach
-                                        </p>
-                                    @endif
-                                @endforeach
-                            </div>
-                        @else
-                            <div class="lesson-ai-empty">
-                                Estamos preparando o resumo desta aula. Tente novamente em alguns minutos.
-                            </div>
-                        @endif
-
-                        @if ($transcriptText !== '')
-                            <details class="mt-5 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                                <summary class="cursor-pointer text-sm font-semibold text-white">Ver transcrição usada pela IA</summary>
-                                <div class="lesson-ai-prose mt-4 max-h-80 overflow-auto text-sm">
-                                    <p>{{ $transcriptText }}</p>
-                                </div>
-                            </details>
-                        @endif
-                    </div>
-
-                    <div x-show="isTabLoading('quiz')" x-cloak class="lesson-ai-loading">
-                        <span></span>
-                        Gerando questões da aula...
-                    </div>
-
-                    <div x-show="isTabReady('quiz')" x-cloak>
-                        @if ($quizItems !== [])
-                            <div class="space-y-4">
-                                @foreach ($quizItems as $index => $item)
-                                    <article class="rounded-2xl border border-white/10 bg-slate-950/50 p-4" x-data="{ revealed: false, selected: null }">
-                                        <p class="text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">Questão {{ $index + 1 }}</p>
-                                        <h3 class="mt-2 text-base font-semibold leading-6 text-white">{{ $item['question'] }}</h3>
-
-                                        @if ($item['options'] !== [])
-                                            <div class="mt-4 grid gap-2">
-                                                @foreach ($item['options'] as $optionIndex => $option)
-                                                    <button
-                                                        type="button"
-                                                        @click="selected = {{ $optionIndex }}; revealed = true"
-                                                        class="w-full rounded-xl border px-3 py-2 text-left text-sm transition"
-                                                        :class="revealed && {{ $option['correct'] ? 'true' : 'false' }}
-                                                            ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100'
-                                                            : (selected === {{ $optionIndex }} ? 'border-rose-400/30 bg-rose-400/10 text-rose-100' : 'border-white/10 bg-white/5 text-slate-200 hover:border-sky-400/30 hover:bg-sky-400/10')"
-                                                    >
-                                                        <span class="font-semibold text-sky-100">{{ chr(65 + $optionIndex) }}.</span>
-                                                        {{ $option['text'] }}
-                                                    </button>
-                                                @endforeach
-                                            </div>
-                                        @elseif ($item['answer_bool'] !== null)
-                                            <div class="mt-4 grid grid-cols-2 gap-2 sm:max-w-sm">
-                                                <button type="button" @click="selected = true; revealed = true" class="rounded-xl border px-3 py-2 text-center text-sm font-semibold transition" :class="revealed && {{ $item['answer_bool'] ? 'true' : 'false' }} ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100' : (selected === true ? 'border-rose-400/30 bg-rose-400/10 text-rose-100' : 'border-white/10 bg-white/5 text-slate-300 hover:border-sky-400/30 hover:bg-sky-400/10')">
-                                                    Certo
-                                                </button>
-                                                <button type="button" @click="selected = false; revealed = true" class="rounded-xl border px-3 py-2 text-center text-sm font-semibold transition" :class="revealed && {{ ! $item['answer_bool'] ? 'true' : 'false' }} ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100' : (selected === false ? 'border-rose-400/30 bg-rose-400/10 text-rose-100' : 'border-white/10 bg-white/5 text-slate-300 hover:border-sky-400/30 hover:bg-sky-400/10')">
-                                                    Errado
-                                                </button>
-                                            </div>
-                                        @endif
-
-                                        @if ($item['answer'] !== '' || $item['comment'] !== '')
-                                            <div x-show="revealed" x-transition class="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3">
-                                                @if ($item['answer'] !== '')
-                                                    <p class="mt-3 text-sm font-semibold text-emerald-100">Gabarito: {{ $item['answer'] }}</p>
-                                                @endif
-                                                @if ($item['comment'] !== '')
-                                                    <p class="mt-2 text-sm leading-6 text-slate-200">{{ $item['comment'] }}</p>
-                                                @endif
-                                            </div>
-                                        @endif
-                                    </article>
-                                @endforeach
-                            </div>
-                        @else
-                            <div class="lesson-ai-empty">
-                                As questões desta aula ainda estão sendo preparadas. Em breve elas aparecerão aqui com gabarito e comentário.
-                            </div>
-                        @endif
-                    </div>
-
-                    <div x-show="isTabLoading('mindmap')" x-cloak class="lesson-ai-loading">
-                        <span></span>
-                        Gerando mapa mental da aula...
-                    </div>
-
-                    <div x-show="isTabReady('mindmap')" x-cloak>
-                        @if ($mindMapBranches !== [])
-                            <div class="lesson-mindmap" aria-label="Mapa mental da aula">
-                                <div class="lesson-mindmap-center">
-                                    <span>Mapa mental</span>
-                                    <strong>{{ $mindMapTitle }}</strong>
-                                </div>
-                                <div class="lesson-mindmap-branches">
-                                    @foreach ($mindMapBranches as $branch)
-                                        <section class="lesson-mindmap-branch lesson-mindmap-tone-{{ ($loop->index % 6) + 1 }}">
-                                            <h3>{{ $branch['title'] }}</h3>
-                                            @if ($branch['children'] !== [])
-                                                <ul>
-                                                    @foreach ($branch['children'] as $child)
-                                                        <li>
-                                                            <strong>{{ $child['title'] }}</strong>
-                                                            @if ($child['children'] !== [])
-                                                                <small>
-                                                                    @foreach (collect($child['children'])->take(3) as $grandchild)
-                                                                        <span>{{ $grandchild['title'] }}</span>
-                                                                        @unless ($loop->last)
-                                                                            <span aria-hidden="true"> · </span>
-                                                                        @endunless
-                                                                    @endforeach
-                                                                </small>
-                                                            @endif
-                                                        </li>
+                                                </h2>
+                                            @elseif ($block['level'] === 2)
+                                                <h3>
+                                                    @foreach ($inlineSegments($block['text']) as $segment)
+                                                        @if ($segment['bold'])
+                                                            <strong>{{ $segment['text'] }}</strong>
+                                                        @else
+                                                            {{ $segment['text'] }}
+                                                        @endif
                                                     @endforeach
-                                                </ul>
+                                                </h3>
+                                            @else
+                                                <h4>
+                                                    @foreach ($inlineSegments($block['text']) as $segment)
+                                                        @if ($segment['bold'])
+                                                            <strong>{{ $segment['text'] }}</strong>
+                                                        @else
+                                                            {{ $segment['text'] }}
+                                                        @endif
+                                                    @endforeach
+                                                </h4>
                                             @endif
-                                        </section>
+                                        @elseif ($block['type'] === 'list')
+                                            <ul>
+                                                @foreach ($block['items'] as $item)
+                                                    <li>
+                                                        @foreach ($inlineSegments($item) as $segment)
+                                                            @if ($segment['bold'])
+                                                                <strong>{{ $segment['text'] }}</strong>
+                                                            @else
+                                                                {{ $segment['text'] }}
+                                                            @endif
+                                                        @endforeach
+                                                    </li>
+                                                @endforeach
+                                            </ul>
+                                        @else
+                                            <p>
+                                                @foreach ($inlineSegments($block['text']) as $segment)
+                                                    @if ($segment['bold'])
+                                                        <strong>{{ $segment['text'] }}</strong>
+                                                    @else
+                                                        {{ $segment['text'] }}
+                                                    @endif
+                                                @endforeach
+                                            </p>
+                                        @endif
+                                    @endforeach
+                                </div>
+
+                                @if ($transcriptText !== '')
+                                    <details class="mt-5 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                                        <summary class="cursor-pointer text-sm font-semibold text-white">Ver transcrição usada pela IA</summary>
+                                        <div class="lesson-ai-prose mt-4 max-h-80 overflow-auto text-sm">
+                                            <p>{{ $transcriptText }}</p>
+                                        </div>
+                                    </details>
+                                @endif
+                            </div>
+                        @endif
+
+                        @if ($quizItems !== [])
+                            <div x-show="isTabLoading('quiz')" x-cloak class="lesson-ai-loading">
+                                <span></span>
+                                Gerando questões da aula...
+                            </div>
+
+                            <div x-show="isTabReady('quiz')" x-cloak>
+                                <div class="space-y-4">
+                                    @foreach ($quizItems as $index => $item)
+                                        <article class="rounded-2xl border border-white/10 bg-slate-950/50 p-4" x-data="{ revealed: false, selected: null }">
+                                            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">Questão {{ $index + 1 }}</p>
+                                            <h3 class="mt-2 text-base font-semibold leading-6 text-white">{{ $item['question'] }}</h3>
+
+                                            @if ($item['options'] !== [])
+                                                <div class="mt-4 grid gap-2">
+                                                    @foreach ($item['options'] as $optionIndex => $option)
+                                                        <button
+                                                            type="button"
+                                                            @click="selected = {{ $optionIndex }}; revealed = true"
+                                                            class="w-full rounded-xl border px-3 py-2 text-left text-sm transition"
+                                                            :class="revealed && {{ $option['correct'] ? 'true' : 'false' }}
+                                                                ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100'
+                                                                : (selected === {{ $optionIndex }} ? 'border-rose-400/30 bg-rose-400/10 text-rose-100' : 'border-white/10 bg-white/5 text-slate-200 hover:border-sky-400/30 hover:bg-sky-400/10')"
+                                                        >
+                                                            <span class="font-semibold text-sky-100">{{ chr(65 + $optionIndex) }}.</span>
+                                                            {{ $option['text'] }}
+                                                        </button>
+                                                    @endforeach
+                                                </div>
+                                            @elseif ($item['answer_bool'] !== null)
+                                                <div class="mt-4 grid grid-cols-2 gap-2 sm:max-w-sm">
+                                                    <button type="button" @click="selected = true; revealed = true" class="rounded-xl border px-3 py-2 text-center text-sm font-semibold transition" :class="revealed && {{ $item['answer_bool'] ? 'true' : 'false' }} ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100' : (selected === true ? 'border-rose-400/30 bg-rose-400/10 text-rose-100' : 'border-white/10 bg-white/5 text-slate-300 hover:border-sky-400/30 hover:bg-sky-400/10')">
+                                                        Certo
+                                                    </button>
+                                                    <button type="button" @click="selected = false; revealed = true" class="rounded-xl border px-3 py-2 text-center text-sm font-semibold transition" :class="revealed && {{ ! $item['answer_bool'] ? 'true' : 'false' }} ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100' : (selected === false ? 'border-rose-400/30 bg-rose-400/10 text-rose-100' : 'border-white/10 bg-white/5 text-slate-300 hover:border-sky-400/30 hover:bg-sky-400/10')">
+                                                        Errado
+                                                    </button>
+                                                </div>
+                                            @endif
+
+                                            @if ($item['answer'] !== '' || $item['comment'] !== '')
+                                                <div x-show="revealed" x-transition class="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3">
+                                                    @if ($item['answer'] !== '')
+                                                        <p class="mt-3 text-sm font-semibold text-emerald-100">Gabarito: {{ $item['answer'] }}</p>
+                                                    @endif
+                                                    @if ($item['comment'] !== '')
+                                                        <p class="mt-2 text-sm leading-6 text-slate-200">{{ $item['comment'] }}</p>
+                                                    @endif
+                                                </div>
+                                            @endif
+                                        </article>
                                     @endforeach
                                 </div>
                             </div>
-                        @else
-                            <div class="lesson-ai-empty">
-                                O mapa mental desta aula ainda está sendo preparado. Tente novamente em alguns minutos.
+                        @endif
+
+                        @if ($mindMapBranches !== [])
+                            <div x-show="isTabLoading('mindmap')" x-cloak class="lesson-ai-loading">
+                                <span></span>
+                                Gerando mapa mental da aula...
+                            </div>
+
+                            <div x-show="isTabReady('mindmap')" x-cloak>
+                                <div class="lesson-mindmap" aria-label="Mapa mental da aula">
+                                    <div class="lesson-mindmap-center">
+                                        <span>Mapa mental</span>
+                                        <strong>{{ $mindMapTitle }}</strong>
+                                    </div>
+                                    <div class="lesson-mindmap-branches">
+                                        @foreach ($mindMapBranches as $branch)
+                                            <section class="lesson-mindmap-branch lesson-mindmap-tone-{{ ($loop->index % 6) + 1 }}">
+                                                <h3>{{ $branch['title'] }}</h3>
+                                                @if ($branch['children'] !== [])
+                                                    <ul>
+                                                        @foreach ($branch['children'] as $child)
+                                                            <li>
+                                                                <strong>{{ $child['title'] }}</strong>
+                                                                @if ($child['children'] !== [])
+                                                                    <small>
+                                                                        @foreach (collect($child['children'])->take(3) as $grandchild)
+                                                                            <span>{{ $grandchild['title'] }}</span>
+                                                                            @unless ($loop->last)
+                                                                                <span aria-hidden="true"> · </span>
+                                                                            @endunless
+                                                                        @endforeach
+                                                                    </small>
+                                                                @endif
+                                                            </li>
+                                                        @endforeach
+                                                    </ul>
+                                                @endif
+                                            </section>
+                                        @endforeach
+                                    </div>
+                                </div>
+                            </div>
+                        @endif
+
+                        @if ($pandaTutorUrl)
+                            <div x-show="isTabReady('question')" x-cloak>
+                                <div x-show="tutorUrl" class="lesson-tutor-frame">
+                                    <iframe
+                                        :src="tutorUrl || 'about:blank'"
+                                        title="Tutor da aula"
+                                        class="h-full w-full"
+                                        allow="clipboard-write"
+                                        referrerpolicy="strict-origin-when-cross-origin"
+                                    ></iframe>
+                                </div>
                             </div>
                         @endif
                     </div>
-
-                    <div x-show="isTabReady('question')" x-cloak>
-                        <div x-show="tutorUrl" class="lesson-tutor-frame">
-                            <iframe
-                                :src="tutorUrl || 'about:blank'"
-                                title="Tutor da aula"
-                                class="h-full w-full"
-                                allow="clipboard-write"
-                                referrerpolicy="strict-origin-when-cross-origin"
-                            ></iframe>
-                        </div>
-                    </div>
                 </div>
-            </div>
+            @endif
 
             @if ($lessonQuestionLink)
                 <div class="mt-6 rounded-3xl border border-sky-400/20 bg-sky-400/10 p-5">
