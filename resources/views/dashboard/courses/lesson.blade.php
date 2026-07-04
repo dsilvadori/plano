@@ -502,6 +502,11 @@
                             <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Assistente da aula</p>
                             <h2 class="mt-2 text-2xl font-semibold text-white">Estude este conteúdo com IA</h2>
                         </div>
+                        @if ($summaryBlocks !== [])
+                            <a href="{{ route('courses.lessons.summary.pdf', [$course->slug, $lesson]) }}" class="inline-flex items-center justify-center rounded-2xl border border-amber-300/30 bg-amber-300/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:border-amber-200/50 hover:bg-amber-300/20">
+                                Baixar resumo em PDF
+                            </a>
+                        @endif
                     </div>
 
                     <div class="lesson-ai-tabs" role="tablist" aria-label="Recursos da aula">

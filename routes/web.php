@@ -26,6 +26,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/dashboard/meus-cursos', [CourseCatalogController::class, 'mine'])->name('courses.mine');
     Route::get('/dashboard/cursos/{course:slug}', [CourseCatalogController::class, 'show'])->name('courses.show');
     Route::get('/dashboard/cursos/{course:slug}/aulas/{lesson}', [CourseCatalogController::class, 'lesson'])->name('courses.lessons.show');
+    Route::get('/dashboard/cursos/{course:slug}/aulas/{lesson}/resumo.pdf', [CourseCatalogController::class, 'downloadLessonSummary'])->name('courses.lessons.summary.pdf');
     Route::post('/dashboard/cursos/{course:slug}/aulas/{lesson}/ia/panda', [CourseCatalogController::class, 'syncPandaAi'])->name('courses.lessons.ai.panda');
     Route::post('/dashboard/cursos/{course:slug}/aulas/{lesson}/concluir', [CourseCatalogController::class, 'completeLesson'])->name('courses.lessons.complete');
     Route::get('/dashboard/questoes', [QuestionBankController::class, 'index'])->name('questions.index');

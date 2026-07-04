@@ -15,10 +15,12 @@ use App\Models\User;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
 use App\Services\PandaVideoClient;
+use App\Services\LessonSummaryPdfGenerator;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -228,6 +230,32 @@ class CourseCatalogController extends Controller
         $this->markLinkedPlanItemsIfReady($user, $lesson);
 
         return back()->with('status', 'Aula marcada como concluída.');
+    }
+
+    public function downloadLessonSummary(Course $course, Lesson $lesson, LessonSummaryPdfGenerator $pdf): Response
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($lesson->status === 'published' && $this->lessonBelongsToCourse($lesson, $course), 404);
+        abort_unless($this->userCanAccessCourse($user, $course), 403);
+
+        $summary = $this->lessonSummaryText($lesson);
+
+        abort_if($summary === '', 404);
+
+        $filename = str($lesson->title)
+            ->ascii()
+            ->slug('-')
+            ->prepend('resumo-')
+            ->append('.pdf')
+            ->toString();
+
+        return response($pdf->generate($course, $lesson, $summary), 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="'.$filename.'"',
+        ]);
     }
 
     public function syncPandaAi(Course $course, Lesson $lesson, PandaAiResourceActivator $activator): RedirectResponse
@@ -889,6 +917,45 @@ class CourseCatalogController extends Controller
             .'/'.trim($pullzoneName, '/')
             .'/'.$videoExternalId
             .'.json';
+    }
+
+    protected function lessonSummaryText(Lesson $lesson): string
+    {
+        $artifact = AiArtifact::query()
+            ->where('source_type', Lesson::class)
+            ->where('source_id', $lesson->id)
+            ->where('status', 'ready')
+            ->whereIn('artifact_type', ['summary', 'abstract'])
+            ->orderByRaw("case when provider = 'panda' then 0 else 1 end")
+            ->first();
+
+        return $artifact ? $this->aiContentToText($artifact->content) : '';
+    }
+
+    protected function aiContentToText(mixed $value): string
+    {
+        if (is_string($value)) {
+            return trim($value);
+        }
+
+        if (! is_array($value)) {
+            return '';
+        }
+
+        foreach (['text', 'content', 'summary', 'abstract', 'answer', 'description'] as $key) {
+            if (array_key_exists($key, $value)) {
+                $text = $this->aiContentToText($value[$key]);
+
+                if ($text !== '') {
+                    return $text;
+                }
+            }
+        }
+
+        return collect($value)
+            ->map(fn (mixed $item): string => $this->aiContentToText($item))
+            ->filter()
+            ->join("\n\n");
     }
 
     protected function firstAiPayloadValue(array $payload, array $paths): mixed

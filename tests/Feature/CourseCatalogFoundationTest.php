@@ -523,6 +523,8 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
             ->assertSee('Sobre classes de palavras, marque a alternativa correta.')
+            ->assertSee('Baixar resumo em PDF')
+            ->assertSee(route('courses.lessons.summary.pdf', [$course->slug, $lesson]), false)
             ->assertSee('activeTab: null', false)
             ->assertSee('@click="selected = 0; revealed = true"', false)
             ->assertSee('Gabarito: Substantivo nomeia seres.')
@@ -532,6 +534,15 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertDontSee('lesson-summary-inline-time', false)
             ->assertSee('tutorTabVisible: false', false)
             ->assertDontSee('Sincronizar IA da aula');
+
+        $pdfResponse = $this->actingAs($student)
+            ->get(route('courses.lessons.summary.pdf', [$course->slug, $lesson]));
+
+        $pdfResponse
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+
+        $this->assertStringStartsWith('%PDF-', $pdfResponse->getContent());
     }
 
     public function test_cached_lesson_ai_artifacts_skip_provider_sync(): void
