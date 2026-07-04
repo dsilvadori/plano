@@ -51,6 +51,7 @@ class CourseForm
                     ->directory('course-thumbnails')
                     ->visibility('public')
                     ->fetchFileInformation(false)
+                    ->getUploadedFileUsing(fn (): ?array => null)
                     ->previewable(false)
                     ->openable(false)
                     ->downloadable(false)
