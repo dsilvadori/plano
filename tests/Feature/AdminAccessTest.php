@@ -260,7 +260,7 @@ class AdminAccessTest extends TestCase
         $html = (string) $mail->render();
 
         $this->assertSame(['nao-responda@vencendoconcursos.com.br', 'Vencendo Concursos'], $mail->from);
-        $this->assertSame('Primeiro acesso ao Plano de Estudos | Vencendo Concursos', $mail->subject);
+        $this->assertSame('Primeiro acesso à Plataforma Vencendo Concursos', $mail->subject);
         $this->assertSame('Criar senha de primeiro acesso', $mail->actionText);
         $this->assertStringContainsString(route('password.reset', ['token' => 'token-teste'], false), $mail->actionUrl);
         $this->assertStringContainsString('email=aluno%40example.com', $mail->actionUrl);

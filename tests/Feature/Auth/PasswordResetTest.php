@@ -95,7 +95,7 @@ class PasswordResetTest extends TestCase
         $mail = $notification->toMail($user);
         $html = (string) $mail->render();
 
-        $this->assertSame('Redefina sua senha | Plano de Estudos - Vencendo Concursos', $mail->subject);
+        $this->assertSame('Redefina sua senha | Plataforma Vencendo Concursos', $mail->subject);
         $this->assertSame('Redefinir senha', $mail->actionText);
         $this->assertStringContainsString('Olá!', $html);
         $this->assertStringContainsString('Recebemos uma solicitação para criar ou redefinir a senha da sua conta.', $html);

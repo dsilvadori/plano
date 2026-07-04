@@ -1,4 +1,4 @@
-# Plano de Estudos Vencendo Concursos
+# Plataforma Vencendo Concursos
 
 Dashboard web em Laravel para geração de planos de estudo personalizados para alunos da Vencendo Concursos. O projeto usa Blade, Livewire, Tailwind, Filament Admin e PWA básico.
 
@@ -54,7 +54,7 @@ http://127.0.0.1:8000
 O `.env.example` já vem preparado com:
 
 ```env
-APP_NAME="Plano Vencendo Concursos"
+APP_NAME="Plataforma Vencendo Concursos"
 APP_URL=http://127.0.0.1:8000
 
 DB_CONNECTION=sqlite

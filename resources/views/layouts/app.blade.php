@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#050816">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Plano VC">
+    <meta name="apple-mobile-web-app-title" content="Plataforma VC">
 
     <title>{{ config('app.name', 'Laravel') }}</title>
 

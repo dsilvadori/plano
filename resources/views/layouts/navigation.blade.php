@@ -11,7 +11,7 @@
             <a href="{{ route('dashboard') }}" class="flex items-center gap-3">
                 <x-application-logo class="h-10 w-auto object-contain" />
                 <div>
-                    <p class="text-xs uppercase tracking-[0.25em] text-slate-400">Plano VC</p>
+                    <p class="text-xs uppercase tracking-[0.25em] text-slate-400">Plataforma VC</p>
                     <p class="text-sm font-semibold text-slate-100">Seu ciclo de estudo</p>
                 </div>
             </a>
@@ -34,7 +34,7 @@
             <x-application-logo class="h-14 w-auto object-contain" />
             <div>
                 <p class="text-xs uppercase tracking-[0.35em] text-slate-400">Vencendo Concursos</p>
-                <p class="text-lg font-semibold text-slate-50">Plano de Estudos</p>
+                <p class="text-lg font-semibold text-slate-50">Plataforma Vencendo Concursos</p>
             </div>
         </div>
 

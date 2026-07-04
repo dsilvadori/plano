@@ -1,6 +1,6 @@
 {
-  "name": "Plano de Estudos Vencendo Concursos",
-  "short_name": "Plano VC",
+  "name": "Plataforma Vencendo Concursos",
+  "short_name": "Plataforma VC",
   "start_url": "/dashboard",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "minimal-ui", "browser"],

@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#050816">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Plano VC">
+    <meta name="apple-mobile-web-app-title" content="Plataforma VC">
 
     <title>{{ config('app.name', 'Laravel') }}</title>
 
@@ -37,7 +37,7 @@
             <x-application-logo class="h-14 w-auto object-contain" />
             <div>
                 <p class="text-sm uppercase tracking-[0.3em] text-slate-400">Vencendo Concursos</p>
-                <p class="text-lg font-semibold">Plano de Estudos</p>
+                <p class="text-lg font-semibold">Plataforma Vencendo Concursos</p>
             </div>
         </a>
 
