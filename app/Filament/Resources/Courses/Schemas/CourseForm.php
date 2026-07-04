@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Courses\Schemas;
 
+use App\Models\Course;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
 use Filament\Forms\Components\DatePicker;
@@ -52,6 +53,11 @@ class CourseForm
                     ->visibility('public')
                     ->fetchFileInformation(false)
                     ->getUploadedFileUsing(fn (): ?array => null)
+                    ->dehydrateStateUsing(function ($state, ?Course $record): ?string {
+                        $path = collect(is_array($state) ? $state : [$state])->filter()->first();
+
+                        return $path ?: $record?->thumbnail_path;
+                    })
                     ->previewable(false)
                     ->openable(false)
                     ->downloadable(false)

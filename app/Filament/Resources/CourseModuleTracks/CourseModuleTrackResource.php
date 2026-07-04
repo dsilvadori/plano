@@ -75,6 +75,11 @@ class CourseModuleTrackResource extends Resource
                 ->visibility('public')
                 ->fetchFileInformation(false)
                 ->getUploadedFileUsing(fn (): ?array => null)
+                ->dehydrateStateUsing(function ($state, ?CourseModuleTrack $record): ?string {
+                    $path = collect(is_array($state) ? $state : [$state])->filter()->first();
+
+                    return $path ?: $record?->thumbnail_path;
+                })
                 ->previewable(false)
                 ->openable(false)
                 ->downloadable(false)

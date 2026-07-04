@@ -13,6 +13,7 @@ use App\Models\Lesson;
 use App\Models\LessonProgress;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
+use App\Models\StudyTrack;
 use App\Models\User;
 use App\Services\PandaVideoClient;
 use App\Services\StudyPlanGenerator;
@@ -365,6 +366,66 @@ class CourseCatalogFoundationTest extends TestCase
 
         $this->assertNotNull($lesson);
         $this->assertNull($lesson->course_id);
+    }
+
+    public function test_deleting_course_preserves_modules_tracks_and_lessons(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'status' => 'published',
+        ]);
+        $studyTrack = StudyTrack::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Trilha de estudos',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Windows 10',
+            'status' => 'published',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $studyTrack->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 1, 'weight' => 1]]);
+
+        $course->delete();
+
+        $this->assertDatabaseHas('course_modules', [
+            'id' => $module->id,
+            'course_id' => null,
+        ]);
+        $this->assertDatabaseHas('course_module_tracks', [
+            'id' => $track->id,
+            'course_module_id' => $module->id,
+        ]);
+        $this->assertDatabaseHas('study_tracks', [
+            'id' => $studyTrack->id,
+            'course_id' => null,
+        ]);
+        $this->assertDatabaseHas('lessons', [
+            'id' => $lesson->id,
+            'course_id' => null,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_course', [
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_course', [
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+        ]);
     }
 
     public function test_locked_student_cannot_open_lesson_player(): void
