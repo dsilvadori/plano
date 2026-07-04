@@ -310,6 +310,63 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_deleting_course_module_or_track_preserves_lessons(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Windows 10',
+            'status' => 'published',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+
+        $track->delete();
+
+        $lesson = $lesson->fresh();
+
+        $this->assertNotNull($lesson);
+        $this->assertNull($lesson->course_module_track_id);
+        $this->assertDatabaseMissing('course_module_track_lessons', [
+            'lesson_id' => $lesson->id,
+            'course_module_track_id' => $track->id,
+        ]);
+
+        $module->delete();
+
+        $lesson = $lesson->fresh();
+
+        $this->assertNotNull($lesson);
+        $this->assertNull($lesson->course_module_id);
+        $this->assertNull($lesson->course_module_track_id);
+        $this->assertSame($course->id, $lesson->course_id);
+        $this->assertDatabaseMissing('course_module_lessons', [
+            'lesson_id' => $lesson->id,
+            'course_module_id' => $module->id,
+        ]);
+
+        $course->delete();
+
+        $lesson = $lesson->fresh();
+
+        $this->assertNotNull($lesson);
+        $this->assertNull($lesson->course_id);
+    }
+
     public function test_locked_student_cannot_open_lesson_player(): void
     {
         $student = User::factory()->create(['role' => 'student']);

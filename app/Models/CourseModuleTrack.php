@@ -12,6 +12,18 @@ class CourseModuleTrack extends Model
 {
     use HasFactory;
 
+    protected static function booted(): void
+    {
+        static::deleting(function (CourseModuleTrack $track): void {
+            $track->lessons()->detach();
+            $track->courses()->detach();
+
+            Lesson::query()
+                ->where('course_module_track_id', $track->id)
+                ->update(['course_module_track_id' => null]);
+        });
+    }
+
     protected $fillable = [
         'course_module_id',
         'name',

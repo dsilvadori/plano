@@ -16,6 +16,21 @@ class CourseModule extends Model
 
     protected static function booted(): void
     {
+        static::deleting(function (CourseModule $module): void {
+            $module->onlineLessons()->detach();
+            $module->courses()->detach();
+            $module->studyTracks()->detach();
+
+            $module->tracks()->get()->each->delete();
+
+            Lesson::query()
+                ->where('course_module_id', $module->id)
+                ->update([
+                    'course_module_id' => null,
+                    'course_module_track_id' => null,
+                ]);
+        });
+
         static::saved(function (CourseModule $module): void {
             if (! $module->course_id) {
                 return;

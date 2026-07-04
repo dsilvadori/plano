@@ -17,6 +17,13 @@ class Course extends Model
 
     protected static function booted(): void
     {
+        static::deleting(function (Course $course): void {
+            $course->modules()->detach();
+            $course->moduleTracks()->detach();
+            $course->students()->detach();
+            $course->lessons()->update(['course_id' => null]);
+        });
+
         static::created(function (Course $course): void {
             $testStudent = User::query()
                 ->where('email', 'aluno@teste.com')
