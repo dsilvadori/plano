@@ -21,7 +21,8 @@ Route::get('/', function () {
 Route::post('/webhooks/tutory', TutoryWebhookController::class)->name('webhooks.tutory');
 
 Route::middleware('auth')->group(function () {
-    Route::get('/dashboard', DashboardController::class)->name('dashboard');
+    Route::get('/dashboard', [CourseCatalogController::class, 'index'])->name('dashboard');
+    Route::get('/dashboard/plano-de-estudos', DashboardController::class)->name('study-plans.dashboard');
     Route::get('/dashboard/cursos', [CourseCatalogController::class, 'index'])->name('courses.index');
     Route::get('/dashboard/meus-cursos', [CourseCatalogController::class, 'mine'])->name('courses.mine');
     Route::get('/dashboard/cursos/{course:slug}', [CourseCatalogController::class, 'show'])->name('courses.show');
@@ -32,6 +33,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/dashboard/questoes', [QuestionBankController::class, 'index'])->name('questions.index');
     Route::get('/dashboard/questoes/{questionBank}', [QuestionBankController::class, 'show'])->name('questions.show');
     Route::post('/dashboard/questoes/responder/{question}', [QuestionBankController::class, 'answer'])->name('questions.answer');
+    Route::get('/dashboard/planos', [StudyPlanController::class, 'index'])->name('study-plans.index');
     Route::get('/dashboard/plano/novo', [StudyPlanController::class, 'create'])->name('study-plans.create');
     Route::post('/dashboard/plano', [StudyPlanController::class, 'store'])->name('study-plans.store');
     Route::get('/dashboard/plano/{studyPlan}/editar', [StudyPlanController::class, 'edit'])

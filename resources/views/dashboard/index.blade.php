@@ -2,7 +2,7 @@
     <x-slot name="header">
         <div class="hero-panel flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div>
-                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">{{ $user->isAdmin() ? 'Área de estudos do admin' : 'Página inicial do aluno' }}</p>
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Plano de Estudos</p>
                 @if ($activePlan)
                     <h1 class="mt-2 text-3xl font-semibold text-white">Seu plano está pronto. Agora é execução.</h1>
                     <p class="mt-3 max-w-2xl text-sm text-slate-300">Hoje é dia de avançar mais um bloco. Você não precisa estudar tudo hoje. Precisa cumprir o ciclo.</p>

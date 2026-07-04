@@ -75,7 +75,7 @@ class AdminAccessTest extends TestCase
         $this->actingAs($admin)
             ->get(route('dashboard'))
             ->assertOk()
-            ->assertSee('Área de estudos do admin')
+            ->assertSee('Escolha o próximo curso para avançar.')
             ->assertSee($activeCourse->name)
             ->assertDontSee('Curso Inativo');
     }

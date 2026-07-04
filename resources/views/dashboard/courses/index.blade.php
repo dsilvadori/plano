@@ -2,7 +2,7 @@
     <x-slot name="header">
         <div class="hero-panel flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div>
-                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Plataforma de cursos</p>
+                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Início</p>
                 <h1 class="mt-2 text-3xl font-semibold text-white">Escolha o próximo curso para avançar.</h1>
                 <p class="mt-3 max-w-2xl text-sm text-slate-300">Veja seus cursos liberados, descubra novas turmas e continue estudando com o plano, as aulas e os materiais no mesmo lugar.</p>
             </div>
@@ -79,5 +79,16 @@
                 </div>
             </section>
         @endif
+
+        <section class="card-panel flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Plano de Estudos</p>
+                <h2 class="mt-2 text-2xl font-semibold text-white">Acesse seus planos de estudo.</h2>
+                <p class="mt-2 max-w-2xl text-sm text-slate-300">Retome ciclos criados para os cursos e acompanhe o que já está em andamento.</p>
+            </div>
+            <a href="{{ route('study-plans.index') }}" class="inline-flex justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 px-5 py-3 text-sm font-semibold text-sky-100">
+                Meus planos de estudos
+            </a>
+        </section>
     </div>
 </x-app-layout>

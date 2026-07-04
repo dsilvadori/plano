@@ -14,6 +14,20 @@ use Illuminate\Validation\Rule;
 
 class StudyPlanController extends Controller
 {
+    public function index(): View
+    {
+        $user = request()->user();
+
+        abort_unless($user?->canAccessStudentArea(), 403);
+
+        return view('dashboard.study-plans.index', [
+            'plans' => $user->studyPlans()
+                ->with(['course', 'items'])
+                ->latest()
+                ->get(),
+        ]);
+    }
+
     public function create(): View
     {
         abort_unless(request()->user()?->canAccessStudentArea(), 403);
