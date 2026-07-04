@@ -73,6 +73,7 @@ class CourseModuleTrackResource extends Resource
                 ->disk('public')
                 ->directory('track-thumbnails')
                 ->visibility('public')
+                ->fetchFileInformation(false)
                 ->maxSize(4096)
                 ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp'])
                 ->helperText('Ao enviar um arquivo, ele tem prioridade sobre a URL da thumbnail.')
