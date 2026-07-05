@@ -51,6 +51,9 @@ class CourseForm
                     ->disk('public')
                     ->directory('course-thumbnails')
                     ->visibility('public')
+                    ->afterStateHydrated(function (FileUpload $component): void {
+                        $component->state(null);
+                    })
                     ->fetchFileInformation(false)
                     ->getUploadedFileUsing(fn (): ?array => null)
                     ->dehydrateStateUsing(function ($state, ?Course $record): ?string {

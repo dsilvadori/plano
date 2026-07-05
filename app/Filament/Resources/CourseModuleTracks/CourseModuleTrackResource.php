@@ -73,6 +73,9 @@ class CourseModuleTrackResource extends Resource
                 ->disk('public')
                 ->directory('track-thumbnails')
                 ->visibility('public')
+                ->afterStateHydrated(function (FileUpload $component): void {
+                    $component->state(null);
+                })
                 ->fetchFileInformation(false)
                 ->getUploadedFileUsing(fn (): ?array => null)
                 ->dehydrateStateUsing(function ($state, ?CourseModuleTrack $record): ?string {
