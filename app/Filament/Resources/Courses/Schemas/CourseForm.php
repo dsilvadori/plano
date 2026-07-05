@@ -5,13 +5,20 @@ namespace App\Filament\Resources\Courses\Schemas;
 use App\Models\Course;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
+use App\Support\FilamentThumbnailUpload;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\Hidden;
+use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 
 class CourseForm
@@ -43,27 +50,37 @@ class CourseForm
                     ->url()
                     ->maxLength(2048)
                     ->helperText('Usada como fallback quando nenhum arquivo for enviado.'),
-                FileUpload::make('thumbnail_path')
-                    ->label('Thumbnail por arquivo')
+                Hidden::make('thumbnail_path'),
+                Placeholder::make('thumbnail_preview')
+                    ->label('Thumbnail atual')
+                    ->content(function (Get $get, ?Course $record): HtmlString {
+                        $path = (string) ($get('thumbnail_path') ?: $record?->thumbnail_path ?: '');
+                        $url = $path !== ''
+                            ? Storage::disk('public')->url($path)
+                            : (string) ($get('thumbnail_url') ?: $record?->thumbnail_url ?: '');
+
+                        if ($url === '') {
+                            return new HtmlString('<span class="text-sm text-gray-500">Nenhuma thumbnail enviada.</span>');
+                        }
+
+                        return new HtmlString('<img src="' . e($url) . '" alt="" style="height: 120px; max-width: 240px; object-fit: cover; border-radius: 8px;">');
+                    })
+                    ->columnSpanFull(),
+                FileUpload::make('thumbnail_upload')
+                    ->label('Enviar nova thumbnail')
                     ->image()
                     ->imageEditor()
                     ->imagePreviewHeight('180')
-                    ->disk('public')
-                    ->directory('course-thumbnails')
-                    ->visibility('public')
-                    ->afterStateHydrated(function (FileUpload $component): void {
-                        $component->state(null);
-                    })
-                    ->fetchFileInformation(false)
-                    ->getUploadedFileUsing(fn (): ?array => null)
-                    ->dehydrateStateUsing(function ($state, ?Course $record): ?string {
-                        $path = collect(is_array($state) ? $state : [$state])->filter()->first();
+                    ->storeFiles(false)
+                    ->live()
+                    ->afterStateUpdated(function (mixed $state, Set $set): void {
+                        $path = FilamentThumbnailUpload::store($state, 'course-thumbnails');
 
-                        return $path ?: $record?->thumbnail_path;
+                        if ($path !== null) {
+                            $set('thumbnail_path', $path);
+                        }
                     })
-                    ->previewable(false)
-                    ->openable(false)
-                    ->downloadable(false)
+                    ->dehydrated(false)
                     ->maxSize(4096)
                     ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp'])
                     ->helperText('Ao enviar um arquivo, ele tem prioridade sobre a URL da thumbnail.')
