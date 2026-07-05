@@ -5,6 +5,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\QuestionBankController;
 use App\Http\Controllers\StudyPlanController;
+use App\Http\Controllers\ThumbnailController;
 use App\Http\Controllers\TutoryWebhookController;
 use Illuminate\Support\Facades\Route;
 
@@ -21,6 +22,10 @@ Route::get('/', function () {
 Route::post('/webhooks/tutory', TutoryWebhookController::class)->name('webhooks.tutory');
 
 Route::middleware('auth')->group(function () {
+    Route::get('/media/thumbnails/{path}', ThumbnailController::class)
+        ->where('path', '.*')
+        ->name('media.thumbnails.show');
+
     Route::get('/dashboard', [CourseCatalogController::class, 'index'])->name('dashboard');
     Route::get('/dashboard/plano-de-estudos', DashboardController::class)->name('study-plans.dashboard');
     Route::get('/dashboard/cursos', [CourseCatalogController::class, 'index'])->name('courses.index');

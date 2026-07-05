@@ -2,13 +2,13 @@
 
 namespace App\Models;
 
+use App\Support\ThumbnailUrl;
 use Database\Factories\CourseFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Facades\Storage;
 
 class Course extends Model
 {
@@ -135,10 +135,6 @@ class Course extends Model
 
     public function getThumbnailDisplayUrlAttribute(): string
     {
-        if ($this->thumbnail_path) {
-            return Storage::disk('public')->url($this->thumbnail_path);
-        }
-
-        return $this->thumbnail_url ?: 'https://vencendoconcursos.com.br/wp-content/uploads/2026/04/logo-vc-transparente.png';
+        return ThumbnailUrl::fromPathOrUrl($this->thumbnail_path, $this->thumbnail_url);
     }
 }

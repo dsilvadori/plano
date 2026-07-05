@@ -111,8 +111,20 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.index'))
             ->assertOk()
-            ->assertSee(Storage::disk('public')->url('course-thumbnails/curso-upload.webp'), false)
+            ->assertSee(url('/media/thumbnails/course-thumbnails/curso-upload.webp'), false)
             ->assertDontSee('https://example.com/external-thumbnail.jpg', false);
+    }
+
+    public function test_uploaded_thumbnail_is_served_by_application_route(): void
+    {
+        Storage::disk('public')->put('course-thumbnails/curso-upload.svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+
+        $student = User::factory()->create(['role' => 'student']);
+
+        $this->actingAs($student)
+            ->get('/media/thumbnails/course-thumbnails/curso-upload.svg')
+            ->assertOk()
+            ->assertHeader('cache-control', 'max-age=31536000, public');
     }
 
     public function test_enrolled_student_can_watch_and_complete_lesson(): void

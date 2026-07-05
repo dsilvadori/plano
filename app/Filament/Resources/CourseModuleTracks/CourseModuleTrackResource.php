@@ -9,6 +9,7 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Support\FilamentThumbnailUpload;
+use App\Support\ThumbnailUrl;
 use BackedEnum;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
@@ -30,7 +31,6 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 
@@ -77,13 +77,7 @@ class CourseModuleTrackResource extends Resource
                 ->label('Thumbnail atual')
                 ->content(function (Get $get, ?CourseModuleTrack $record): HtmlString {
                     $path = (string) ($get('thumbnail_path') ?: $record?->thumbnail_path ?: '');
-                    $url = $path !== ''
-                        ? Storage::disk('public')->url($path)
-                        : (string) ($get('thumbnail_url') ?: $record?->thumbnail_url ?: '');
-
-                    if ($url === '') {
-                        return new HtmlString('<span class="text-sm text-gray-500">Nenhuma thumbnail enviada.</span>');
-                    }
+                    $url = ThumbnailUrl::fromPathOrUrl($path, (string) ($get('thumbnail_url') ?: $record?->thumbnail_url ?: ''));
 
                     return new HtmlString('<img src="' . e($url) . '" alt="" style="height: 120px; max-width: 240px; object-fit: cover; border-radius: 8px;">');
                 })
