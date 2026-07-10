@@ -2,12 +2,16 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
+use App\Models\Lesson;
 use App\Models\Question;
 use App\Models\QuestionAttempt;
 use App\Models\QuestionBank;
 use App\Models\StudyPlan;
 use App\Support\QuestionTextRenderer;
 use Illuminate\Contracts\View\View;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -21,16 +25,15 @@ class QuestionBankController extends Controller
         abort_unless($user->canAccessStudentArea(), 403);
 
         $banks = QuestionBank::query()
-            ->with('course')
+            ->with(['modules', 'tracks', 'lessons'])
             ->withCount(['questions' => fn ($query) => $query->where('status', 'published')])
             ->where('status', 'published')
-            ->where(function ($query) use ($user): void {
+            ->where(function (Builder $query) use ($user): void {
                 if ($user->isAdmin()) {
                     return;
                 }
 
-                $query->whereNull('course_id')
-                    ->orWhereIn('course_id', $user->availableCoursesQuery()->pluck('courses.id'));
+                $this->scopeAccessibleBanks($query, $user);
             })
             ->orderBy('title')
             ->get();
@@ -48,18 +51,12 @@ class QuestionBankController extends Controller
         abort_unless($questionBank->status === 'published', 404);
         abort_unless($this->userCanAccessBank($user, $questionBank), 403);
 
-        $questionBank->load('course');
+        $questionBank->load(['modules', 'tracks', 'lessons']);
         $query = $questionBank->questions()
             ->with(['options', 'attempts' => fn ($query) => $query
                 ->where('user_id', $user->id)
                 ->latest('answered_at')])
             ->where('status', 'published');
-
-        if ($request->integer('lesson_id')) {
-            $query->where('lesson_id', $request->integer('lesson_id'));
-        } elseif ($request->integer('module_id')) {
-            $query->where('course_module_id', $request->integer('module_id'));
-        }
 
         $questions = $query->get();
         $returnPlan = null;
@@ -131,12 +128,72 @@ class QuestionBankController extends Controller
 
     protected function userCanAccessBank($user, QuestionBank $bank): bool
     {
-        if ($user->isAdmin() || ! $bank->course_id) {
+        if ($user->isAdmin()) {
             return true;
         }
 
-        return $user->availableCoursesQuery()
-            ->where('courses.id', $bank->course_id)
-            ->exists();
+        $bank->loadMissing(['modules', 'tracks']);
+
+        if ($bank->modules->isEmpty() && $bank->tracks->isEmpty() && $bank->lessons->isEmpty()) {
+            return true;
+        }
+
+        $moduleIds = $this->accessibleModuleIds($user);
+        $trackIds = $this->accessibleTrackIds($user);
+        $lessonIds = $this->accessibleLessonIds($user);
+
+        return $bank->modules->pluck('id')->intersect($moduleIds)->isNotEmpty()
+            || $bank->tracks->pluck('id')->intersect($trackIds)->isNotEmpty()
+            || $bank->lessons->pluck('id')->intersect($lessonIds)->isNotEmpty();
+    }
+
+    protected function scopeAccessibleBanks(Builder $query, $user): void
+    {
+        $moduleIds = $this->accessibleModuleIds($user);
+        $trackIds = $this->accessibleTrackIds($user);
+        $lessonIds = $this->accessibleLessonIds($user);
+
+        $query->where(function (Builder $query) use ($moduleIds, $trackIds, $lessonIds): void {
+            $query->whereDoesntHave('modules')
+                ->whereDoesntHave('tracks')
+                ->whereDoesntHave('lessons')
+                ->orWhereHas('modules', fn (Builder $query) => $query->whereIn('course_modules.id', $moduleIds))
+                ->orWhereHas('tracks', fn (Builder $query) => $query->whereIn('course_module_tracks.id', $trackIds))
+                ->orWhereHas('lessons', fn (Builder $query) => $query->whereIn('lessons.id', $lessonIds));
+        });
+    }
+
+    protected function accessibleModuleIds($user): array
+    {
+        $courseIds = $user->availableCoursesQuery()->pluck('courses.id');
+
+        return CourseModule::query()
+            ->whereIn('course_id', $courseIds)
+            ->orWhereHas('courses', fn (Builder $query) => $query->whereIn('courses.id', $courseIds))
+            ->pluck('id')
+            ->all();
+    }
+
+    protected function accessibleTrackIds($user): array
+    {
+        $courseIds = $user->availableCoursesQuery()->pluck('courses.id');
+
+        return CourseModuleTrack::query()
+            ->whereHas('module', fn (Builder $query) => $query->whereIn('course_id', $courseIds))
+            ->orWhereHas('courses', fn (Builder $query) => $query->whereIn('courses.id', $courseIds))
+            ->pluck('id')
+            ->all();
+    }
+
+    protected function accessibleLessonIds($user): array
+    {
+        $courseIds = $user->availableCoursesQuery()->pluck('courses.id');
+
+        return Lesson::query()
+            ->whereIn('course_id', $courseIds)
+            ->orWhereHas('modules.courses', fn (Builder $query) => $query->whereIn('courses.id', $courseIds))
+            ->orWhereHas('tracks.courses', fn (Builder $query) => $query->whereIn('courses.id', $courseIds))
+            ->pluck('id')
+            ->all();
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Database\Factories\CourseModuleFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -11,7 +12,7 @@ use Illuminate\Support\Collection;
 
 class CourseModule extends Model
 {
-    /** @use HasFactory<\Database\Factories\CourseModuleFactory> */
+    /** @use HasFactory<CourseModuleFactory> */
     use HasFactory;
 
     protected static function booted(): void
@@ -20,6 +21,7 @@ class CourseModule extends Model
             $module->onlineLessons()->detach();
             $module->courses()->detach();
             $module->studyTracks()->detach();
+            $module->questionBanks()->detach();
 
             $module->tracks()->get()->each->delete();
 
@@ -95,6 +97,12 @@ class CourseModule extends Model
             ->orderBy('lessons.title');
     }
 
+    public function questionBanks(): BelongsToMany
+    {
+        return $this->belongsToMany(QuestionBank::class, 'question_bank_course_module')
+            ->withTimestamps();
+    }
+
     public function tracks(): HasMany
     {
         return $this->hasMany(CourseModuleTrack::class)
@@ -109,7 +117,7 @@ class CourseModule extends Model
                 $minutes = (int) ($lesson['minutes'] ?? 0);
 
                 return [
-                    'name' => trim((string) ($lesson['name'] ?? '')) ?: ($this->name . ' - Aula ' . ($index + 1)),
+                    'name' => trim((string) ($lesson['name'] ?? '')) ?: ($this->name.' - Aula '.($index + 1)),
                     'minutes' => max(0, $minutes),
                     '_index' => $index,
                 ];
@@ -129,7 +137,7 @@ class CourseModule extends Model
         $onlineLessons = $this->sortLessonsNaturally(($this->relationLoaded('onlineLessons') ? $this->onlineLessons : $this->onlineLessons()->get())
             ->map(function (Lesson $lesson, int $index) {
                 return [
-                    'name' => trim((string) $lesson->title) ?: ($this->name . ' - Aula ' . ($index + 1)),
+                    'name' => trim((string) $lesson->title) ?: ($this->name.' - Aula '.($index + 1)),
                     'minutes' => max(1, (int) $lesson->duration_minutes),
                     '_index' => $index,
                 ];
@@ -153,7 +161,7 @@ class CourseModule extends Model
         while ($remainingMinutes > 0) {
             $lessonMinutes = min(60, $remainingMinutes);
             $fallbackLessons[] = [
-                'name' => $this->name . ' - Etapa ' . $index,
+                'name' => $this->name.' - Etapa '.$index,
                 'minutes' => $lessonMinutes,
             ];
             $remainingMinutes -= $lessonMinutes;

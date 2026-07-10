@@ -9,22 +9,23 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
+use App\Models\QuestionBank;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
 use BackedEnum;
 use Filament\Actions\Action;
+use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
-use Filament\Actions\BulkAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
-use Filament\Notifications\Notification;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
@@ -325,6 +326,18 @@ class LessonResource extends Resource
                             $query->where('course_id', $data['value'])
                                 ->orWhereHas('modules.courses', fn ($query) => $query->whereKey($data['value']))
                                 ->orWhereHas('tracks.courses', fn ($query) => $query->whereKey($data['value']));
+                        })
+                        : $query),
+                SelectFilter::make('question_bank_id')
+                    ->label('Banco de questões')
+                    ->options(QuestionBank::query()->orderBy('title')->pluck('title', 'id'))
+                    ->query(fn ($query, array $data) => filled($data['value'] ?? null)
+                        ? $query->where(function ($query) use ($data): void {
+                            $query->whereHas('questionBanks', fn ($query) => $query->whereKey($data['value']))
+                                ->orWhereHas('module.questionBanks', fn ($query) => $query->whereKey($data['value']))
+                                ->orWhereHas('modules.questionBanks', fn ($query) => $query->whereKey($data['value']))
+                                ->orWhereHas('track.questionBanks', fn ($query) => $query->whereKey($data['value']))
+                                ->orWhereHas('tracks.questionBanks', fn ($query) => $query->whereKey($data['value']));
                         })
                         : $query),
                 SelectFilter::make('type')

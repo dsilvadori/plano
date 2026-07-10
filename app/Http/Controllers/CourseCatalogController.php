@@ -12,10 +12,10 @@ use App\Models\LessonProgress;
 use App\Models\QuestionBank;
 use App\Models\StudyPlanItem;
 use App\Models\User;
+use App\Services\LessonSummaryPdfGenerator;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
 use App\Services\PandaVideoClient;
-use App\Services\LessonSummaryPdfGenerator;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -540,21 +540,23 @@ class CourseCatalogController extends Controller
 
     protected function questionLinkForLesson(User $user, Course $course, Lesson $lesson): ?array
     {
+        if (! $lesson->course_module_id && ! $lesson->course_module_track_id) {
+            return null;
+        }
+
         $bank = QuestionBank::query()
             ->where('status', 'published')
-            ->where(function (Builder $query) use ($course): void {
-                $query->whereNull('course_id')
-                    ->orWhere('course_id', $course->id);
-            })
-            ->whereHas('questions', function (Builder $query) use ($lesson): void {
-                $query->where('status', 'published')
-                    ->where(function (Builder $query) use ($lesson): void {
-                        $query->where('lesson_id', $lesson->id);
+            ->whereHas('questions', fn (Builder $query) => $query->where('status', 'published'))
+            ->where(function (Builder $query) use ($lesson): void {
+                $query->orWhereHas('lessons', fn (Builder $query) => $query->whereKey($lesson->id));
 
-                        if ($lesson->course_module_id) {
-                            $query->orWhere('course_module_id', $lesson->course_module_id);
-                        }
-                    });
+                if ($lesson->course_module_track_id) {
+                    $query->orWhereHas('tracks', fn (Builder $query) => $query->whereKey($lesson->course_module_track_id));
+                }
+
+                if ($lesson->course_module_id) {
+                    $query->orWhereHas('modules', fn (Builder $query) => $query->whereKey($lesson->course_module_id));
+                }
             })
             ->orderBy('title')
             ->first();
@@ -563,14 +565,13 @@ class CourseCatalogController extends Controller
             return null;
         }
 
-        $hasLessonQuestions = $bank->questions()
-            ->where('status', 'published')
-            ->where('lesson_id', $lesson->id)
-            ->exists();
+        $hasLessonBank = $bank->lessons()->whereKey($lesson->id)->exists();
 
-        $params = [
-            $hasLessonQuestions ? 'lesson_id' : 'module_id' => $hasLessonQuestions ? $lesson->id : $lesson->course_module_id,
-        ];
+        $params = $hasLessonBank
+            ? ['lesson_id' => $lesson->id]
+            : ($lesson->course_module_track_id
+            ? ['track_id' => $lesson->course_module_track_id]
+            : ['module_id' => $lesson->course_module_id]);
 
         $plan = $user->studyPlans()
             ->where('course_id', $course->id)

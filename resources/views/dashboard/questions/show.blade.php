@@ -1,7 +1,9 @@
 <x-app-layout>
     <x-slot name="header">
         <div class="hero-panel">
-            <p class="text-sm uppercase tracking-[0.25em] text-amber-300">{{ $bank->course?->name ?? 'Banco de questões' }}</p>
+            <p class="text-sm uppercase tracking-[0.25em] text-amber-300">
+                {{ $bank->modules->pluck('name')->merge($bank->tracks->pluck('name'))->merge($bank->lessons->pluck('title'))->take(2)->join(' / ') ?: 'Banco de questões' }}
+            </p>
             <h1 class="mt-2 text-3xl font-semibold text-white">{{ $bank->title }}</h1>
             <p class="mt-3 max-w-2xl text-sm text-slate-300">{{ $questions->count() }} questão(ões) para praticar.</p>
             @if ($returnPlan)

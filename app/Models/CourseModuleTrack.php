@@ -17,6 +17,7 @@ class CourseModuleTrack extends Model
         static::deleting(function (CourseModuleTrack $track): void {
             $track->lessons()->detach();
             $track->courses()->detach();
+            $track->questionBanks()->detach();
 
             Lesson::query()
                 ->where('course_module_track_id', $track->id)
@@ -62,6 +63,12 @@ class CourseModuleTrack extends Model
             ->orderByPivot('sort_order')
             ->orderBy('lessons.sort_order')
             ->orderBy('lessons.title');
+    }
+
+    public function questionBanks(): BelongsToMany
+    {
+        return $this->belongsToMany(QuestionBank::class, 'question_bank_course_module_track')
+            ->withTimestamps();
     }
 
     public function getThumbnailDisplayUrlAttribute(): string

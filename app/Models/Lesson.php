@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Database\Factories\LessonFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -10,7 +11,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Lesson extends Model
 {
-    /** @use HasFactory<\Database\Factories\LessonFactory> */
+    /** @use HasFactory<LessonFactory> */
     use HasFactory;
 
     protected static function booted(): void
@@ -112,6 +113,12 @@ class Lesson extends Model
     {
         return $this->belongsToMany(CourseModuleTrack::class, 'course_module_track_lessons')
             ->withPivot(['sort_order', 'status_override'])
+            ->withTimestamps();
+    }
+
+    public function questionBanks(): BelongsToMany
+    {
+        return $this->belongsToMany(QuestionBank::class, 'question_bank_lesson')
             ->withTimestamps();
     }
 

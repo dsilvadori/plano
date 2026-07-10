@@ -12,7 +12,9 @@
             <article class="card-panel">
                 <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div>
-                        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">{{ $bank->course?->name ?? 'Geral' }}</p>
+                        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">
+                            {{ $bank->modules->pluck('name')->merge($bank->tracks->pluck('name'))->merge($bank->lessons->pluck('title'))->take(2)->join(' / ') ?: 'Geral' }}
+                        </p>
                         <h2 class="mt-2 text-xl font-semibold text-white">{{ $bank->title }}</h2>
                         <p class="mt-3 text-sm text-slate-400">{{ $bank->questions_count }} questão(ões) disponíveis</p>
                     </div>

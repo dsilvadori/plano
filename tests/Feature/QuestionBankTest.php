@@ -12,7 +12,6 @@ use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\User;
 use App\Services\GeminiQuestionCommentaryGenerator;
-use App\Services\QuestionLessonLinker;
 use App\Services\QuestionPdfImporter;
 use App\Services\QuestionSpreadsheetImporter;
 use App\Support\QuestionTextRenderer;
@@ -292,7 +291,7 @@ TXT;
     {
         $path = tempnam(sys_get_temp_dir(), 'questions-xlsx-');
 
-        $archive = new ZipArchive();
+        $archive = new ZipArchive;
         $archive->open($path, ZipArchive::OVERWRITE);
         $archive->addFromString('[Content_Types].xml', <<<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -626,7 +625,6 @@ XML);
         ]);
 
         $this->assertNull($bank->fresh()->course_id);
-        $this->assertSame(0, app(QuestionLessonLinker::class)->linkBank($bank->fresh()));
 
         $this->assertNull($question->fresh()->course_id);
         $this->assertNull($question->fresh()->course_module_id);
@@ -643,29 +641,41 @@ XML);
             'name' => 'Português',
             'type' => 'basic',
         ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '01 - Gramática',
+        ]);
 
         $plan = StudyPlan::factory()->create([
             'user_id' => $student->id,
             'course_id' => $course->id,
         ]);
+        $theoryItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'basic',
+            'title' => 'Português',
+            'description' => 'Bloco de até 45 minutos para estudar Português. Aulas do bloco: 01 - Gramática.',
+        ]);
         StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
             'type' => 'questions',
             'title' => 'Resolução de Questões: Português',
             'description' => 'Pratique o conteúdo estudado.',
         ]);
 
         $bank = QuestionBank::query()->create([
-            'course_id' => $course->id,
             'title' => 'Português - Gramática',
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
+        $bank->lessons()->attach($lesson->id);
         Question::query()->create([
             'question_bank_id' => $bank->id,
-            'course_id' => $course->id,
-            'course_module_id' => $module->id,
             'number' => 1,
             'topic' => 'Gramática',
             'statement' => 'Qual alternativa apresenta um substantivo?',
@@ -677,17 +687,17 @@ XML);
         $this->actingAs($student)
             ->get(route('study-plans.show', $plan))
             ->assertOk()
-            ->assertSee('Resolver questões: Português')
-            ->assertSee('plan_id='.$plan->id.'&amp;module_id='.$module->id, false);
+            ->assertSee('Resolver questões: Português - Gramática')
+            ->assertSee('plan_id='.$plan->id.'&amp;lesson_id='.$lesson->id, false);
 
         $this->actingAs($student)
-            ->get(route('questions.show', [$bank, 'plan_id' => $plan->id, 'module_id' => $module->id]))
+            ->get(route('questions.show', [$bank, 'plan_id' => $plan->id, 'lesson_id' => $lesson->id]))
             ->assertOk()
             ->assertSee('Voltar para o plano')
             ->assertSee('Qual alternativa apresenta um substantivo?');
     }
 
-    public function test_question_plan_block_lists_related_question_links_for_theory_modules_from_same_day(): void
+    public function test_question_plan_block_does_not_list_banks_linked_only_to_modules(): void
     {
         $student = User::factory()->create(['role' => 'student']);
         $course = Course::factory()->create(['status' => 'published']);
@@ -697,30 +707,42 @@ XML);
             'name' => 'Português',
             'type' => 'basic',
         ]);
+        $portugueseLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $portuguese->id,
+            'title' => '04 - Crase',
+        ]);
         $administration = CourseModule::factory()->create([
             'course_id' => $course->id,
             'name' => 'Administração Geral',
             'type' => 'specific',
+        ]);
+        $administrationLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $administration->id,
+            'title' => '25 - Princípios Arquivísticos',
         ]);
 
         $plan = StudyPlan::factory()->create([
             'user_id' => $student->id,
             'course_id' => $course->id,
         ]);
-        StudyPlanItem::factory()->create([
+        $portugueseItem = StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $portuguese->id,
             'scheduled_date' => now()->toDateString(),
             'type' => 'basic',
             'sort_order' => 1,
         ]);
-        StudyPlanItem::factory()->create([
+        $portugueseItem->lessons()->attach($portugueseLesson->id, ['sort_order' => 1]);
+        $administrationItem = StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $administration->id,
             'scheduled_date' => now()->toDateString(),
             'type' => 'specific',
             'sort_order' => 2,
         ]);
+        $administrationItem->lessons()->attach($administrationLesson->id, ['sort_order' => 1]);
         StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $administration->id,
@@ -731,22 +753,20 @@ XML);
         ]);
 
         $portugueseBank = QuestionBank::query()->create([
-            'course_id' => $course->id,
             'title' => 'Português - Gramática',
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
+        $portugueseBank->modules()->attach($portuguese->id);
         $administrationBank = QuestionBank::query()->create([
-            'course_id' => $course->id,
             'title' => 'Administração Geral',
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
+        $administrationBank->modules()->attach($administration->id);
 
         Question::query()->create([
             'question_bank_id' => $portugueseBank->id,
-            'course_id' => $course->id,
-            'course_module_id' => $portuguese->id,
             'number' => 1,
             'statement' => 'Questão de português.',
             'type' => 'multiple_choice',
@@ -755,8 +775,6 @@ XML);
         ]);
         Question::query()->create([
             'question_bank_id' => $administrationBank->id,
-            'course_id' => $course->id,
-            'course_module_id' => $administration->id,
             'number' => 1,
             'statement' => 'Questão de administração.',
             'type' => 'multiple_choice',
@@ -767,10 +785,68 @@ XML);
         $this->actingAs($student)
             ->get(route('study-plans.show', $plan))
             ->assertOk()
-            ->assertSee('Resolver questões: Português')
-            ->assertSee('Resolver questões: Administração Geral')
-            ->assertSee('plan_id='.$plan->id.'&amp;module_id='.$portuguese->id, false)
-            ->assertSee('plan_id='.$plan->id.'&amp;module_id='.$administration->id, false);
+            ->assertDontSee('Resolver questões: Português')
+            ->assertDontSee('Resolver questões: Administração Geral')
+            ->assertDontSee('module_id='.$portuguese->id, false)
+            ->assertDontSee('module_id='.$administration->id, false);
+    }
+
+    public function test_question_plan_block_lists_question_bank_linked_to_same_day_lesson(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '05 - Interpretação - Panorama Geral',
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+        ]);
+        $theoryItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'basic',
+            'title' => 'Bloco 1: Matéria Básica: Português',
+            'description' => 'Bloco de até 45 minutos para estudar Português. Aulas do bloco: 05 - Interpretação - Panorama Geral.',
+        ]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'questions',
+            'title' => 'Bloco 3 - Questões',
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Interpretação - Panorama Geral',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $bank->lessons()->attach($lesson->id);
+        Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => 'Questão de interpretação.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee('Resolver questões: Interpretação - Panorama Geral')
+            ->assertSee('plan_id='.$plan->id.'&amp;lesson_id='.$lesson->id, false);
     }
 
     public function test_lesson_page_shows_fixation_tab_and_related_question_links(): void
@@ -808,16 +884,13 @@ XML);
         ]);
 
         $bank = QuestionBank::query()->create([
-            'course_id' => $course->id,
             'title' => 'Classe de palavras - Substantivo e Adjetivo',
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
+        $bank->modules()->attach($module->id);
         Question::query()->create([
             'question_bank_id' => $bank->id,
-            'course_id' => $course->id,
-            'course_module_id' => $module->id,
-            'lesson_id' => $lesson->id,
             'number' => 1,
             'topic' => 'Substantivo',
             'statement' => 'Qual alternativa apresenta um substantivo?',
@@ -829,10 +902,9 @@ XML);
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
-            ->assertSee('Questões para fixação')
             ->assertSee('Resolução de questões')
             ->assertSee('Pratique este assunto no banco de questões.')
             ->assertSee('Abrir área de questões')
-            ->assertSee('lesson_id='.$lesson->id.'&amp;plan_id='.$plan->id, false);
+            ->assertSee('plan_id='.$plan->id, false);
     }
 }

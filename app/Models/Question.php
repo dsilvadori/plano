@@ -13,6 +13,15 @@ class Question extends Model
     /** @use HasFactory<QuestionFactory> */
     use HasFactory;
 
+    protected static function booted(): void
+    {
+        static::saving(function (Question $question): void {
+            $question->course_id = null;
+            $question->course_module_id = null;
+            $question->lesson_id = null;
+        });
+    }
+
     protected $fillable = [
         'question_bank_id',
         'course_id',

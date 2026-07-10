@@ -7,6 +7,7 @@ use App\Models\QuestionBank;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Services\StudyPlanGenerator;
+use App\Support\LessonTitleNormalizer;
 use App\Support\StudyTime;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\View\View;
@@ -144,61 +145,72 @@ class StudyPlanViewer extends Component
     protected function buildItemQuestionLinks(): array
     {
         $links = [];
-        $courseId = $this->studyPlan->course_id;
-        $modulesById = CourseModule::query()
-            ->whereIn('id', $this->studyPlan->items->pluck('course_module_id')->filter()->unique())
-            ->get()
-            ->keyBy('id');
 
-        $this->studyPlan->items->each(function (StudyPlanItem $item) use (&$links, $courseId, $modulesById): void {
+        $this->studyPlan->items->each(function (StudyPlanItem $item) use (&$links): void {
             if ($item->type !== 'questions') {
                 return;
             }
 
-            $moduleIds = $this->studyPlan->items
-                ->where('scheduled_date', $item->scheduled_date)
-                ->whereIn('type', ['basic', 'specific', 'complementary'])
-                ->pluck('course_module_id')
-                ->filter()
-                ->unique()
-                ->values();
+            $lessonReferences = $this->questionLessonReferencesForDate($item);
 
-            if ($moduleIds->isEmpty() && $item->course_module_id) {
-                $moduleIds = collect([$item->course_module_id]);
-            }
-
-            if ($moduleIds->isEmpty()) {
+            if ($lessonReferences->isEmpty()) {
                 return;
             }
 
             $itemLinks = [];
+            $lessonIds = $lessonReferences->pluck('id')->filter()->unique()->values();
+            $lessonKeys = $lessonReferences->pluck('key')->filter()->unique()->values();
 
-            foreach ($moduleIds as $moduleId) {
-                $questionFilter = fn ($query) => $query
+            foreach ($lessonReferences as $lessonReference) {
+                $banks = QuestionBank::query()
                     ->where('status', 'published')
-                    ->where('course_module_id', $moduleId);
+                    ->with('lessons')
+                    ->whereHas('lessons', function ($query) use ($lessonIds, $lessonKeys): void {
+                        if ($lessonIds->isNotEmpty()) {
+                            $query->whereIn('lessons.id', $lessonIds);
+                        }
 
-                $bank = QuestionBank::query()
-                    ->where('status', 'published')
-                    ->where(function ($query) use ($courseId): void {
-                        $query->whereNull('course_id')
-                            ->orWhere('course_id', $courseId);
+                        if ($lessonKeys->isNotEmpty()) {
+                            $query->orWhere(function ($query): void {
+                                $query->whereNotNull('lessons.title');
+                            });
+                        }
                     })
-                    ->whereHas('questions', $questionFilter)
-                    ->withCount(['questions as related_questions_count' => $questionFilter])
+                    ->whereHas('questions', fn ($query) => $query->where('status', 'published'))
+                    ->withCount(['questions as related_questions_count' => fn ($query) => $query->where('status', 'published')])
                     ->orderByDesc('related_questions_count')
                     ->orderBy('title')
-                    ->first();
+                    ->get()
+                    ->filter(fn (QuestionBank $bank): bool => $bank->lessons->contains(function ($lesson) use ($lessonReference): bool {
+                        if (($lessonReference['id'] ?? null) && (int) $lesson->id === (int) $lessonReference['id']) {
+                            return true;
+                        }
 
-                if (! $bank) {
-                    continue;
+                        return ($lessonReference['key'] ?? '') !== ''
+                            && LessonTitleNormalizer::matchKey($lesson->title) === $lessonReference['key'];
+                    }));
+
+                foreach ($banks as $linkedBank) {
+                    $matchedLesson = $linkedBank->lessons->first(function ($lesson) use ($lessonReference): bool {
+                        if (($lessonReference['id'] ?? null) && (int) $lesson->id === (int) $lessonReference['id']) {
+                            return true;
+                        }
+
+                        return ($lessonReference['key'] ?? '') !== ''
+                            && LessonTitleNormalizer::matchKey($lesson->title) === $lessonReference['key'];
+                    });
+
+                    $itemLinks[] = [
+                        'label' => 'Resolver questões: '.$linkedBank->title,
+                        'url' => route('questions.show', [$linkedBank, 'plan_id' => $this->studyPlan->id, 'lesson_id' => $matchedLesson?->id]),
+                    ];
                 }
-
-                $itemLinks[] = [
-                    'label' => 'Resolver questões: '.($modulesById->get($moduleId)?->name ?: 'Assunto'),
-                    'url' => route('questions.show', [$bank, 'plan_id' => $this->studyPlan->id, 'module_id' => $moduleId]),
-                ];
             }
+
+            $itemLinks = collect($itemLinks)
+                ->unique('url')
+                ->values()
+                ->all();
 
             if ($itemLinks === []) {
                 return;
@@ -208,6 +220,48 @@ class StudyPlanViewer extends Component
         });
 
         return $links;
+    }
+
+    protected function questionLessonReferencesForDate(StudyPlanItem $questionItem): Collection
+    {
+        return $this->studyPlan->items
+            ->where('scheduled_date', $questionItem->scheduled_date)
+            ->whereIn('type', ['basic', 'specific', 'complementary'])
+            ->flatMap(function (StudyPlanItem $item): array {
+                $linkedLessons = $item->lessons
+                    ->map(fn ($lesson): array => [
+                        'id' => $lesson->id,
+                        'key' => LessonTitleNormalizer::matchKey($lesson->title),
+                    ])
+                    ->all();
+
+                if ($linkedLessons !== []) {
+                    return $linkedLessons;
+                }
+
+                return collect($this->plannedLessonNamesFromDescription((string) $item->description))
+                    ->map(fn (string $name): array => [
+                        'id' => null,
+                        'key' => LessonTitleNormalizer::matchKey($name),
+                    ])
+                    ->all();
+            })
+            ->filter(fn (array $reference): bool => filled($reference['id'] ?? null) || filled($reference['key'] ?? null))
+            ->unique(fn (array $reference): string => ($reference['id'] ?? 'name').':'.($reference['key'] ?? ''))
+            ->values();
+    }
+
+    protected function plannedLessonNamesFromDescription(string $description): array
+    {
+        if (! preg_match('/Aulas do bloco:\s*(.+)$/u', $description, $matches)) {
+            return [];
+        }
+
+        return collect(preg_split('/,\s*|\s+e\s+(?=\d{1,3}\s+-)/u', $matches[1]) ?: [])
+            ->map(fn (string $name): string => trim($name))
+            ->filter()
+            ->values()
+            ->all();
     }
 
     protected function buildItemLessons(): array

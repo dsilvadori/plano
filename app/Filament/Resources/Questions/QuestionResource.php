@@ -6,9 +6,6 @@ use App\Filament\Resources\Questions\Pages\CreateQuestion;
 use App\Filament\Resources\Questions\Pages\EditQuestion;
 use App\Filament\Resources\Questions\Pages\ListQuestions;
 use App\Jobs\GenerateQuestionCommentary;
-use App\Models\Course;
-use App\Models\CourseModule;
-use App\Models\Lesson;
 use App\Models\Question;
 use App\Models\QuestionBank;
 use BackedEnum;
@@ -50,21 +47,6 @@ class QuestionResource extends Resource
                 ->searchable()
                 ->preload()
                 ->required(),
-            Select::make('course_id')
-                ->label('Curso vinculado')
-                ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
-                ->searchable()
-                ->preload(),
-            Select::make('course_module_id')
-                ->label('Módulo/trilha vinculado')
-                ->options(CourseModule::query()->orderBy('name')->pluck('name', 'id'))
-                ->searchable()
-                ->preload(),
-            Select::make('lesson_id')
-                ->label('Aula vinculada')
-                ->options(Lesson::query()->orderBy('title')->pluck('title', 'id'))
-                ->searchable()
-                ->preload(),
             TextInput::make('number')
                 ->label('Número')
                 ->numeric(),
@@ -158,9 +140,6 @@ class QuestionResource extends Resource
             ->columns([
                 TextColumn::make('number')->label('Nº')->sortable(),
                 TextColumn::make('bank.title')->label('Banco')->searchable()->sortable(),
-                TextColumn::make('course.name')->label('Curso')->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('module.name')->label('Módulo')->limit(40)->toggleable(),
-                TextColumn::make('lesson.title')->label('Aula')->limit(40)->toggleable(),
                 TextColumn::make('topic')->label('Assunto')->searchable()->toggleable(),
                 TextColumn::make('statement')->label('Enunciado')->limit(80)->searchable(),
                 TextColumn::make('answer_key')->label('Gabarito')->badge(),
@@ -192,68 +171,6 @@ class QuestionResource extends Resource
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
-                    BulkAction::make('linkToLesson')
-                        ->label('Vincular aula em massa')
-                        ->icon('heroicon-o-link')
-                        ->schema([
-                            Select::make('course_id')
-                                ->label('Curso')
-                                ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
-                                ->searchable()
-                                ->preload(),
-                            Select::make('course_module_id')
-                                ->label('Módulo/trilha')
-                                ->options(CourseModule::query()->orderBy('name')->pluck('name', 'id'))
-                                ->searchable()
-                                ->preload(),
-                            Select::make('lesson_id')
-                                ->label('Aula')
-                                ->options(Lesson::query()->orderBy('title')->pluck('title', 'id'))
-                                ->searchable()
-                                ->preload(),
-                        ])
-                        ->requiresConfirmation()
-                        ->modalHeading('Vincular questões selecionadas')
-                        ->modalDescription('Escolha curso, módulo e/ou aula. Campos vazios serão ignorados.')
-                        ->action(function (Collection $records, array $data): void {
-                            if (filled($data['lesson_id'] ?? null)) {
-                                $lesson = Lesson::query()->find((int) $data['lesson_id']);
-
-                                $data['course_module_id'] = $data['course_module_id'] ?? $lesson?->course_module_id;
-                                $data['course_id'] = $data['course_id'] ?? $lesson?->course_id;
-                            }
-
-                            if (filled($data['course_module_id'] ?? null) && blank($data['course_id'] ?? null)) {
-                                $data['course_id'] = CourseModule::query()->find((int) $data['course_module_id'])?->course_id;
-                            }
-
-                            $payload = collect([
-                                'course_id' => $data['course_id'] ?? null,
-                                'course_module_id' => $data['course_module_id'] ?? null,
-                                'lesson_id' => $data['lesson_id'] ?? null,
-                            ])
-                                ->filter(fn ($value): bool => filled($value))
-                                ->map(fn ($value): int => (int) $value)
-                                ->all();
-
-                            if ($payload === []) {
-                                Notification::make()
-                                    ->title('Nenhum vínculo foi selecionado.')
-                                    ->warning()
-                                    ->send();
-
-                                return;
-                            }
-
-                            $records->each->update($payload);
-
-                            Notification::make()
-                                ->title('Questões vinculadas.')
-                                ->body($records->count().' questão(ões) atualizada(s).')
-                                ->success()
-                                ->send();
-                        })
-                        ->deselectRecordsAfterCompletion(),
                     BulkAction::make('generateCommentaries')
                         ->label('Gerar comentários com IA')
                         ->icon('heroicon-o-sparkles')
