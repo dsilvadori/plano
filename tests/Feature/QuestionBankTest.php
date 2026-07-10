@@ -932,7 +932,14 @@ XML);
             'course_module_track_id' => $track->id,
             'title' => '01 - Classes de Palavras - Substantivo e Adjetivo',
         ]);
+        $otherLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Classes de Palavras - Advérbio',
+        ]);
         $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([$otherLesson->id => ['sort_order' => 2]]);
 
         $plan = StudyPlan::factory()->create([
             'user_id' => $student->id,
@@ -945,6 +952,7 @@ XML);
             'title' => 'Português',
         ]);
         $theoryItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
+        $theoryItem->lessons()->attach($otherLesson->id, ['sort_order' => 2]);
         StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $module->id,
@@ -959,11 +967,16 @@ XML);
         ]);
         $bank->modules()->syncWithoutDetaching($module->id);
         $trackBank = QuestionBank::query()->create([
-            'title' => 'Classe de palavras',
+            'title' => 'Banco geral da trilha',
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
         $trackBank->tracks()->syncWithoutDetaching($track->id);
+        $otherLessonBank = QuestionBank::query()->create([
+            'title' => 'Classes de Palavras - Advérbio',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
         Question::query()->create([
             'question_bank_id' => $bank->id,
             'number' => 1,
@@ -976,8 +989,17 @@ XML);
         Question::query()->create([
             'question_bank_id' => $trackBank->id,
             'number' => 1,
-            'topic' => 'Classe de palavras',
+            'topic' => 'Trilha',
             'statement' => 'Qual alternativa apresenta um adjetivo?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+        Question::query()->create([
+            'question_bank_id' => $otherLessonBank->id,
+            'number' => 1,
+            'topic' => 'Advérbio',
+            'statement' => 'Qual alternativa apresenta um advérbio?',
             'type' => 'multiple_choice',
             'answer_key' => 'a',
             'status' => 'published',
@@ -987,12 +1009,75 @@ XML);
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
             ->assertSee('Resolução de questões')
-            ->assertSee('Pratique com os bancos vinculados a esta aula.')
+            ->assertSee('Pratique com os bancos vinculados a este conteúdo.')
             ->assertSee('abrir área de questões')
             ->assertSee('Resolver questões: Classe de palavras - Substantivo e Adjetivo')
-            ->assertSee('Resolver questões: Classe de palavras')
+            ->assertDontSee('Resolver questões: Banco geral da trilha')
+            ->assertDontSee('Resolver questões: Classes de Palavras - Advérbio')
             ->assertSee('plan_id='.$plan->id, false)
             ->assertSee('lesson_id='.$lesson->id, false)
-            ->assertSee('track_id='.$track->id, false);
+            ->assertDontSee('lesson_id='.$otherLesson->id, false)
+            ->assertDontSee('track_id='.$track->id, false);
+    }
+
+    public function test_lesson_page_falls_back_to_module_question_bank_when_lesson_has_no_bank(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $track = $module->tracks()->create([
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '03 - Pronome',
+        ]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+        ]);
+        $theoryItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'type' => 'basic',
+            'title' => 'Português',
+        ]);
+        $theoryItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
+
+        $moduleBank = QuestionBank::query()->create([
+            'title' => 'Banco geral de Português',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $moduleBank->modules()->syncWithoutDetaching($module->id);
+        Question::query()->create([
+            'question_bank_id' => $moduleBank->id,
+            'number' => 1,
+            'topic' => 'Português',
+            'statement' => 'Questão geral de português.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Resolver questões: Banco geral de Português')
+            ->assertSee('module_id='.$module->id, false)
+            ->assertDontSee('lesson_id='.$lesson->id, false);
     }
 }
