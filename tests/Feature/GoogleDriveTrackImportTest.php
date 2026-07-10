@@ -1231,6 +1231,77 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame('panda-folder-excel-2016', $existingLesson->metadata['panda_folder_id']);
     }
 
+    public function test_drive_import_replaces_existing_lesson_without_media_by_normalized_name(): void
+    {
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $existingLesson = Lesson::query()->create([
+            'title' => '01 - Classe de Palavras',
+            'slug' => 'aula-01-classe-de-palavras',
+            'description' => 'Aula placeholder.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+
+        $drive->shouldReceive('folderIdFromUrl')->once()->andReturn('root-folder');
+        $drive->shouldReceive('listFiles')->once()->with('root-folder')->andReturn([]);
+        $drive->shouldReceive('listFolders')->once()->with('root-folder')->andReturn([[
+            'id' => 'folder-portugues',
+            'name' => 'Português',
+            'mimeType' => GoogleDriveClient::FOLDER_MIME_TYPE,
+        ]]);
+        $drive->shouldReceive('listFiles')->once()->with('folder-portugues')->andReturn([[
+            'id' => 'video-classe-palavras',
+            'name' => '02 - Classe de Palavras.mp4',
+            'mimeType' => 'video/mp4',
+        ]]);
+        $drive->shouldReceive('listFolders')->once()->with('folder-portugues')->andReturn([]);
+        $drive->shouldNotReceive('downloadFileToPath');
+
+        $panda->shouldReceive('findFolderByName')
+            ->once()
+            ->with('Português')
+            ->andReturn([
+                'panda_folder_id' => 'panda-folder-portugues',
+                'name' => 'Português',
+            ]);
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('02 - Classe de Palavras', 'panda-folder-portugues')
+            ->andReturn([
+                'panda_video_id' => 'panda-video-classe-palavras',
+                'title' => '02 - Classe de Palavras',
+                'duration_seconds' => 1500,
+                'panda_status' => 'CONVERTED',
+                'panda_embed_url' => 'https://player.test/embed/panda-video-classe-palavras',
+                'panda_player_url' => 'https://player.test/panda-video-classe-palavras',
+                'folder_id' => 'panda-folder-portugues',
+                'payload' => ['id' => 'panda-video-classe-palavras'],
+            ]);
+        $panda->shouldNotReceive('uploadVideo');
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->importFolderFilesAsLessons(
+            null,
+            null,
+            null,
+            'root-folder',
+            createPandaFolder: false,
+        );
+
+        $existingLesson->refresh();
+
+        $this->assertSame(0, $summary['created_lessons']);
+        $this->assertSame(1, $summary['updated_lessons']);
+        $this->assertSame(1, Lesson::query()->count());
+        $this->assertSame('02 - Classe de Palavras', $existingLesson->title);
+        $this->assertSame('panda-video-classe-palavras', $existingLesson->panda_video_id);
+        $this->assertSame('media_ready', $existingLesson->source_status);
+    }
+
     public function test_standalone_drive_import_queues_missing_panda_upload_when_enabled(): void
     {
         config(['services.panda.queue_drive_uploads' => true]);

@@ -61,9 +61,7 @@ class PandaCourseImporter
 
                 foreach ($videos->values() as $index => $video) {
                     $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $index + 1);
-                    $lesson = Lesson::query()->firstOrNew([
-                        'panda_video_id' => $video['panda_video_id'],
-                    ]);
+                    $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, null);
                     $wasRecentlyCreated = ! $lesson->exists;
 
                     $lesson->fill([
@@ -78,6 +76,7 @@ class PandaCourseImporter
                         'duration_seconds' => $video['duration_seconds'],
                         'sort_order' => $index + 1,
                         'status' => $this->normalizeLessonStatus($lessonStatus),
+                        'panda_video_id' => $video['panda_video_id'],
                         'panda_status' => $video['panda_status'],
                         'panda_embed_url' => $video['panda_embed_url'],
                         'panda_player_url' => $video['panda_player_url'],
@@ -168,9 +167,7 @@ class PandaCourseImporter
 
                 foreach ($videos->values() as $index => $video) {
                     $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $index + 1);
-                    $lesson = Lesson::query()->firstOrNew([
-                        'panda_video_id' => $video['panda_video_id'],
-                    ]);
+                    $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, null);
                     $wasRecentlyCreated = ! $lesson->exists;
 
                     $lesson->fill([
@@ -185,6 +182,7 @@ class PandaCourseImporter
                         'duration_seconds' => $video['duration_seconds'],
                         'sort_order' => $index + 1,
                         'status' => $this->normalizeLessonStatus($lessonStatus),
+                        'panda_video_id' => $video['panda_video_id'],
                         'panda_status' => $video['panda_status'],
                         'panda_embed_url' => $video['panda_embed_url'],
                         'panda_player_url' => $video['panda_player_url'],
@@ -284,9 +282,7 @@ class PandaCourseImporter
                 foreach ($videos->values() as $index => $video) {
                     $sortOrder = $index + 1;
                     $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $sortOrder);
-                    $lesson = Lesson::query()->firstOrNew([
-                        'panda_video_id' => $video['panda_video_id'],
-                    ]);
+                    $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, $track);
                     $wasRecentlyCreated = ! $lesson->exists;
 
                     $lesson->fill([
@@ -301,6 +297,7 @@ class PandaCourseImporter
                         'duration_seconds' => $video['duration_seconds'],
                         'sort_order' => $sortOrder,
                         'status' => $this->normalizeLessonStatus($lessonStatus),
+                        'panda_video_id' => $video['panda_video_id'],
                         'panda_status' => $video['panda_status'],
                         'panda_embed_url' => $video['panda_embed_url'],
                         'panda_player_url' => $video['panda_player_url'],
@@ -411,6 +408,66 @@ class PandaCourseImporter
         $slug = Str::slug($title);
 
         return $slug !== '' ? $slug : 'aula-panda-'.$sortOrder;
+    }
+
+    protected function resolveLessonForPandaVideo(array $video, string $normalizedTitle, ?Course $course, ?CourseModule $module, ?CourseModuleTrack $track): Lesson
+    {
+        $videoId = (string) ($video['panda_video_id'] ?? '');
+
+        if ($videoId !== '') {
+            $lesson = Lesson::query()->where('panda_video_id', $videoId)->first();
+
+            if ($lesson) {
+                return $lesson;
+            }
+        }
+
+        $titleKey = LessonTitleNormalizer::matchKey($normalizedTitle);
+
+        if ($titleKey !== '') {
+            $lesson = Lesson::query()
+                ->orderBy('id')
+                ->get()
+                ->first(function (Lesson $lesson) use ($titleKey, $course, $module, $track): bool {
+                    return $this->lessonCanReceiveImportedVideo($lesson)
+                        && $this->lessonMatchesImportScope($lesson, $course, $module, $track)
+                        && LessonTitleNormalizer::matchKey($lesson->title) === $titleKey;
+                });
+
+            if ($lesson) {
+                return $lesson;
+            }
+        }
+
+        return new Lesson([
+            'panda_video_id' => $videoId !== '' ? $videoId : null,
+        ]);
+    }
+
+    protected function lessonCanReceiveImportedVideo(Lesson $lesson): bool
+    {
+        if (filled($lesson->panda_video_id) || filled($lesson->panda_embed_url) || filled($lesson->panda_player_url)) {
+            return false;
+        }
+
+        return in_array((string) $lesson->source_status, ['', 'awaiting_media', 'upload_queued', 'upload_failed'], true);
+    }
+
+    protected function lessonMatchesImportScope(Lesson $lesson, ?Course $course, ?CourseModule $module, ?CourseModuleTrack $track): bool
+    {
+        if ($track && (int) $lesson->course_module_track_id !== (int) $track->id && ! $lesson->tracks()->whereKey($track->id)->exists()) {
+            return false;
+        }
+
+        if ($module && (int) $lesson->course_module_id !== (int) $module->id && ! $lesson->modules()->whereKey($module->id)->exists()) {
+            return false;
+        }
+
+        if (! $module && ! $track && $course && (int) $lesson->course_id !== (int) $course->id) {
+            return false;
+        }
+
+        return true;
     }
 
     protected function normalizeLessonStatus(string $status): string

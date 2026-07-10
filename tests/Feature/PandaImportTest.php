@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\PandaImportRun;
 use App\Services\PandaCourseImporter;
@@ -826,6 +827,59 @@ class PandaImportTest extends TestCase
         $this->assertSame(1, $course->fresh()->modules()->whereKey($module->id)->count());
     }
 
+    public function test_panda_import_replaces_existing_lesson_without_media_by_normalized_name(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'panda-classe-palavras',
+                        'title' => '02 - Classe de Palavras.mp4',
+                        'duration_seconds' => 1500,
+                        'status' => 'CONVERTED',
+                        'embed_url' => 'https://player.test/panda-classe-palavras',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+        ]);
+        $existingLesson = Lesson::query()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '01 - Classe de Palavras',
+            'slug' => 'aula-01-classe-de-palavras',
+            'description' => 'Aula placeholder.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+        $run = app(PandaCourseImporter::class)->importIntoModule($module, 'folder-portugues', 'published');
+
+        $existingLesson->refresh();
+
+        $this->assertSame('finished', $run->status);
+        $this->assertSame(0, $run->summary['created']);
+        $this->assertSame(1, $run->summary['updated']);
+        $this->assertSame(1, Lesson::query()->count());
+        $this->assertSame('01 - Classe de Palavras', $existingLesson->title);
+        $this->assertSame('panda-classe-palavras', $existingLesson->panda_video_id);
+        $this->assertSame('media_ready', $existingLesson->source_status);
+        $this->assertTrue($module->fresh()->onlineLessons()->whereKey($existingLesson->id)->exists());
+    }
+
     public function test_panda_import_updates_module_type_when_reimporting_existing_module(): void
     {
         config([
@@ -1010,7 +1064,7 @@ class PandaImportTest extends TestCase
             'course_id' => null,
             'name' => 'Informática',
         ]);
-        $track = \App\Models\CourseModuleTrack::query()->create([
+        $track = CourseModuleTrack::query()->create([
             'course_module_id' => $module->id,
             'name' => 'Windows 10',
             'slug' => 'windows-10',

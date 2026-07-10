@@ -10,6 +10,8 @@ use App\Models\CourseModuleTrack;
 use App\Models\GoogleDriveImportRun;
 use App\Models\Lesson;
 use App\Support\LessonTitleNormalizer;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -109,6 +111,7 @@ class GoogleDriveTrackImporter
                 $lesson = $track->lessons()
                     ->where('lessons.slug', $slug)
                     ->first()
+                    ?? $this->resolveReusableDriveLesson($course, $module, $track, $title, $slug, $file)
                     ?? new Lesson([
                         'course_id' => $course?->id,
                         'course_module_id' => $module->id,
@@ -586,7 +589,7 @@ class GoogleDriveTrackImporter
         return trim((string) end($parts));
     }
 
-    protected function lessonQueryForScope(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track): \Illuminate\Database\Eloquent\Builder
+    protected function lessonQueryForScope(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track): Builder
     {
         return Lesson::query()
             ->when($course, fn ($query) => $query->where('course_id', $course->id), fn ($query) => $query->whereNull('course_id'))
@@ -621,7 +624,7 @@ class GoogleDriveTrackImporter
         }
 
         return Lesson::query()
-            ->orderByRaw('case when panda_video_id is null then 1 else 0 end')
+            ->orderByRaw("case when (panda_video_id is null and panda_embed_url is null and panda_player_url is null and coalesce(source_status, '') in ('', 'awaiting_media', 'upload_queued', 'upload_failed')) then 0 else 1 end")
             ->orderBy('id')
             ->get()
             ->first(function (Lesson $lesson) use ($normalizedTitle, $slug): bool {
@@ -763,7 +766,7 @@ class GoogleDriveTrackImporter
         ];
     }
 
-    protected function pendingLessonsForFolder(string $folderId): \Illuminate\Support\Collection
+    protected function pendingLessonsForFolder(string $folderId): Collection
     {
         return Lesson::query()
             ->whereIn('source_status', ['awaiting_media', 'upload_queued', 'upload_failed'])
