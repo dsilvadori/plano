@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\QuestionBankAutoLinker;
 use Database\Factories\QuestionBankFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -17,6 +18,9 @@ class QuestionBank extends Model
     protected $fillable = [
         'course_id',
         'title',
+        'exam_board',
+        'exam_year',
+        'exam_name',
         'source_type',
         'source_file_path',
         'status',
@@ -24,6 +28,7 @@ class QuestionBank extends Model
     ];
 
     protected $casts = [
+        'exam_year' => 'integer',
         'metadata' => 'array',
     ];
 
@@ -31,6 +36,10 @@ class QuestionBank extends Model
     {
         static::saving(function (QuestionBank $bank): void {
             $bank->course_id = null;
+        });
+
+        static::saved(function (QuestionBank $bank): void {
+            app(QuestionBankAutoLinker::class)->link($bank);
         });
     }
 

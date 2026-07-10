@@ -12,6 +12,7 @@ use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\User;
 use App\Services\GeminiQuestionCommentaryGenerator;
+use App\Services\QuestionBankAutoLinker;
 use App\Services\QuestionPdfImporter;
 use App\Services\QuestionSpreadsheetImporter;
 use App\Support\QuestionTextRenderer;
@@ -219,6 +220,65 @@ TXT;
             'label' => 'e',
             'text' => 'Alternativa que deveria ser E',
         ]);
+    }
+
+    public function test_question_bank_auto_links_to_matching_module_track_and_lesson_when_saved(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Classe de Palavras',
+        ]);
+        $track = $module->tracks()->create([
+            'name' => 'Substantivo e Adjetivo',
+            'slug' => 'substantivo-e-adjetivo',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Classes de Palavras - Substantivo e Adjetivo',
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Classe de palavras - Substantivo e Adjetivo',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $this->assertTrue($bank->fresh()->modules()->whereKey($module->id)->exists());
+        $this->assertTrue($bank->fresh()->tracks()->whereKey($track->id)->exists());
+        $this->assertTrue($bank->fresh()->lessons()->whereKey($lesson->id)->exists());
+    }
+
+    public function test_existing_question_banks_can_be_auto_linked_after_lessons_are_available(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Interpretação - Panorama Geral',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '05 - Interpretação - Panorama Geral',
+        ]);
+
+        $this->assertFalse($bank->fresh()->lessons()->whereKey($lesson->id)->exists());
+
+        $result = app(QuestionBankAutoLinker::class)->linkAll();
+
+        $this->assertSame(1, $result['banks']);
+        $this->assertSame(1, $result['lessons']);
+        $this->assertTrue($bank->fresh()->lessons()->whereKey($lesson->id)->exists());
     }
 
     public function test_commentary_renderer_breaks_each_option_explanation_into_its_own_line(): void
@@ -673,7 +733,7 @@ XML);
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
-        $bank->lessons()->attach($lesson->id);
+        $bank->lessons()->syncWithoutDetaching($lesson->id);
         Question::query()->create([
             'question_bank_id' => $bank->id,
             'number' => 1,
@@ -757,13 +817,13 @@ XML);
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
-        $portugueseBank->modules()->attach($portuguese->id);
+        $portugueseBank->modules()->syncWithoutDetaching($portuguese->id);
         $administrationBank = QuestionBank::query()->create([
             'title' => 'Administração Geral',
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
-        $administrationBank->modules()->attach($administration->id);
+        $administrationBank->modules()->syncWithoutDetaching($administration->id);
 
         Question::query()->create([
             'question_bank_id' => $portugueseBank->id,
@@ -832,7 +892,7 @@ XML);
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
-        $bank->lessons()->attach($lesson->id);
+        $bank->lessons()->syncWithoutDetaching($lesson->id);
         Question::query()->create([
             'question_bank_id' => $bank->id,
             'number' => 1,
@@ -888,7 +948,7 @@ XML);
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
-        $bank->modules()->attach($module->id);
+        $bank->modules()->syncWithoutDetaching($module->id);
         Question::query()->create([
             'question_bank_id' => $bank->id,
             'number' => 1,

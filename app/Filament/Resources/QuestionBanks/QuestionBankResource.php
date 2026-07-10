@@ -43,6 +43,20 @@ class QuestionBankResource extends Resource
                 ->label('Título')
                 ->required()
                 ->maxLength(255),
+            TextInput::make('exam_board')
+                ->label('Banca')
+                ->placeholder('Ex.: VUNESP')
+                ->maxLength(255),
+            TextInput::make('exam_year')
+                ->label('Ano')
+                ->numeric()
+                ->minValue(1900)
+                ->maxValue(2100),
+            TextInput::make('exam_name')
+                ->label('Concurso')
+                ->placeholder('Ex.: Prefeitura de Santos - Oficial de Administração')
+                ->maxLength(255)
+                ->columnSpanFull(),
             Select::make('status')
                 ->label('Status')
                 ->options([
@@ -123,6 +137,9 @@ class QuestionBankResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('title')->label('Banco')->searchable()->sortable(),
+                TextColumn::make('exam_board')->label('Banca')->searchable()->sortable()->toggleable(),
+                TextColumn::make('exam_year')->label('Ano')->sortable()->toggleable(),
+                TextColumn::make('exam_name')->label('Concurso')->searchable()->limit(40)->toggleable(),
                 TextColumn::make('modules.name')->label('Módulos')->badge()->limitList(3)->toggleable(),
                 TextColumn::make('tracks.name')->label('Trilhas')->badge()->limitList(3)->toggleable(),
                 TextColumn::make('lessons.title')->label('Aulas')->badge()->limitList(3)->toggleable(isToggledHiddenByDefault: true),

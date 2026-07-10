@@ -6,6 +6,7 @@ use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\QuestionBank;
 use App\Services\CourseAccessResolver;
+use App\Services\QuestionBankAutoLinker;
 use App\Services\QuestionPdfImporter;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Foundation\Inspiring;
@@ -16,6 +17,20 @@ use Illuminate\Support\Facades\Storage;
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('question-banks:auto-link', function (QuestionBankAutoLinker $linker) {
+    $totals = $linker->linkAll(function (QuestionBank $bank, array $result): void {
+        if ($result['modules'] === 0 && $result['tracks'] === 0 && $result['lessons'] === 0) {
+            return;
+        }
+
+        $this->line("{$bank->id} - {$bank->title}: +{$result['modules']} módulo(s), +{$result['tracks']} trilha(s), +{$result['lessons']} aula(s)");
+    });
+
+    $this->info("Bancos processados: {$totals['banks']}. Vínculos criados: {$totals['modules']} módulo(s), {$totals['tracks']} trilha(s), {$totals['lessons']} aula(s).");
+
+    return 0;
+})->purpose('Vincula bancos de questões a módulos, trilhas e aulas com nomes correspondentes');
 
 Artisan::command('courses:expand-combo {comboName}', function (string $comboName) {
     $comboCourses = app(CourseAccessResolver::class)->coursesForCombo($comboName);
