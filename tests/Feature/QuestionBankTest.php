@@ -919,11 +919,20 @@ XML);
             'name' => 'Português',
             'type' => 'basic',
         ]);
+        $track = $module->tracks()->create([
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
         $lesson = Lesson::factory()->create([
             'course_id' => $course->id,
             'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
             'title' => '01 - Classes de Palavras - Substantivo e Adjetivo',
         ]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
 
         $plan = StudyPlan::factory()->create([
             'user_id' => $student->id,
@@ -949,6 +958,12 @@ XML);
             'status' => 'published',
         ]);
         $bank->modules()->syncWithoutDetaching($module->id);
+        $trackBank = QuestionBank::query()->create([
+            'title' => 'Classe de palavras',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $trackBank->tracks()->syncWithoutDetaching($track->id);
         Question::query()->create([
             'question_bank_id' => $bank->id,
             'number' => 1,
@@ -958,13 +973,26 @@ XML);
             'answer_key' => 'b',
             'status' => 'published',
         ]);
+        Question::query()->create([
+            'question_bank_id' => $trackBank->id,
+            'number' => 1,
+            'topic' => 'Classe de palavras',
+            'statement' => 'Qual alternativa apresenta um adjetivo?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
 
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
             ->assertSee('Resolução de questões')
-            ->assertSee('Pratique este assunto no banco de questões.')
-            ->assertSee('Abrir área de questões')
-            ->assertSee('plan_id='.$plan->id, false);
+            ->assertSee('Pratique com os bancos vinculados a esta aula.')
+            ->assertSee('abrir área de questões')
+            ->assertSee('Resolver questões: Classe de palavras - Substantivo e Adjetivo')
+            ->assertSee('Resolver questões: Classe de palavras')
+            ->assertSee('plan_id='.$plan->id, false)
+            ->assertSee('lesson_id='.$lesson->id, false)
+            ->assertSee('track_id='.$track->id, false);
     }
 }

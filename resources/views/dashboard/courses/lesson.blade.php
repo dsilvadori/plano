@@ -720,14 +720,18 @@
                 </div>
             @endif
 
-            @if ($lessonQuestionLink)
+            @if ($lessonQuestionLinks->isNotEmpty())
                 <div class="mt-6 rounded-3xl border border-sky-400/20 bg-sky-400/10 p-5">
                     <p class="text-sm uppercase tracking-[0.25em] text-sky-200">Resolução de questões</p>
-                    <h2 class="mt-2 text-xl font-semibold text-white">Pratique este assunto no banco de questões.</h2>
-                    <a href="{{ $lessonQuestionLink['url'] }}" class="mt-4 block rounded-xl border border-sky-400/20 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300/40 hover:bg-sky-400/15">
-                        <span class="block font-semibold">{{ $lessonQuestionLink['label'] }}</span>
-                        <span class="mt-1 block text-xs text-sky-100/80">Resolva no seu ritmo e volte para continuar a aula.</span>
-                    </a>
+                    <h2 class="mt-2 text-xl font-semibold text-white">Pratique com os bancos vinculados a esta aula.</h2>
+                    <div class="mt-4 space-y-2">
+                        @foreach ($lessonQuestionLinks as $questionLink)
+                            <a href="{{ $questionLink['url'] }}" class="block rounded-xl border border-sky-400/20 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300/40 hover:bg-sky-400/15">
+                                <span class="block font-semibold">{{ $questionLink['label'] }}</span>
+                                <span class="mt-1 block text-xs text-sky-100/80">{{ $questionLink['scope'] }} · resolva no seu ritmo e volte para continuar a aula.</span>
+                            </a>
+                        @endforeach
+                    </div>
                 </div>
             @endif
         </section>
@@ -787,11 +791,15 @@
                                     <p class="mt-2 text-sm text-slate-400">{{ $planItem->estimated_minutes }} min reservados</p>
                                 @endif
 
-                                @if ($planItem->type === 'questions' && $lessonQuestionLink)
-                                    <a href="{{ $lessonQuestionLink['url'] }}" class="mt-3 block rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300/40 hover:bg-sky-400/15">
-                                        <span class="block font-semibold">{{ $lessonQuestionLink['label'] }}</span>
-                                        <span class="mt-1 block text-xs text-sky-100/80">Abrir área de questões</span>
-                                    </a>
+                                @if ($planItem->type === 'questions' && $lessonQuestionLinks->isNotEmpty())
+                                    <div class="mt-3 space-y-2">
+                                        @foreach ($lessonQuestionLinks as $questionLink)
+                                            <a href="{{ $questionLink['url'] }}" class="block rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300/40 hover:bg-sky-400/15">
+                                                <span class="block font-semibold">{{ $questionLink['label'] }}</span>
+                                                <span class="mt-1 block text-xs text-sky-100/80">{{ $questionLink['scope'] }} · abrir área de questões</span>
+                                            </a>
+                                        @endforeach
+                                    </div>
                                 @endif
                             </div>
                         @endforeach

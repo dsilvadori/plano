@@ -192,6 +192,8 @@ class CourseCatalogController extends Controller
         $orderedLessons = $this->publishedLessonsForCourse($course)->get();
         $currentIndex = $orderedLessons->search(fn (Lesson $orderedLesson) => $orderedLesson->is($lesson));
 
+        $planLessonContext = $this->planLessonContextForLesson($user, $course, $lesson);
+
         return view('dashboard.courses.lesson', [
             'course' => $course,
             'lesson' => $lesson,
@@ -200,8 +202,8 @@ class CourseCatalogController extends Controller
             'nextLesson' => $currentIndex === false ? null : $orderedLessons->get($currentIndex + 1),
             'progressSummary' => $this->progressForCourse($course, $user),
             'aiArtifacts' => $lesson->aiArtifacts,
-            'planLessonContext' => $this->planLessonContextForLesson($user, $course, $lesson),
-            'lessonQuestionLink' => $this->questionLinkForLesson($user, $course, $lesson),
+            'planLessonContext' => $planLessonContext,
+            'lessonQuestionLinks' => $this->questionLinksForLesson($user, $course, $lesson, $planLessonContext),
             'pandaTutorUrl' => $this->pandaTutorUrlForLesson($lesson),
             'pandaTutorCandidateUrl' => $this->pandaTutorCandidateUrlForLesson($lesson),
             'pandaTutorConfigUrl' => $this->pandaTutorConfigUrlForLesson($lesson),
@@ -538,40 +540,51 @@ class CourseCatalogController extends Controller
         ];
     }
 
-    protected function questionLinkForLesson(User $user, Course $course, Lesson $lesson): ?array
+    protected function questionLinksForLesson(User $user, Course $course, Lesson $lesson, ?array $planLessonContext = null): Collection
     {
-        if (! $lesson->course_module_id && ! $lesson->course_module_track_id) {
-            return null;
+        $lessonIds = collect([$lesson->id])
+            ->merge($planLessonContext
+                ? collect($planLessonContext['items'])->flatMap(fn (StudyPlanItem $item) => $item->lessons->pluck('id'))
+                : [])
+            ->filter()
+            ->unique()
+            ->values();
+
+        $moduleIds = collect([$lesson->course_module_id])
+            ->merge($lesson->modules()->pluck('course_modules.id'))
+            ->filter()
+            ->unique()
+            ->values();
+
+        $trackIds = collect([$lesson->course_module_track_id])
+            ->merge($lesson->tracks()->pluck('course_module_tracks.id'))
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($lessonIds->isEmpty() && $moduleIds->isEmpty() && $trackIds->isEmpty()) {
+            return collect();
         }
 
-        $bank = QuestionBank::query()
+        $banks = QuestionBank::query()
             ->where('status', 'published')
             ->whereHas('questions', fn (Builder $query) => $query->where('status', 'published'))
-            ->where(function (Builder $query) use ($lesson): void {
-                $query->orWhereHas('lessons', fn (Builder $query) => $query->whereKey($lesson->id));
-
-                if ($lesson->course_module_track_id) {
-                    $query->orWhereHas('tracks', fn (Builder $query) => $query->whereKey($lesson->course_module_track_id));
+            ->where(function (Builder $query) use ($lessonIds, $moduleIds, $trackIds): void {
+                if ($lessonIds->isNotEmpty()) {
+                    $query->orWhereHas('lessons', fn (Builder $query) => $query->whereIn('lessons.id', $lessonIds));
                 }
 
-                if ($lesson->course_module_id) {
-                    $query->orWhereHas('modules', fn (Builder $query) => $query->whereKey($lesson->course_module_id));
+                if ($trackIds->isNotEmpty()) {
+                    $query->orWhereHas('tracks', fn (Builder $query) => $query->whereIn('course_module_tracks.id', $trackIds));
+                }
+
+                if ($moduleIds->isNotEmpty()) {
+                    $query->orWhereHas('modules', fn (Builder $query) => $query->whereIn('course_modules.id', $moduleIds));
                 }
             })
+            ->with(['lessons:id,title', 'tracks:id,name', 'modules:id,name'])
             ->orderBy('title')
-            ->first();
-
-        if (! $bank) {
-            return null;
-        }
-
-        $hasLessonBank = $bank->lessons()->whereKey($lesson->id)->exists();
-
-        $params = $hasLessonBank
-            ? ['lesson_id' => $lesson->id]
-            : ($lesson->course_module_track_id
-            ? ['track_id' => $lesson->course_module_track_id]
-            : ['module_id' => $lesson->course_module_id]);
+            ->get();
 
         $plan = $user->studyPlans()
             ->where('course_id', $course->id)
@@ -579,14 +592,54 @@ class CourseCatalogController extends Controller
             ->latest('id')
             ->first();
 
-        if ($plan) {
-            $params['plan_id'] = $plan->id;
-        }
+        return $banks
+            ->map(function (QuestionBank $bank) use ($lesson, $lessonIds, $trackIds, $moduleIds, $plan): array {
+                $bankLessonIds = $bank->lessons->pluck('id');
+                $bankTrackIds = $bank->tracks->pluck('id');
+                $bankModuleIds = $bank->modules->pluck('id');
 
-        return [
-            'label' => 'Resolver questões deste assunto',
-            'url' => route('questions.show', [$bank] + $params),
-        ];
+                $matchedLessonId = $bankLessonIds->first(fn (int $lessonId): bool => $lessonId === $lesson->id)
+                    ?? $bankLessonIds->first(fn (int $lessonId): bool => $lessonIds->contains($lessonId));
+                $matchedTrackId = $bankTrackIds->first(fn (int $trackId): bool => $trackIds->contains($trackId));
+                $matchedModuleId = $bankModuleIds->first(fn (int $moduleId): bool => $moduleIds->contains($moduleId));
+
+                $params = match (true) {
+                    filled($matchedLessonId) => ['lesson_id' => $matchedLessonId],
+                    filled($matchedTrackId) => ['track_id' => $matchedTrackId],
+                    filled($matchedModuleId) => ['module_id' => $matchedModuleId],
+                    default => [],
+                };
+
+                if ($plan) {
+                    $params['plan_id'] = $plan->id;
+                }
+
+                $scope = match (true) {
+                    filled($matchedLessonId) && (int) $matchedLessonId === (int) $lesson->id => 'Aula atual',
+                    filled($matchedLessonId) => 'Aula do plano',
+                    filled($matchedTrackId) => 'Trilha',
+                    filled($matchedModuleId) => 'Módulo',
+                    default => 'Banco',
+                };
+
+                return [
+                    'label' => 'Resolver questões: '.$bank->title,
+                    'scope' => $scope,
+                    'url' => route('questions.show', [$bank] + $params),
+                    'priority' => match ($scope) {
+                        'Aula atual' => 1,
+                        'Aula do plano' => 2,
+                        'Trilha' => 3,
+                        'Módulo' => 4,
+                        default => 5,
+                    },
+                ];
+            })
+            ->sortBy([
+                ['priority', 'asc'],
+                ['label', 'asc'],
+            ])
+            ->values();
     }
 
     protected function markLinkedPlanItemsIfReady(User $user, Lesson $lesson): void
