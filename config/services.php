@@ -57,7 +57,7 @@ return [
         'video_file_field' => env('PANDA_VIDEO_FILE_FIELD', 'file'),
         'video_title_field' => env('PANDA_VIDEO_TITLE_FIELD', 'title'),
         'video_folder_field' => env('PANDA_VIDEO_FOLDER_FIELD', 'folder_id'),
-        'video_upload_timeout' => env('PANDA_VIDEO_UPLOAD_TIMEOUT', 600),
+        'video_upload_timeout' => env('PANDA_VIDEO_UPLOAD_TIMEOUT', 7200),
         'video_upload_delay_seconds' => env('PANDA_VIDEO_UPLOAD_DELAY_SECONDS', 0),
         'video_upload_retry_attempts' => env('PANDA_VIDEO_UPLOAD_RETRY_ATTEMPTS', 1),
         'video_upload_retry_delay_seconds' => env('PANDA_VIDEO_UPLOAD_RETRY_DELAY_SECONDS', 0),

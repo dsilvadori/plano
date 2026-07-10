@@ -263,7 +263,7 @@ class PandaVideoClient
                 $metadata['folder_id'] = (string) $folderId;
             }
 
-            $response = Http::timeout((int) config('services.panda.video_upload_timeout', 600))
+            $response = Http::timeout((int) config('services.panda.video_upload_timeout', 7200))
                 ->withHeaders([
                     'Tus-Resumable' => '1.0.0',
                     'Upload-Length' => (string) filesize($path),
@@ -303,7 +303,7 @@ class PandaVideoClient
         }
 
         try {
-            $response = Http::timeout((int) config('services.panda.video_upload_timeout', 600))
+            $response = Http::timeout((int) config('services.panda.video_upload_timeout', 7200))
                 ->withHeaders([
                     'Tus-Resumable' => '1.0.0',
                     'Upload-Offset' => '0',
@@ -782,7 +782,7 @@ class PandaVideoClient
 
             try {
                 $response = $this->http($attempt['headers'])
-                    ->timeout((int) config('services.panda.video_upload_timeout', 600))
+                    ->timeout((int) config('services.panda.video_upload_timeout', 7200))
                     ->attach($fileField, $handle, basename($filePath))
                     ->post($requestPath, $payload);
             } finally {
@@ -832,7 +832,7 @@ class PandaVideoClient
 
             try {
                 $response = $this->http($attempt['headers'])
-                    ->timeout((int) config('services.panda.video_upload_timeout', 600))
+                    ->timeout((int) config('services.panda.video_upload_timeout', 7200))
                     ->withBody($handle, 'application/octet-stream')
                     ->put($requestPath);
             } finally {
