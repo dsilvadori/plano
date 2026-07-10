@@ -236,7 +236,10 @@ class PandaVideoClient
         $this->sendTusPatch($uploadUrl, $path);
 
         $video = $this->waitForUploadedVideo($videoId, $folderId);
-        $this->ensureVideoIsInExpectedFolder($video, $folderId);
+
+        if (! ($video['panda_pending_lookup'] ?? false)) {
+            $this->ensureVideoIsInExpectedFolder($video, $folderId);
+        }
 
         return $video;
     }
@@ -385,18 +388,29 @@ class PandaVideoClient
             }
         }
 
-        if ($lastVideo && $this->isReusablePandaVideo($lastVideo)) {
-            return $lastVideo;
-        }
-
         if ($lastVideo) {
-            throw new RuntimeException(
-                'O upload TUS foi concluído, mas o Panda ainda retornou o vídeo como '.
-                strtoupper((string) ($lastVideo['panda_status'] ?? 'status desconhecido')).'.'
-            );
+            return [
+                ...$lastVideo,
+                'panda_pending_lookup' => true,
+                'panda_processing_message' => 'O upload TUS foi concluído, mas o Panda ainda retornou o vídeo como '.
+                    strtoupper((string) ($lastVideo['panda_status'] ?? 'status desconhecido')).'.',
+            ];
         }
 
-        throw new RuntimeException('O upload TUS foi concluído, mas o vídeo ainda não apareceu na API do Panda.');
+        return [
+            'panda_video_id' => $videoId,
+            'panda_embed_url' => null,
+            'panda_player_url' => null,
+            'panda_status' => 'UPLOADED',
+            'duration_seconds' => 0,
+            'payload' => [
+                'id' => $videoId,
+                'folder_id' => $folderId,
+                'status' => 'UPLOADED',
+            ],
+            'panda_pending_lookup' => true,
+            'panda_processing_message' => 'O upload TUS foi concluído, mas o vídeo ainda não apareceu na API do Panda.',
+        ];
     }
 
     protected function uploadVideoByCreatingDraftAndPuttingBinary(string $path, string $title, ?string $folderId = null): array

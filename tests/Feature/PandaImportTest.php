@@ -623,6 +623,59 @@ class PandaImportTest extends TestCase
         $this->assertSame('DRAFT', $video['panda_status']);
     }
 
+    public function test_panda_client_returns_pending_lookup_when_tus_upload_is_not_visible_yet(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.video_upload_mode' => 'tus',
+            'services.panda.videos_path' => '/videos',
+            'services.panda.uploader_base_url' => 'https://uploader.test',
+            'services.panda.uploader_path' => '/files/',
+            'services.panda.uploader_video_lookup_attempts' => 1,
+            'services.panda.uploader_video_lookup_delay_seconds' => 0,
+        ]);
+
+        $path = sys_get_temp_dir().'/panda-client-tus-pending-lookup-test.mp4';
+        file_put_contents($path, 'video-content');
+        $createdVideoId = null;
+
+        Http::fake(function ($request) use (&$createdVideoId) {
+            if ($request->method() === 'POST' && $request->url() === 'https://uploader.test/files/') {
+                $metadata = collect(explode(',', (string) $request->header('Upload-Metadata')[0]))
+                    ->filter()
+                    ->mapWithKeys(function (string $entry) {
+                        [$key, $value] = explode(' ', $entry, 2);
+
+                        return [$key => base64_decode($value)];
+                    })
+                    ->all();
+                $createdVideoId = $metadata['video_id'] ?? null;
+
+                return Http::response('', 201, ['Location' => '/files/upload-1']);
+            }
+
+            if ($request->method() === 'PATCH' && $request->url() === 'https://uploader.test/files/upload-1') {
+                return Http::response('', 204);
+            }
+
+            return Http::response([], 404);
+        });
+
+        try {
+            $video = app(PandaVideoClient::class)->uploadVideo($path, 'Aula TUS', 'folder-1');
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertSame($createdVideoId, $video['panda_video_id']);
+        $this->assertSame('UPLOADED', $video['panda_status']);
+        $this->assertTrue($video['panda_pending_lookup']);
+        $this->assertSame('O upload TUS foi concluído, mas o vídeo ainda não apareceu na API do Panda.', $video['panda_processing_message']);
+    }
+
     public function test_panda_folder_import_creates_module_reusable_lesson_and_history(): void
     {
         config([
