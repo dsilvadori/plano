@@ -24,8 +24,28 @@ class QuestionOption extends Model
         'is_correct' => 'boolean',
     ];
 
+    protected static function booted(): void
+    {
+        static::saving(function (QuestionOption $option): void {
+            $answerKey = $option->question?->normalizedAnswerKey();
+
+            if ($answerKey === null) {
+                $option->is_correct = false;
+
+                return;
+            }
+
+            $option->is_correct = $option->normalizedLabel() === $answerKey;
+        });
+    }
+
     public function question(): BelongsTo
     {
         return $this->belongsTo(Question::class);
+    }
+
+    public function normalizedLabel(): string
+    {
+        return str($this->label ?? '')->lower()->ascii()->squish()->value();
     }
 }

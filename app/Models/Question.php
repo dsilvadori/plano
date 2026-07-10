@@ -21,6 +21,10 @@ class Question extends Model
             $question->course_module_id = null;
             $question->lesson_id = null;
         });
+
+        static::saved(function (Question $question): void {
+            $question->syncCorrectOptionsFromAnswerKey();
+        });
     }
 
     protected $fillable = [
@@ -75,6 +79,32 @@ class Question extends Model
     public function attempts(): HasMany
     {
         return $this->hasMany(QuestionAttempt::class);
+    }
+
+    public function syncCorrectOptionsFromAnswerKey(): void
+    {
+        $answerKey = $this->normalizedAnswerKey();
+
+        if ($answerKey === null) {
+            $this->options()->update(['is_correct' => false]);
+
+            return;
+        }
+
+        $this->options()->get()->each(function (QuestionOption $option) use ($answerKey): void {
+            $isCorrect = $option->normalizedLabel() === $answerKey;
+
+            if ((bool) $option->is_correct !== $isCorrect) {
+                $option->forceFill(['is_correct' => $isCorrect])->saveQuietly();
+            }
+        });
+    }
+
+    public function normalizedAnswerKey(): ?string
+    {
+        $answerKey = str($this->answer_key ?? '')->lower()->ascii()->squish()->value();
+
+        return $answerKey !== '' ? $answerKey : null;
     }
 
     public function imageUrls(): array

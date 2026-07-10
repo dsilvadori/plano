@@ -222,6 +222,44 @@ TXT;
         ]);
     }
 
+    public function test_question_answer_key_marks_matching_option_as_correct_automatically(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco manual',
+            'source_type' => 'manual',
+            'status' => 'published',
+        ]);
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => 'Assinale a correta.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'b',
+            'status' => 'published',
+        ]);
+
+        $wrong = $question->options()->create([
+            'label' => 'a',
+            'text' => 'Alternativa A',
+            'is_correct' => true,
+            'sort_order' => 1,
+        ]);
+        $correct = $question->options()->create([
+            'label' => 'b',
+            'text' => 'Alternativa B',
+            'is_correct' => false,
+            'sort_order' => 2,
+        ]);
+
+        $this->assertFalse($wrong->fresh()->is_correct);
+        $this->assertTrue($correct->fresh()->is_correct);
+
+        $question->forceFill(['answer_key' => 'a'])->save();
+
+        $this->assertTrue($wrong->fresh()->is_correct);
+        $this->assertFalse($correct->fresh()->is_correct);
+    }
+
     public function test_question_bank_auto_links_to_matching_module_track_and_lesson_when_saved(): void
     {
         $course = Course::factory()->create(['status' => 'published']);

@@ -140,20 +140,14 @@ class QuestionResource extends Resource
                         ->label('Texto')
                         ->rows(2)
                         ->required(),
-                    Select::make('is_correct')
-                        ->label('Correta?')
-                        ->options([
-                            false => 'Não',
-                            true => 'Sim',
-                        ])
-                        ->default(false)
-                        ->required(),
                     TextInput::make('sort_order')
                         ->label('Ordem')
                         ->numeric()
                         ->default(0),
                 ])
-                ->columns(4)
+                ->mutateRelationshipDataBeforeCreateUsing(fn (array $data): array => array_replace($data, ['is_correct' => false]))
+                ->mutateRelationshipDataBeforeSaveUsing(fn (array $data): array => array_replace($data, ['is_correct' => false]))
+                ->columns(3)
                 ->columnSpanFull(),
         ]);
     }
