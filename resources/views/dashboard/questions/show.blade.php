@@ -18,8 +18,9 @@
         @forelse ($questions as $question)
             @php
                 $attempt = $question->attempts->first();
-                $questionImageUrls = collect(data_get($question->metadata, 'image_urls', []))->filter()->values();
-                $questionImageDescription = data_get($question->metadata, 'image_description');
+                $questionImageUrls = collect($question->imageUrls());
+                $questionImageDescription = $question->imageDescription();
+                $questionImagePosition = $question->imagePosition();
             @endphp
             <article id="questao-{{ $question->id }}" class="card-panel" data-question-card="{{ $question->id }}">
                 <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -39,11 +40,30 @@
                     </span>
                 </div>
 
+                @if ($questionImagePosition === 'before_statement' && ($questionImageUrls->isNotEmpty() || filled($questionImageDescription)))
+                    <div class="mt-5 grid gap-3">
+                        @foreach ($questionImageUrls as $imageUrl)
+                            <img
+                                src="{{ $imageUrl }}"
+                                alt="Imagem da questão {{ $question->number }}"
+                                class="question-image"
+                                loading="lazy"
+                            >
+                        @endforeach
+
+                        @if (filled($questionImageDescription))
+                            <div class="rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-50">
+                                {{ $questionImageDescription }}
+                            </div>
+                        @endif
+                    </div>
+                @endif
+
                 <div class="question-rich-text mt-5 text-base leading-8 text-slate-100">
                     {{ \App\Support\QuestionTextRenderer::render($question->statement) }}
                 </div>
 
-                @if ($questionImageUrls->isNotEmpty() || filled($questionImageDescription))
+                @if ($questionImagePosition === 'after_statement' && ($questionImageUrls->isNotEmpty() || filled($questionImageDescription)))
                     <div class="mt-5 grid gap-3">
                         @foreach ($questionImageUrls as $imageUrl)
                             <img

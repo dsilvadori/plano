@@ -552,6 +552,49 @@ XML);
             ->assertSee('Substantivo dá nome aos seres.');
     }
 
+    public function test_question_images_can_be_rendered_before_statement(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $bank = QuestionBank::query()->create([
+            'title' => 'Interpretação com imagem',
+            'source_type' => 'manual',
+            'status' => 'published',
+        ]);
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 5,
+            'topic' => 'Classes de palavras',
+            'statement' => 'Leia a tira para responder à questão.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+            'metadata' => [
+                'image_urls' => ['question-images/tirinha.png'],
+                'image_position' => 'before_statement',
+                'image_description' => 'Tirinha usada como texto-base da questão.',
+            ],
+        ]);
+        $question->options()->create([
+            'label' => 'a',
+            'text' => 'Alternativa correta',
+            'is_correct' => true,
+            'sort_order' => 1,
+        ]);
+
+        $response = $this->actingAs($student)
+            ->get(route('questions.show', $bank))
+            ->assertOk()
+            ->assertSee('/storage/question-images/tirinha.png', false)
+            ->assertSee('Tirinha usada como texto-base da questão.');
+
+        $html = $response->getContent();
+
+        $this->assertLessThan(
+            strpos($html, 'Leia a tira para responder à questão.'),
+            strpos($html, '/storage/question-images/tirinha.png')
+        );
+    }
+
     public function test_gemini_commentary_generator_falls_back_when_configured_model_is_unavailable_or_busy(): void
     {
         config([

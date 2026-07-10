@@ -13,6 +13,7 @@ use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -82,6 +83,29 @@ class QuestionResource extends Resource
                 ->label('Enunciado')
                 ->rows(8)
                 ->required()
+                ->columnSpanFull(),
+            FileUpload::make('metadata.image_urls')
+                ->label('Imagens da questão')
+                ->disk('public')
+                ->directory('question-images')
+                ->multiple()
+                ->image()
+                ->imageEditor()
+                ->reorderable()
+                ->helperText('Use para tirinhas, mapas, tabelas em imagem ou qualquer figura necessária para interpretar a questão.')
+                ->columnSpanFull(),
+            Select::make('metadata.image_position')
+                ->label('Posição da imagem')
+                ->options([
+                    'after_statement' => 'Depois do enunciado',
+                    'before_statement' => 'Antes do enunciado',
+                ])
+                ->default('after_statement')
+                ->required(),
+            Textarea::make('metadata.image_description')
+                ->label('Descrição da imagem')
+                ->helperText('Opcional. Use para observações, legenda ou acessibilidade.')
+                ->rows(3)
                 ->columnSpanFull(),
             Select::make('answer_key')
                 ->label('Gabarito')

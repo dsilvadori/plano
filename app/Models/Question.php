@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Storage;
 
 class Question extends Model
 {
@@ -74,5 +75,39 @@ class Question extends Model
     public function attempts(): HasMany
     {
         return $this->hasMany(QuestionAttempt::class);
+    }
+
+    public function imageUrls(): array
+    {
+        return collect(data_get($this->metadata, 'image_urls', []))
+            ->filter()
+            ->map(fn (string $path): string => $this->imageDisplayUrl($path))
+            ->values()
+            ->all();
+    }
+
+    public function imageDescription(): ?string
+    {
+        $description = trim((string) data_get($this->metadata, 'image_description', ''));
+
+        return $description !== '' ? $description : null;
+    }
+
+    public function imagePosition(): string
+    {
+        $position = data_get($this->metadata, 'image_position', 'after_statement');
+
+        return in_array($position, ['before_statement', 'after_statement'], true)
+            ? $position
+            : 'after_statement';
+    }
+
+    protected function imageDisplayUrl(string $path): string
+    {
+        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://') || str_starts_with($path, '/')) {
+            return $path;
+        }
+
+        return Storage::disk('public')->url($path);
     }
 }
