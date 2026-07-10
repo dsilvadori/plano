@@ -101,6 +101,9 @@ return [
         'credentials_path' => env('GOOGLE_DRIVE_CREDENTIALS_PATH'),
         'scopes' => env('GOOGLE_DRIVE_SCOPES', 'https://www.googleapis.com/auth/drive.readonly'),
         'api_base_url' => env('GOOGLE_DRIVE_API_BASE_URL', 'https://www.googleapis.com/drive/v3'),
+        'download_timeout' => env('GOOGLE_DRIVE_DOWNLOAD_TIMEOUT', 7200),
+        'download_retry_attempts' => env('GOOGLE_DRIVE_DOWNLOAD_RETRY_ATTEMPTS', 3),
+        'download_retry_delay_seconds' => env('GOOGLE_DRIVE_DOWNLOAD_RETRY_DELAY_SECONDS', 5),
     ],
 
 ];

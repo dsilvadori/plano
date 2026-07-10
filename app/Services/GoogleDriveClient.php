@@ -63,6 +63,11 @@ class GoogleDriveClient
     public function downloadFileToPath(string $fileId, string $path): void
     {
         $response = $this->request()
+            ->timeout((int) config('services.google_drive.download_timeout', 7200))
+            ->retry(
+                (int) config('services.google_drive.download_retry_attempts', 3),
+                max(0, (int) config('services.google_drive.download_retry_delay_seconds', 5)) * 1000,
+            )
             ->sink($path)
             ->get(rtrim((string) config('services.google_drive.api_base_url'), '/').'/files/'.$fileId, [
                 'alt' => 'media',
