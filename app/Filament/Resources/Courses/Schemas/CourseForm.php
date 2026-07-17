@@ -57,7 +57,7 @@ class CourseForm
                         $path = (string) ($get('thumbnail_path') ?: $record?->thumbnail_path ?: '');
                         $url = ThumbnailUrl::fromPathOrUrl($path, (string) ($get('thumbnail_url') ?: $record?->thumbnail_url ?: ''));
 
-                        return new HtmlString('<img src="' . e($url) . '" alt="" style="height: 120px; max-width: 240px; object-fit: cover; border-radius: 8px;">');
+                        return new HtmlString('<img src="' . e($url) . '" alt="" style="height: 160px; width: 280px; max-width: 100%; object-fit: contain; border-radius: 12px; background: #020617; padding: 8px;">');
                     })
                     ->columnSpanFull(),
                 FileUpload::make('thumbnail_upload')

@@ -5,7 +5,7 @@
 
 <x-app-layout>
     <x-slot name="header">
-        <div class="hero-panel grid gap-6 lg:grid-cols-[1fr_20rem] lg:items-center">
+        <div class="hero-panel grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-center">
             <div>
                 <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Curso online</p>
                 <h1 class="mt-2 text-3xl font-semibold text-white">{{ $course->name }}</h1>
@@ -26,8 +26,8 @@
                     </a>
                 @endif
             </div>
-            <div class="overflow-hidden rounded-3xl border border-white/10 bg-slate-950/60">
-                <img src="{{ $thumbnail }}" alt="{{ $course->name }}" class="aspect-[16/10] h-full w-full object-cover">
+            <div class="overflow-hidden rounded-3xl border border-white/10 bg-slate-950 p-3 shadow-2xl shadow-slate-950/30">
+                <img src="{{ $thumbnail }}" alt="{{ $course->name }}" class="aspect-video h-full w-full rounded-2xl object-contain">
             </div>
         </div>
     </x-slot>
