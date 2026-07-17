@@ -6,8 +6,8 @@
 @endphp
 
 <article class="card-subtle flex h-full flex-col overflow-hidden p-0">
-    <div class="relative aspect-[16/9] overflow-hidden rounded-t-2xl border-b border-white/10 bg-slate-950/60">
-        <img src="{{ $thumbnail }}" alt="{{ $course->name }}" class="h-full w-full object-cover">
+    <div class="relative aspect-[16/9] overflow-hidden rounded-t-2xl border-b border-white/10 bg-slate-950">
+        <img src="{{ $thumbnail }}" alt="{{ $course->name }}" class="h-full w-full object-contain p-2" loading="lazy" decoding="async">
         @unless ($hasAccess)
             <div class="absolute right-3 top-3 rounded-full border border-white/20 bg-slate-950/80 px-3 py-1 text-xs font-semibold text-slate-100 shadow-lg">
                 Bloqueado

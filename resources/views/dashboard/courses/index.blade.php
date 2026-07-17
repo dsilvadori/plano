@@ -22,7 +22,7 @@
                     </div>
                 </div>
 
-                <div class="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+                <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
                     @foreach ($featuredCourses as $course)
                         @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
                     @endforeach
@@ -36,11 +36,11 @@
                 <h2 class="mt-2 text-2xl font-semibold text-white">Últimos cursos disponíveis</h2>
             </div>
 
-            <div class="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+            <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
                 @forelse ($latestCourses as $course)
                     @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
                 @empty
-                    <div class="card-subtle md:col-span-2 xl:col-span-4">
+                    <div class="card-subtle">
                         <p class="text-sm text-slate-300">Nenhum curso publicado no momento.</p>
                     </div>
                 @endforelse
@@ -56,7 +56,7 @@
                             <h2 class="mt-2 text-2xl font-semibold text-white">Cursos por esfera</h2>
                         </div>
 
-                        <div class="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+                        <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
                             @foreach ($sphere->courses as $course)
                                 @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
                             @endforeach

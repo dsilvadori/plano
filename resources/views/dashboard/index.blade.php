@@ -48,7 +48,7 @@
                         </a>
                     </div>
 
-                    <div class="mt-5 grid gap-4 xl:grid-cols-3">
+                    <div class="mt-5 grid gap-4 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
                         @foreach ($featuredOnlineCourses as $course)
                             @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $availableCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
                         @endforeach
