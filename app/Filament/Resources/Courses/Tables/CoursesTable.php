@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Courses\Tables;
 
+use App\Models\Course;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -32,6 +33,14 @@ class CoursesTable
                 TextColumn::make('combo_name')->label('Combo')->searchable()->toggleable(),
                 TextColumn::make('modules_count')->label('Módulos')->counts('modules'),
                 TextColumn::make('lessons_count')->label('Aulas')->counts('lessons'),
+                TextColumn::make('linked_lessons_count')
+                    ->label('Aulas vinculadas')
+                    ->getStateUsing(fn (Course $record): int => $record->linkedLessonsCount())
+                    ->sortable(false),
+                TextColumn::make('linked_media_lessons_count')
+                    ->label('Aulas com mídia')
+                    ->getStateUsing(fn (Course $record): int => $record->linkedMediaLessonsCount())
+                    ->sortable(false),
                 TextColumn::make('study_tracks_count')->label('Trilhas')->counts('studyTracks'),
                 IconColumn::make('is_featured')->label('Destaque')->boolean(),
                 IconColumn::make('is_active')->label('Ativo')->boolean(),

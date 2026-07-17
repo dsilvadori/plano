@@ -3,12 +3,12 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\Lessons\LessonResource;
+use App\Models\AiArtifact;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
-use App\Models\AiArtifact;
 use App\Models\Lesson;
 use App\Models\LessonProgress;
 use App\Models\StudyPlan;
@@ -57,6 +57,60 @@ class CourseCatalogFoundationTest extends TestCase
         $this->assertTrue($course->fresh()->lessons->contains($lesson));
         $this->assertTrue($module->fresh()->onlineLessons->contains($lesson));
         $this->assertSame(3, $lesson->duration_minutes);
+    }
+
+    public function test_course_lists_all_linked_lessons_and_counts_media(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $otherCourse = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['name' => 'Português']);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de palavras',
+            'slug' => 'classes-de-palavras',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $directLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'title' => '01 - Aula direta',
+            'panda_video_id' => 'direct-video',
+            'source_status' => 'media_ready',
+        ]);
+        $moduleLesson = Lesson::factory()->create([
+            'title' => '02 - Aula do módulo',
+            'panda_embed_url' => 'https://player.test/module',
+        ]);
+        $moduleLesson->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 2]]);
+        $trackLesson = Lesson::factory()->create([
+            'title' => '03 - Aula da trilha',
+            'panda_player_url' => 'https://player.test/track',
+        ]);
+        $trackLesson->tracks()->syncWithoutDetaching([$track->id => ['sort_order' => 3]]);
+        $withoutMedia = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'title' => '04 - Sem mídia',
+            'source_status' => 'awaiting_media',
+        ]);
+        $otherLesson = Lesson::factory()->create([
+            'course_id' => $otherCourse->id,
+            'title' => '05 - Outro curso',
+            'panda_video_id' => 'other-video',
+        ]);
+
+        $lessons = $course->linkedLessons();
+
+        $this->assertCount(4, $lessons);
+        $this->assertTrue($lessons->contains($directLesson));
+        $this->assertTrue($lessons->contains($moduleLesson));
+        $this->assertTrue($lessons->contains($trackLesson));
+        $this->assertTrue($lessons->contains($withoutMedia));
+        $this->assertFalse($lessons->contains($otherLesson));
+        $this->assertSame(4, $course->linkedLessonsCount());
+        $this->assertSame(3, $course->linkedMediaLessonsCount());
     }
 
     public function test_student_can_browse_catalog_and_only_sees_enrolled_courses_in_my_courses(): void

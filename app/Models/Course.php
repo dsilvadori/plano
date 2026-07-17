@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Support\ThumbnailUrl;
 use Database\Factories\CourseFactory;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -131,6 +132,42 @@ class Course extends Model
     public function questionBanks(): HasMany
     {
         return $this->hasMany(QuestionBank::class);
+    }
+
+    public function linkedLessonsQuery(): Builder
+    {
+        return Lesson::query()
+            ->where(function (Builder $query): void {
+                $query->where('course_id', $this->id)
+                    ->orWhereHas('modules.courses', fn (Builder $query) => $query->whereKey($this->id))
+                    ->orWhereHas('tracks.courses', fn (Builder $query) => $query->whereKey($this->id));
+            })
+            ->with(['module', 'track', 'modules', 'tracks'])
+            ->distinct()
+            ->orderBy('sort_order')
+            ->orderBy('title');
+    }
+
+    public function linkedLessons()
+    {
+        return $this->linkedLessonsQuery()->get();
+    }
+
+    public function linkedLessonsCount(): int
+    {
+        return $this->linkedLessonsQuery()->count('lessons.id');
+    }
+
+    public function linkedMediaLessonsCount(): int
+    {
+        return $this->linkedLessonsQuery()
+            ->where(function (Builder $query): void {
+                $query->where('source_status', 'media_ready')
+                    ->orWhereNotNull('panda_video_id')
+                    ->orWhereNotNull('panda_embed_url')
+                    ->orWhereNotNull('panda_player_url');
+            })
+            ->count('lessons.id');
     }
 
     public function getThumbnailDisplayUrlAttribute(): string
