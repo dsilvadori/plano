@@ -12,7 +12,6 @@ use App\Services\PandaCourseImporter;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
@@ -25,6 +24,10 @@ use Throwable;
 class ListLessons extends ListRecords
 {
     protected static string $resource = LessonResource::class;
+
+    protected const NEW_MODULE_PREFIX = '__new_module__:';
+
+    protected const NEW_TRACK_PREFIX = '__new_track__:';
 
     protected function getHeaderActions(): array
     {
@@ -51,79 +54,25 @@ class ListLessons extends ListRecords
                         }),
                     Select::make('course_module_id')
                         ->label('Módulo')
-                        ->options(fn (Get $get): array => filled($get('course_id'))
-                            ? CourseModule::query()
-                                ->where('course_id', $get('course_id'))
-                                ->orWhereHas('courses', fn ($query) => $query->whereKey($get('course_id')))
-                                ->orWhereNull('course_id')
-                                ->orderBy('sort_order')
-                                ->orderBy('name')
-                                ->pluck('name', 'id')
-                                ->all()
-                            : CourseModule::query()
-                                ->orderBy('sort_order')
-                                ->orderBy('name')
-                                ->pluck('name', 'id')
-                                ->all())
+                        ->options(fn (Get $get): array => $this->moduleOptions($get('course_id')))
+                        ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->moduleSearchResults($get('course_id'), $search))
+                        ->getOptionLabelUsing(fn ($value): ?string => $this->moduleOptionLabel($value))
                         ->searchable()
                         ->preload()
-                        ->createOptionForm($this->moduleCreateOptionForm())
-                        ->createOptionUsing(fn (array $data): int => $this->createModuleOption($data))
                         ->live()
                         ->nullable()
-                        ->helperText('Opcional. Deixe vazio para importar aulas avulsas.')
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar um módulo novo.')
                         ->afterStateUpdated(fn (Set $set) => $set('course_module_track_id', null)),
-                    Toggle::make('create_course_module')
-                        ->label('Criar novo módulo')
-                        ->live()
-                        ->afterStateUpdated(function (Set $set, ?bool $state): void {
-                            if (! $state) {
-                                $set('new_course_module_name', null);
-
-                                return;
-                            }
-
-                            $set('course_module_id', null);
-                            $set('course_module_track_id', null);
-                        }),
-                    TextInput::make('new_course_module_name')
-                        ->label('Nome do novo módulo')
-                        ->required(fn (Get $get): bool => (bool) $get('create_course_module'))
-                        ->visible(fn (Get $get): bool => (bool) $get('create_course_module')),
                     Select::make('course_module_track_id')
                         ->label('Trilha')
-                        ->options(fn (Get $get): array => filled($get('course_module_id'))
-                            ? CourseModuleTrack::query()
-                                ->where('course_module_id', $get('course_module_id'))
-                                ->orderBy('sort_order')
-                                ->orderBy('name')
-                                ->pluck('name', 'id')
-                                ->all()
-                            : [])
+                        ->options(fn (Get $get): array => $this->trackOptions($get('course_module_id')))
+                        ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->trackSearchResults($get('course_module_id'), $search))
+                        ->getOptionLabelUsing(fn ($value): ?string => $this->trackOptionLabel($value))
                         ->searchable()
                         ->preload()
-                        ->createOptionForm($this->trackCreateOptionForm())
-                        ->createOptionUsing(fn (array $data): int => $this->createTrackOption($data))
                         ->nullable()
-                        ->helperText('Opcional. Se escolhida, as aulas também serão vinculadas à trilha.')
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma trilha no módulo selecionado.')
                         ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
-                    Toggle::make('create_course_module_track')
-                        ->label('Criar nova trilha')
-                        ->live()
-                        ->visible(fn (Get $get): bool => filled($get('course_module_id')) || (bool) $get('create_course_module'))
-                        ->afterStateUpdated(function (Set $set, ?bool $state): void {
-                            if (! $state) {
-                                $set('new_course_module_track_name', null);
-
-                                return;
-                            }
-
-                            $set('course_module_track_id', null);
-                        }),
-                    TextInput::make('new_course_module_track_name')
-                        ->label('Nome da nova trilha')
-                        ->required(fn (Get $get): bool => (bool) $get('create_course_module_track'))
-                        ->visible(fn (Get $get): bool => (bool) $get('create_course_module_track')),
                     TextInput::make('panda_folder_id')
                         ->label('ID da pasta no Panda')
                         ->required(),
@@ -186,79 +135,25 @@ class ListLessons extends ListRecords
                         }),
                     Select::make('course_module_id')
                         ->label('Módulo')
-                        ->options(fn (Get $get): array => filled($get('course_id'))
-                            ? CourseModule::query()
-                                ->where('course_id', $get('course_id'))
-                                ->orWhereHas('courses', fn ($query) => $query->whereKey($get('course_id')))
-                                ->orWhereNull('course_id')
-                                ->orderBy('sort_order')
-                                ->orderBy('name')
-                                ->pluck('name', 'id')
-                                ->all()
-                            : CourseModule::query()
-                                ->orderBy('sort_order')
-                                ->orderBy('name')
-                                ->pluck('name', 'id')
-                                ->all())
+                        ->options(fn (Get $get): array => $this->moduleOptions($get('course_id')))
+                        ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->moduleSearchResults($get('course_id'), $search))
+                        ->getOptionLabelUsing(fn ($value): ?string => $this->moduleOptionLabel($value))
                         ->searchable()
                         ->preload()
-                        ->createOptionForm($this->moduleCreateOptionForm())
-                        ->createOptionUsing(fn (array $data): int => $this->createModuleOption($data))
                         ->live()
                         ->nullable()
-                        ->helperText('Opcional. Deixe vazio para criar aulas avulsas.')
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar um módulo novo.')
                         ->afterStateUpdated(fn (Set $set) => $set('course_module_track_id', null)),
-                    Toggle::make('create_course_module')
-                        ->label('Criar novo módulo')
-                        ->live()
-                        ->afterStateUpdated(function (Set $set, ?bool $state): void {
-                            if (! $state) {
-                                $set('new_course_module_name', null);
-
-                                return;
-                            }
-
-                            $set('course_module_id', null);
-                            $set('course_module_track_id', null);
-                        }),
-                    TextInput::make('new_course_module_name')
-                        ->label('Nome do novo módulo')
-                        ->required(fn (Get $get): bool => (bool) $get('create_course_module'))
-                        ->visible(fn (Get $get): bool => (bool) $get('create_course_module')),
                     Select::make('course_module_track_id')
                         ->label('Trilha')
-                        ->options(fn (Get $get): array => filled($get('course_module_id'))
-                            ? CourseModuleTrack::query()
-                                ->where('course_module_id', $get('course_module_id'))
-                                ->orderBy('sort_order')
-                                ->orderBy('name')
-                                ->pluck('name', 'id')
-                                ->all()
-                            : [])
+                        ->options(fn (Get $get): array => $this->trackOptions($get('course_module_id')))
+                        ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->trackSearchResults($get('course_module_id'), $search))
+                        ->getOptionLabelUsing(fn ($value): ?string => $this->trackOptionLabel($value))
                         ->searchable()
                         ->preload()
-                        ->createOptionForm($this->trackCreateOptionForm())
-                        ->createOptionUsing(fn (array $data): int => $this->createTrackOption($data))
                         ->nullable()
-                        ->helperText('Opcional. Se não informar, as aulas ficam sem trilha ou entram na trilha padrão do módulo.')
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma trilha no módulo selecionado.')
                         ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
-                    Toggle::make('create_course_module_track')
-                        ->label('Criar nova trilha')
-                        ->live()
-                        ->visible(fn (Get $get): bool => filled($get('course_module_id')) || (bool) $get('create_course_module'))
-                        ->afterStateUpdated(function (Set $set, ?bool $state): void {
-                            if (! $state) {
-                                $set('new_course_module_track_name', null);
-
-                                return;
-                            }
-
-                            $set('course_module_track_id', null);
-                        }),
-                    TextInput::make('new_course_module_track_name')
-                        ->label('Nome da nova trilha')
-                        ->required(fn (Get $get): bool => (bool) $get('create_course_module_track'))
-                        ->visible(fn (Get $get): bool => (bool) $get('create_course_module_track')),
                     TextInput::make('folder_url')
                         ->label('URL ou ID da pasta do Google Drive')
                         ->placeholder('https://drive.google.com/drive/folders/...')
@@ -329,111 +224,100 @@ class ListLessons extends ListRecords
         ];
     }
 
-    protected function moduleCreateOptionForm(): array
+    protected function moduleOptions(mixed $courseId): array
     {
-        return [
-            TextInput::make('name')
-                ->label('Nome')
-                ->required(),
-            Textarea::make('description')
-                ->label('Descrição')
-                ->rows(3)
-                ->columnSpanFull(),
-            Select::make('type')
-                ->label('Tipo')
-                ->options([
-                    'basic' => 'Matéria Básica',
-                    'specific' => 'Conhecimentos Específicos',
-                    'complementary' => 'Conhecimentos Complementares',
-                    'review' => 'Revisão',
-                    'questions' => 'Questões',
-                    'other' => 'Outro/Legado',
-                ])
-                ->default('other')
-                ->required(),
-            TextInput::make('sort_order')
-                ->label('Ordem')
-                ->numeric()
-                ->default(0)
-                ->required(),
-            TextInput::make('panda_folder_id')
-                ->label('ID da pasta no Panda'),
-        ];
+        return $this->moduleQuery($courseId)
+            ->limit(50)
+            ->pluck('name', 'id')
+            ->all();
     }
 
-    protected function trackCreateOptionForm(): array
+    protected function moduleSearchResults(mixed $courseId, ?string $search): array
     {
-        return [
-            Select::make('course_module_id')
-                ->label('Módulo')
-                ->options(fn (): array => CourseModule::query()
-                    ->orderBy('sort_order')
-                    ->orderBy('name')
-                    ->pluck('name', 'id')
-                    ->all())
-                ->searchable()
-                ->preload()
-                ->required(),
-            TextInput::make('name')
-                ->label('Nome')
-                ->required()
-                ->live(onBlur: true)
-                ->afterStateUpdated(fn ($state, Set $set) => $set('slug', Str::slug((string) $state))),
-            TextInput::make('slug')
-                ->label('Slug')
-                ->required(),
-            Textarea::make('description')
-                ->label('Descrição')
-                ->rows(3)
-                ->columnSpanFull(),
-            TextInput::make('thumbnail_url')
-                ->label('URL da thumbnail')
-                ->url()
-                ->maxLength(2048),
-            TextInput::make('sort_order')
-                ->label('Ordem')
-                ->numeric()
-                ->default(0)
-                ->required(),
-            Select::make('status')
-                ->label('Status')
-                ->options([
-                    'draft' => 'Rascunho',
-                    'published' => 'Publicado',
-                    'archived' => 'Arquivado',
-                ])
-                ->default('draft')
-                ->required(),
-            TextInput::make('panda_folder_id')
-                ->label('ID da pasta/playlist no Panda'),
-        ];
+        $search = trim((string) $search);
+        $query = $this->moduleQuery($courseId);
+
+        if ($search !== '') {
+            $query->where('name', 'like', '%'.$search.'%');
+        }
+
+        $results = $query
+            ->limit(50)
+            ->pluck('name', 'id')
+            ->all();
+
+        if ($search !== '' && ! $this->hasExactLabel($results, $search)) {
+            return [
+                self::NEW_MODULE_PREFIX.$search => 'Criar módulo: '.$search,
+                ...$results,
+            ];
+        }
+
+        return $results;
     }
 
-    protected function createModuleOption(array $data): int
+    protected function moduleOptionLabel(mixed $value): ?string
     {
-        return CourseModule::query()->create([
-            'name' => $data['name'],
-            'description' => $data['description'] ?? null,
-            'type' => $data['type'] ?? 'other',
-            'workload_minutes' => 0,
-            'sort_order' => (int) ($data['sort_order'] ?? 0),
-            'panda_folder_id' => filled($data['panda_folder_id'] ?? null) ? (string) $data['panda_folder_id'] : null,
-            'is_active' => true,
-        ])->getKey();
+        if ($this->isNewModuleValue($value)) {
+            return 'Criar módulo: '.$this->newModuleName($value);
+        }
+
+        return CourseModule::query()->whereKey($value)->value('name');
     }
 
-    protected function createTrackOption(array $data): int
+    protected function trackOptions(mixed $moduleId): array
     {
-        return CourseModuleTrack::query()->create([
-            'course_module_id' => (int) $data['course_module_id'],
-            'name' => $data['name'],
-            'slug' => filled($data['slug'] ?? null) ? (string) $data['slug'] : Str::slug((string) $data['name']),
-            'description' => $data['description'] ?? null,
-            'thumbnail_url' => filled($data['thumbnail_url'] ?? null) ? (string) $data['thumbnail_url'] : null,
-            'sort_order' => (int) ($data['sort_order'] ?? 0),
-            'status' => $data['status'] ?? 'draft',
-            'panda_folder_id' => filled($data['panda_folder_id'] ?? null) ? (string) $data['panda_folder_id'] : null,
-        ])->getKey();
+        if (! $this->isExistingId($moduleId)) {
+            return [];
+        }
+
+        return CourseModuleTrack::query()
+            ->where('course_module_id', $moduleId)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->limit(50)
+            ->pluck('name', 'id')
+            ->all();
+    }
+
+    protected function trackSearchResults(mixed $moduleId, ?string $search): array
+    {
+        $search = trim((string) $search);
+        $results = [];
+
+        if ($this->isExistingId($moduleId)) {
+            $query = CourseModuleTrack::query()
+                ->where('course_module_id', $moduleId)
+                ->orderBy('sort_order')
+                ->orderBy('name');
+
+            if ($search !== '') {
+                $query->where('name', 'like', '%'.$search.'%');
+            }
+
+            $results = $query
+                ->limit(50)
+                ->pluck('name', 'id')
+                ->all();
+        }
+
+        if ($search !== '' && ! $this->hasExactLabel($results, $search) && filled($moduleId)) {
+            return [
+                self::NEW_TRACK_PREFIX.$search => 'Criar trilha: '.$search,
+                ...$results,
+            ];
+        }
+
+        return $results;
+    }
+
+    protected function trackOptionLabel(mixed $value): ?string
+    {
+        if ($this->isNewTrackValue($value)) {
+            return 'Criar trilha: '.$this->newTrackName($value);
+        }
+
+        return CourseModuleTrack::query()->whereKey($value)->value('name');
     }
 
     /**
@@ -444,25 +328,30 @@ class ListLessons extends ListRecords
         $module = null;
         $track = null;
 
-        if ((bool) ($data['create_course_module'] ?? false)) {
+        $moduleValue = $data['course_module_id'] ?? null;
+        $trackValue = $data['course_module_track_id'] ?? null;
+
+        if ($this->isNewModuleValue($moduleValue)) {
+            $moduleName = $this->newModuleName($moduleValue);
+
             $module = CourseModule::query()->create([
                 'course_id' => $course?->id,
-                'name' => trim((string) $data['new_course_module_name']),
+                'name' => $moduleName,
                 'type' => 'other',
                 'workload_minutes' => 0,
                 'sort_order' => $this->nextModuleSortOrder($course),
                 'is_active' => true,
             ]);
-        } elseif (filled($data['course_module_id'] ?? null)) {
-            $module = CourseModule::query()->findOrFail((int) $data['course_module_id']);
+        } elseif (filled($moduleValue)) {
+            $module = CourseModule::query()->findOrFail((int) $moduleValue);
         }
 
-        if ((bool) ($data['create_course_module_track'] ?? false)) {
+        if ($this->isNewTrackValue($trackValue)) {
             if (! $module) {
                 throw new \InvalidArgumentException('Selecione ou crie um módulo antes de criar uma trilha.');
             }
 
-            $trackName = trim((string) $data['new_course_module_track_name']);
+            $trackName = $this->newTrackName($trackValue);
 
             $track = CourseModuleTrack::query()->create([
                 'course_module_id' => $module->id,
@@ -471,8 +360,8 @@ class ListLessons extends ListRecords
                 'sort_order' => $this->nextTrackSortOrder($module),
                 'status' => 'draft',
             ]);
-        } elseif (filled($data['course_module_track_id'] ?? null)) {
-            $track = CourseModuleTrack::query()->findOrFail((int) $data['course_module_track_id']);
+        } elseif (filled($trackValue)) {
+            $track = CourseModuleTrack::query()->findOrFail((int) $trackValue);
         }
 
         if ($course && $module) {
@@ -523,7 +412,7 @@ class ListLessons extends ListRecords
 
     protected function syncModuleFromTrack(mixed $state, Set $set): void
     {
-        if (blank($state)) {
+        if (blank($state) || $this->isNewTrackValue($state)) {
             return;
         }
 
@@ -537,5 +426,55 @@ class ListLessons extends ListRecords
         }
 
         $set('course_module_id', $track->course_module_id);
+    }
+
+    protected function moduleQuery(mixed $courseId)
+    {
+        $query = CourseModule::query()
+            ->orderBy('sort_order')
+            ->orderBy('name');
+
+        if (filled($courseId)) {
+            $query->where(function ($query) use ($courseId): void {
+                $query
+                    ->where('course_id', $courseId)
+                    ->orWhereHas('courses', fn ($query) => $query->whereKey($courseId))
+                    ->orWhereNull('course_id');
+            });
+        }
+
+        return $query;
+    }
+
+    protected function hasExactLabel(array $options, string $search): bool
+    {
+        return collect($options)->contains(fn (string $label): bool => Str::lower($label) === Str::lower($search));
+    }
+
+    protected function isExistingId(mixed $value): bool
+    {
+        return filled($value)
+            && ! $this->isNewModuleValue($value)
+            && ! $this->isNewTrackValue($value);
+    }
+
+    protected function isNewModuleValue(mixed $value): bool
+    {
+        return is_string($value) && str_starts_with($value, self::NEW_MODULE_PREFIX);
+    }
+
+    protected function isNewTrackValue(mixed $value): bool
+    {
+        return is_string($value) && str_starts_with($value, self::NEW_TRACK_PREFIX);
+    }
+
+    protected function newModuleName(mixed $value): string
+    {
+        return trim(Str::after((string) $value, self::NEW_MODULE_PREFIX));
+    }
+
+    protected function newTrackName(mixed $value): string
+    {
+        return trim(Str::after((string) $value, self::NEW_TRACK_PREFIX));
     }
 }
