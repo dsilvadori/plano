@@ -12,12 +12,14 @@ use App\Services\PandaCourseImporter;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
+use Illuminate\Support\Str;
 use Throwable;
 
 class ListLessons extends ListRecords
@@ -65,6 +67,8 @@ class ListLessons extends ListRecords
                                 ->all())
                         ->searchable()
                         ->preload()
+                        ->createOptionForm($this->moduleCreateOptionForm())
+                        ->createOptionUsing(fn (array $data): int => $this->createModuleOption($data))
                         ->live()
                         ->nullable()
                         ->helperText('Opcional. Deixe vazio para importar aulas avulsas.')
@@ -81,8 +85,11 @@ class ListLessons extends ListRecords
                             : [])
                         ->searchable()
                         ->preload()
+                        ->createOptionForm($this->trackCreateOptionForm())
+                        ->createOptionUsing(fn (array $data): int => $this->createTrackOption($data))
                         ->nullable()
-                        ->helperText('Opcional. Se escolhida, as aulas também serão vinculadas à trilha.'),
+                        ->helperText('Opcional. Se escolhida, as aulas também serão vinculadas à trilha.')
+                        ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
                     TextInput::make('panda_folder_id')
                         ->label('ID da pasta no Panda')
                         ->required(),
@@ -166,6 +173,8 @@ class ListLessons extends ListRecords
                                 ->all())
                         ->searchable()
                         ->preload()
+                        ->createOptionForm($this->moduleCreateOptionForm())
+                        ->createOptionUsing(fn (array $data): int => $this->createModuleOption($data))
                         ->live()
                         ->nullable()
                         ->helperText('Opcional. Deixe vazio para criar aulas avulsas.')
@@ -182,8 +191,11 @@ class ListLessons extends ListRecords
                             : [])
                         ->searchable()
                         ->preload()
+                        ->createOptionForm($this->trackCreateOptionForm())
+                        ->createOptionUsing(fn (array $data): int => $this->createTrackOption($data))
                         ->nullable()
-                        ->helperText('Opcional. Se não informar, as aulas ficam sem trilha ou entram na trilha padrão do módulo.'),
+                        ->helperText('Opcional. Se não informar, as aulas ficam sem trilha ou entram na trilha padrão do módulo.')
+                        ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
                     TextInput::make('folder_url')
                         ->label('URL ou ID da pasta do Google Drive')
                         ->placeholder('https://drive.google.com/drive/folders/...')
@@ -250,5 +262,134 @@ class ListLessons extends ListRecords
                 }),
             CreateAction::make(),
         ];
+    }
+
+    protected function moduleCreateOptionForm(): array
+    {
+        return [
+            TextInput::make('name')
+                ->label('Nome')
+                ->required(),
+            Textarea::make('description')
+                ->label('Descrição')
+                ->rows(3)
+                ->columnSpanFull(),
+            Select::make('type')
+                ->label('Tipo')
+                ->options([
+                    'basic' => 'Matéria Básica',
+                    'specific' => 'Conhecimentos Específicos',
+                    'complementary' => 'Conhecimentos Complementares',
+                    'review' => 'Revisão',
+                    'questions' => 'Questões',
+                    'other' => 'Outro/Legado',
+                ])
+                ->default('other')
+                ->required(),
+            TextInput::make('sort_order')
+                ->label('Ordem')
+                ->numeric()
+                ->default(0)
+                ->required(),
+            TextInput::make('panda_folder_id')
+                ->label('ID da pasta no Panda'),
+        ];
+    }
+
+    protected function trackCreateOptionForm(): array
+    {
+        return [
+            Select::make('course_module_id')
+                ->label('Módulo')
+                ->options(fn (): array => CourseModule::query()
+                    ->orderBy('sort_order')
+                    ->orderBy('name')
+                    ->pluck('name', 'id')
+                    ->all())
+                ->searchable()
+                ->preload()
+                ->required(),
+            TextInput::make('name')
+                ->label('Nome')
+                ->required()
+                ->live(onBlur: true)
+                ->afterStateUpdated(fn ($state, Set $set) => $set('slug', Str::slug((string) $state))),
+            TextInput::make('slug')
+                ->label('Slug')
+                ->required(),
+            Textarea::make('description')
+                ->label('Descrição')
+                ->rows(3)
+                ->columnSpanFull(),
+            TextInput::make('thumbnail_url')
+                ->label('URL da thumbnail')
+                ->url()
+                ->maxLength(2048),
+            TextInput::make('sort_order')
+                ->label('Ordem')
+                ->numeric()
+                ->default(0)
+                ->required(),
+            Select::make('status')
+                ->label('Status')
+                ->options([
+                    'draft' => 'Rascunho',
+                    'published' => 'Publicado',
+                    'archived' => 'Arquivado',
+                ])
+                ->default('draft')
+                ->required(),
+            TextInput::make('panda_folder_id')
+                ->label('ID da pasta/playlist no Panda'),
+        ];
+    }
+
+    protected function createModuleOption(array $data): int
+    {
+        return CourseModule::query()->create([
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+            'type' => $data['type'] ?? 'other',
+            'workload_minutes' => 0,
+            'sort_order' => (int) ($data['sort_order'] ?? 0),
+            'panda_folder_id' => filled($data['panda_folder_id'] ?? null) ? (string) $data['panda_folder_id'] : null,
+            'is_active' => true,
+        ])->getKey();
+    }
+
+    protected function createTrackOption(array $data): int
+    {
+        return CourseModuleTrack::query()->create([
+            'course_module_id' => (int) $data['course_module_id'],
+            'name' => $data['name'],
+            'slug' => filled($data['slug'] ?? null) ? (string) $data['slug'] : Str::slug((string) $data['name']),
+            'description' => $data['description'] ?? null,
+            'thumbnail_url' => filled($data['thumbnail_url'] ?? null) ? (string) $data['thumbnail_url'] : null,
+            'sort_order' => (int) ($data['sort_order'] ?? 0),
+            'status' => $data['status'] ?? 'draft',
+            'panda_folder_id' => filled($data['panda_folder_id'] ?? null) ? (string) $data['panda_folder_id'] : null,
+        ])->getKey();
+    }
+
+    protected function syncModuleFromTrack(mixed $state, Set $set): void
+    {
+        if (blank($state)) {
+            return;
+        }
+
+        $track = CourseModuleTrack::query()
+            ->select(['id', 'course_module_id'])
+            ->with('module:id,course_id')
+            ->find($state);
+
+        if (! $track) {
+            return;
+        }
+
+        $set('course_module_id', $track->course_module_id);
+
+        if ($track->module?->course_id) {
+            $set('course_id', $track->module->course_id);
+        }
     }
 }
