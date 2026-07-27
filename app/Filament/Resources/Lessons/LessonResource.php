@@ -125,16 +125,6 @@ class LessonResource extends Resource
                 })
                 ->afterStateUpdated(function ($state, Set $set): void {
                     $set('course_module_track_id', null);
-
-                    if (blank($state)) {
-                        return;
-                    }
-
-                    $module = CourseModule::query()->select('course_id')->find($state);
-
-                    if ($module) {
-                        $set('course_id', $module->course_id);
-                    }
                 })
                 ->nullable(),
             Select::make('course_module_track_id')

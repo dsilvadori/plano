@@ -73,6 +73,23 @@ class ListLessons extends ListRecords
                         ->nullable()
                         ->helperText('Opcional. Deixe vazio para importar aulas avulsas.')
                         ->afterStateUpdated(fn (Set $set) => $set('course_module_track_id', null)),
+                    Toggle::make('create_course_module')
+                        ->label('Criar novo módulo')
+                        ->live()
+                        ->afterStateUpdated(function (Set $set, ?bool $state): void {
+                            if (! $state) {
+                                $set('new_course_module_name', null);
+
+                                return;
+                            }
+
+                            $set('course_module_id', null);
+                            $set('course_module_track_id', null);
+                        }),
+                    TextInput::make('new_course_module_name')
+                        ->label('Nome do novo módulo')
+                        ->required(fn (Get $get): bool => (bool) $get('create_course_module'))
+                        ->visible(fn (Get $get): bool => (bool) $get('create_course_module')),
                     Select::make('course_module_track_id')
                         ->label('Trilha')
                         ->options(fn (Get $get): array => filled($get('course_module_id'))
@@ -90,6 +107,23 @@ class ListLessons extends ListRecords
                         ->nullable()
                         ->helperText('Opcional. Se escolhida, as aulas também serão vinculadas à trilha.')
                         ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
+                    Toggle::make('create_course_module_track')
+                        ->label('Criar nova trilha')
+                        ->live()
+                        ->visible(fn (Get $get): bool => filled($get('course_module_id')) || (bool) $get('create_course_module'))
+                        ->afterStateUpdated(function (Set $set, ?bool $state): void {
+                            if (! $state) {
+                                $set('new_course_module_track_name', null);
+
+                                return;
+                            }
+
+                            $set('course_module_track_id', null);
+                        }),
+                    TextInput::make('new_course_module_track_name')
+                        ->label('Nome da nova trilha')
+                        ->required(fn (Get $get): bool => (bool) $get('create_course_module_track'))
+                        ->visible(fn (Get $get): bool => (bool) $get('create_course_module_track')),
                     TextInput::make('panda_folder_id')
                         ->label('ID da pasta no Panda')
                         ->required(),
@@ -107,12 +141,7 @@ class ListLessons extends ListRecords
                         $course = filled($data['course_id'] ?? null)
                             ? Course::query()->findOrFail((int) $data['course_id'])
                             : null;
-                        $module = filled($data['course_module_id'] ?? null)
-                            ? CourseModule::query()->findOrFail((int) $data['course_module_id'])
-                            : null;
-                        $track = filled($data['course_module_track_id'] ?? null)
-                            ? CourseModuleTrack::query()->findOrFail((int) $data['course_module_track_id'])
-                            : null;
+                        [$module, $track] = $this->resolveImportStructure($data, $course);
 
                         $run = $importer->importLessons(
                             $course,
@@ -179,6 +208,23 @@ class ListLessons extends ListRecords
                         ->nullable()
                         ->helperText('Opcional. Deixe vazio para criar aulas avulsas.')
                         ->afterStateUpdated(fn (Set $set) => $set('course_module_track_id', null)),
+                    Toggle::make('create_course_module')
+                        ->label('Criar novo módulo')
+                        ->live()
+                        ->afterStateUpdated(function (Set $set, ?bool $state): void {
+                            if (! $state) {
+                                $set('new_course_module_name', null);
+
+                                return;
+                            }
+
+                            $set('course_module_id', null);
+                            $set('course_module_track_id', null);
+                        }),
+                    TextInput::make('new_course_module_name')
+                        ->label('Nome do novo módulo')
+                        ->required(fn (Get $get): bool => (bool) $get('create_course_module'))
+                        ->visible(fn (Get $get): bool => (bool) $get('create_course_module')),
                     Select::make('course_module_track_id')
                         ->label('Trilha')
                         ->options(fn (Get $get): array => filled($get('course_module_id'))
@@ -196,6 +242,23 @@ class ListLessons extends ListRecords
                         ->nullable()
                         ->helperText('Opcional. Se não informar, as aulas ficam sem trilha ou entram na trilha padrão do módulo.')
                         ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
+                    Toggle::make('create_course_module_track')
+                        ->label('Criar nova trilha')
+                        ->live()
+                        ->visible(fn (Get $get): bool => filled($get('course_module_id')) || (bool) $get('create_course_module'))
+                        ->afterStateUpdated(function (Set $set, ?bool $state): void {
+                            if (! $state) {
+                                $set('new_course_module_track_name', null);
+
+                                return;
+                            }
+
+                            $set('course_module_track_id', null);
+                        }),
+                    TextInput::make('new_course_module_track_name')
+                        ->label('Nome da nova trilha')
+                        ->required(fn (Get $get): bool => (bool) $get('create_course_module_track'))
+                        ->visible(fn (Get $get): bool => (bool) $get('create_course_module_track')),
                     TextInput::make('folder_url')
                         ->label('URL ou ID da pasta do Google Drive')
                         ->placeholder('https://drive.google.com/drive/folders/...')
@@ -224,8 +287,10 @@ class ListLessons extends ListRecords
                 ->action(function (array $data): void {
                     try {
                         $courseId = filled($data['course_id'] ?? null) ? (int) $data['course_id'] : null;
-                        $moduleId = filled($data['course_module_id'] ?? null) ? (int) $data['course_module_id'] : null;
-                        $trackId = filled($data['course_module_track_id'] ?? null) ? (int) $data['course_module_track_id'] : null;
+                        $course = $courseId ? Course::query()->findOrFail($courseId) : null;
+                        [$module, $track] = $this->resolveImportStructure($data, $course);
+                        $moduleId = $module?->id;
+                        $trackId = $track?->id;
 
                         $run = GoogleDriveImportRun::query()->create([
                             'course_id' => $courseId,
@@ -371,6 +436,91 @@ class ListLessons extends ListRecords
         ])->getKey();
     }
 
+    /**
+     * @return array{0: CourseModule|null, 1: CourseModuleTrack|null}
+     */
+    protected function resolveImportStructure(array $data, ?Course $course): array
+    {
+        $module = null;
+        $track = null;
+
+        if ((bool) ($data['create_course_module'] ?? false)) {
+            $module = CourseModule::query()->create([
+                'course_id' => $course?->id,
+                'name' => trim((string) $data['new_course_module_name']),
+                'type' => 'other',
+                'workload_minutes' => 0,
+                'sort_order' => $this->nextModuleSortOrder($course),
+                'is_active' => true,
+            ]);
+        } elseif (filled($data['course_module_id'] ?? null)) {
+            $module = CourseModule::query()->findOrFail((int) $data['course_module_id']);
+        }
+
+        if ((bool) ($data['create_course_module_track'] ?? false)) {
+            if (! $module) {
+                throw new \InvalidArgumentException('Selecione ou crie um módulo antes de criar uma trilha.');
+            }
+
+            $trackName = trim((string) $data['new_course_module_track_name']);
+
+            $track = CourseModuleTrack::query()->create([
+                'course_module_id' => $module->id,
+                'name' => $trackName,
+                'slug' => $this->uniqueTrackSlug($module, $trackName),
+                'sort_order' => $this->nextTrackSortOrder($module),
+                'status' => 'draft',
+            ]);
+        } elseif (filled($data['course_module_track_id'] ?? null)) {
+            $track = CourseModuleTrack::query()->findOrFail((int) $data['course_module_track_id']);
+        }
+
+        if ($course && $module) {
+            $module->courses()->syncWithoutDetaching([
+                $course->id => ['sort_order' => (int) $module->sort_order],
+            ]);
+        }
+
+        if ($course && $track) {
+            $track->courses()->syncWithoutDetaching([
+                $course->id => ['sort_order' => (int) $track->sort_order],
+            ]);
+        }
+
+        return [$module, $track];
+    }
+
+    protected function nextModuleSortOrder(?Course $course): int
+    {
+        if (! $course) {
+            return ((int) CourseModule::query()->max('sort_order')) + 1;
+        }
+
+        return ((int) CourseModule::query()
+            ->where('course_id', $course->id)
+            ->orWhereHas('courses', fn ($query) => $query->whereKey($course->id))
+            ->max('sort_order')) + 1;
+    }
+
+    protected function nextTrackSortOrder(CourseModule $module): int
+    {
+        return ((int) $module->tracks()->max('sort_order')) + 1;
+    }
+
+    protected function uniqueTrackSlug(CourseModule $module, string $name): string
+    {
+        $baseSlug = Str::slug($name) ?: 'trilha';
+        $slug = $baseSlug;
+        $suffix = 2;
+
+        while ($module->tracks()->where('slug', $slug)->exists()) {
+            $slug = $baseSlug.'-'.$suffix;
+            $suffix++;
+        }
+
+        return $slug;
+    }
+
     protected function syncModuleFromTrack(mixed $state, Set $set): void
     {
         if (blank($state)) {
@@ -387,9 +537,5 @@ class ListLessons extends ListRecords
         }
 
         $set('course_module_id', $track->course_module_id);
-
-        if ($track->module?->course_id) {
-            $set('course_id', $track->module->course_id);
-        }
     }
 }

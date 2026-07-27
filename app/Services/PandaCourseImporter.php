@@ -138,7 +138,6 @@ class PandaCourseImporter
 
     public function importIntoModule(CourseModule $module, string $folderId, string $lessonStatus = 'draft', ?string $moduleType = null, ?Course $course = null): PandaImportRun
     {
-        $course ??= $module->course;
         $run = PandaImportRun::create([
             'course_id' => $course?->id,
             'panda_folder_id' => $folderId,
@@ -246,10 +245,6 @@ class PandaCourseImporter
     {
         if ($track && ! $module) {
             $module = $track->module()->first();
-        }
-
-        if ($module && ! $course) {
-            $course = $module->course;
         }
 
         if ($course && $module) {
