@@ -86,15 +86,16 @@ class CourseSpreadsheetImporter
         );
 
         if ($replaceTrackModules) {
-            $previousModuleIds = $studyTrack->modules()->pluck('course_modules.id')->all();
-
             $studyTrack->modules()->sync($moduleIds);
-            $staleModuleIds = array_diff($previousModuleIds, array_keys($moduleIds));
+            $staleModuleIds = $course->modules()
+                ->whereNotIn('id', array_keys($moduleIds))
+                ->pluck('id')
+                ->all();
 
             if ($staleModuleIds !== []) {
                 CourseModule::query()
                     ->whereKey($staleModuleIds)
-                    ->update(['is_active' => false]);
+                    ->delete();
             }
 
             return;

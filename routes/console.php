@@ -215,3 +215,72 @@ Artisan::command('study-plans:refresh-active {--course-id=* : Limita a correçã
 
     return 0;
 })->purpose('Regenera planos ativos com a estrutura atual dos cursos, preservando progresso concluído');
+
+Artisan::command('courses:deactivate-stale-official-modules {--course-id=* : Limita a correção a um ou mais IDs de curso} {--dry-run : Mostra os módulos que seriam desativados sem gravar}', function () {
+    $courseIds = collect($this->option('course-id'))
+        ->filter(fn ($value) => filled($value))
+        ->map(fn ($value) => (int) $value)
+        ->filter()
+        ->unique()
+        ->values();
+
+    $courses = Course::query()
+        ->with(['studyTracks' => fn ($query) => $query
+            ->where('is_active', true)
+            ->where('name', 'like', 'Trilha Oficial -%')
+            ->orderBy('id')])
+        ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('id', $courseIds))
+        ->orderBy('id')
+        ->get();
+
+    if ($courses->isEmpty()) {
+        $this->warn('Nenhum curso encontrado.');
+
+        return 0;
+    }
+
+    $totalStaleModules = 0;
+
+    foreach ($courses as $course) {
+        $officialTrack = $course->studyTracks->first();
+
+        if (! $officialTrack) {
+            continue;
+        }
+
+        $officialModuleIds = $officialTrack->modules()->pluck('course_modules.id');
+        $staleModules = $course->modules()
+            ->where('is_active', true)
+            ->whereNotIn('id', $officialModuleIds)
+            ->get();
+
+        if ($staleModules->isEmpty()) {
+            $this->line("Curso {$course->id}: nenhum módulo ativo fora da Trilha Oficial.");
+
+            continue;
+        }
+
+        $totalStaleModules += $staleModules->count();
+        $this->line("Curso {$course->id} ({$course->name}): {$staleModules->count()} módulo(s) ativo(s) fora da Trilha Oficial.");
+
+        foreach ($staleModules as $module) {
+            $this->line(" - {$module->id}: {$module->name} ({$module->workload_minutes} min)");
+        }
+
+        if (! $this->option('dry-run')) {
+            $course->modules()
+                ->whereKey($staleModules->pluck('id'))
+                ->update(['is_active' => false]);
+        }
+    }
+
+    if ($this->option('dry-run')) {
+        $this->info("{$totalStaleModules} módulo(s) seriam desativados.");
+
+        return 0;
+    }
+
+    $this->info("{$totalStaleModules} módulo(s) desativados.");
+
+    return 0;
+})->purpose('Desativa módulos ativos fora da Trilha Oficial para remover sobras de importações antigas');

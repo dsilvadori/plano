@@ -114,7 +114,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertNotEmpty($module->lessons);
     }
 
-    public function test_importer_can_add_spreadsheet_structure_to_existing_course(): void
+    public function test_importer_replaces_existing_course_modules_with_spreadsheet_structure(): void
     {
         $course = Course::factory()->create([
             'name' => 'Curso Gabaritando CRT',
@@ -135,10 +135,8 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('Curso Gabaritando CRT', $importedCourse->name);
         $this->assertSame('curso-gabaritando-crt', $importedCourse->slug);
         $this->assertFalse($importedCourse->is_active);
-        $this->assertDatabaseHas('course_modules', [
+        $this->assertDatabaseMissing('course_modules', [
             'id' => $existingModule->id,
-            'course_id' => $course->id,
-            'name' => 'Módulo criado manualmente',
         ]);
         $this->assertDatabaseHas('course_modules', [
             'course_id' => $course->id,
@@ -149,7 +147,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'course_id' => $course->id,
             'name' => 'Trilha Oficial - Curso Gabaritando CRT',
         ]);
-        $this->assertSame(31, $course->modules()->count());
+        $this->assertSame(30, $course->modules()->count());
         $this->assertSame(30, $course->studyTracks()->where('name', 'Trilha Oficial - Curso Gabaritando CRT')->first()->modules()->count());
     }
 
