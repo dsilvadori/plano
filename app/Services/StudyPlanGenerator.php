@@ -266,11 +266,12 @@ class StudyPlanGenerator
         string $intensity,
     ): array {
         $start = Carbon::parse($startDate)->startOfDay();
+        $studyTrack ??= $this->resolveDefaultStudyTrack($course);
         $modules = $this->resolveModules($course, $studyTrack);
         $totalRequiredMinutes = (int) $modules->sum('workload_minutes');
         $exam = $examDate
             ? Carbon::parse($examDate)->startOfDay()
-            : $this->estimatePlanEndDate($start, $totalRequiredMinutes, $availableMinutesByDay);
+            : $this->estimatePlanEndDate($start, $totalRequiredMinutes, $availableDays, $availableMinutesByDay);
         $totalAvailableMinutes = $this->calculateAvailableMinutes($start, $exam, $availableDays, $availableMinutesByDay);
 
         [$viabilityStatus, $viabilityMessage] = $this->resolveViability(
@@ -323,6 +324,15 @@ class StudyPlanGenerator
             ->get()
             ->reject(fn (CourseModule $module) => $this->shouldSkipModule($module))
             ->values();
+    }
+
+    protected function resolveDefaultStudyTrack(Course $course): ?StudyTrack
+    {
+        return $course->studyTracks()
+            ->where('is_active', true)
+            ->where('name', 'like', 'Trilha Oficial -%')
+            ->orderBy('id')
+            ->first();
     }
 
     protected function shouldSkipModule(CourseModule $module): bool
@@ -437,10 +447,10 @@ class StudyPlanGenerator
         return $total;
     }
 
-    protected function estimatePlanEndDate(Carbon $start, int $totalRequiredMinutes, array $availableMinutesByDay): Carbon
+    protected function estimatePlanEndDate(Carbon $start, int $totalRequiredMinutes, array $availableDays, array $availableMinutesByDay): Carbon
     {
-        $weeklyMinutes = max(60, array_sum($availableMinutesByDay));
-        $weeksNeeded = (int) ceil(max(1, $totalRequiredMinutes) / $weeklyMinutes);
+        $weeklyTheoryMinutes = max(60, $this->estimateWeeklyTheoryMinutes($availableDays, $availableMinutesByDay));
+        $weeksNeeded = (int) ceil(max(1, $totalRequiredMinutes) / $weeklyTheoryMinutes);
 
         return $start
             ->copy()
@@ -448,6 +458,25 @@ class StudyPlanGenerator
             ->addWeeks(max(4, min($weeksNeeded + 1, 52)) - 1)
             ->endOfWeek(CarbonInterface::SUNDAY)
             ->startOfDay();
+    }
+
+    protected function estimateWeeklyTheoryMinutes(array $availableDays, array $availableMinutesByDay): int
+    {
+        return collect($availableDays)
+            ->unique()
+            ->sum(function (string $dayKey) use ($availableMinutesByDay) {
+                $availableMinutes = (int) ($availableMinutesByDay[$dayKey] ?? 0);
+
+                if ($availableMinutes < 15) {
+                    return 0;
+                }
+
+                if ($dayKey === 'saturday') {
+                    return (int) floor($availableMinutes / 2);
+                }
+
+                return max(0, $availableMinutes - $this->resolveReserveMinutes($dayKey, $availableMinutes, 0));
+            });
     }
 
     protected function generateItems(

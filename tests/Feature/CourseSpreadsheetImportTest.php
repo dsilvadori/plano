@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\StudyTrack;
+use App\Models\User;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -47,6 +48,39 @@ class CourseSpreadsheetImportTest extends TestCase
         $type = $method->invoke($parser, 'Conhecimentos Complementares', 'Módulo - Apoio', 'Trilha - Informática complementar');
 
         $this->assertSame('complementary', $type);
+    }
+
+    public function test_parser_imports_track_row_with_minutes_as_single_lesson(): void
+    {
+        $path = $this->makeWorkbook([
+            'Nome do Curso' => [
+                ['Secretário de Unidade Escolar'],
+            ],
+            'Conhecimentos Básicos' => [
+                ['Horas aulas'],
+                ['Módulo -Conhecimentos Básicos de Legislação Municipal e Serviço Público'],
+                ['Trilha - Estatuto Santos'],
+                ['Aula', 'Tempo de aula'],
+                ['1 - Estatuto - Santos', '16.0'],
+                ['2 - Estatuto - Santos', '19.0'],
+                [''],
+                ['Trilha - Lei Orgânica - Santos', '35.0'],
+            ],
+        ]);
+
+        $payload = app(CourseSpreadsheetParser::class)->parse($path);
+
+        $this->assertSame('Secretário de Unidade Escolar', $payload['course_name']);
+        $this->assertCount(2, $payload['modules']);
+        $this->assertSame(70, collect($payload['modules'])->sum('workload_minutes'));
+        $this->assertSame(3, collect($payload['modules'])->sum(fn (array $module) => count($module['lessons'])));
+        $this->assertSame(
+            'Conhecimentos Básicos de Legislação Municipal e Serviço Público - Lei Orgânica - Santos',
+            $payload['modules'][1]['name'],
+        );
+        $this->assertSame([
+            ['name' => 'Lei Orgânica - Santos', 'minutes' => 35],
+        ], $payload['modules'][1]['lessons']);
     }
 
     public function test_importer_creates_course_modules_and_official_study_track(): void
@@ -164,5 +198,151 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($officialTrack->modules()->whereKey($updatedModule->id)->exists());
         $this->assertFalse($officialTrack->modules()->whereKey($staleModule->id)->exists());
         $this->assertSame(30, $officialTrack->modules()->count());
+    }
+
+    public function test_importing_structure_refreshes_existing_active_study_plans(): void
+    {
+        $course = Course::factory()->create([
+            'name' => 'Secretário de Unidade Escolar',
+            'slug' => 'secretario-de-unidade-escolar',
+        ]);
+        $oldModule = CourseModule::factory()->for($course)->create([
+            'name' => 'Conhecimentos Básicos - Estatuto Santos',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => '1 - Estatuto - Santos', 'minutes' => 16],
+                ['name' => '2 - Estatuto - Santos', 'minutes' => 19],
+            ],
+            'workload_minutes' => 35,
+            'sort_order' => 1,
+        ]);
+        $track = StudyTrack::factory()->for($course)->create([
+            'name' => 'Trilha Oficial - Secretário de Unidade Escolar',
+        ]);
+        $track->modules()->sync([
+            $oldModule->id => ['weight' => 1, 'sort_order' => 1],
+        ]);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $plan = $student->studyPlans()->create([
+            'course_id' => $course->id,
+            'study_track_id' => $track->id,
+            'name' => 'Plano antigo',
+            'exam_date' => now()->addWeeks(4),
+            'exam_date_confirmed' => true,
+            'start_date' => now(),
+            'available_days' => ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+            'available_minutes_by_day' => [
+                'monday' => 120,
+                'tuesday' => 120,
+                'wednesday' => 120,
+                'thursday' => 120,
+                'friday' => 120,
+            ],
+            'total_available_minutes' => 2400,
+            'total_required_minutes' => 35,
+            'intensity' => 'balanced',
+            'status' => 'active',
+            'viability_status' => 'good',
+            'viability_message' => 'ok',
+            'generated_at' => now(),
+        ]);
+        $plan->items()->create([
+            'course_module_id' => $oldModule->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco antigo',
+            'description' => 'Bloco antigo',
+            'type' => 'basic',
+            'estimated_minutes' => 35,
+            'sort_order' => 1,
+        ]);
+
+        app(CourseSpreadsheetImporter::class)->importInto($course, $this->makeWorkbook([
+            'Nome do Curso' => [
+                ['Secretário de Unidade Escolar'],
+            ],
+            'Conhecimentos Básicos' => [
+                ['Horas aulas'],
+                ['Módulo -Conhecimentos Básicos de Legislação Municipal e Serviço Público'],
+                ['Trilha - Estatuto Santos'],
+                ['Aula', 'Tempo de aula'],
+                ['1 - Estatuto - Santos', '16.0'],
+                ['2 - Estatuto - Santos', '19.0'],
+                [''],
+                ['Trilha - Lei Orgânica - Santos', '35.0'],
+            ],
+        ]));
+
+        $plan->refresh();
+
+        $this->assertSame(70, $plan->total_required_minutes);
+        $this->assertSame(2, $track->fresh()->modules()->count());
+        $this->assertTrue($plan->items()->where('estimated_minutes', 35)->where('description', 'like', '%Lei Orgânica - Santos%')->exists());
+    }
+
+    private function makeWorkbook(array $sheets): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'course-import-') . '.xlsx';
+        $archive = new \ZipArchive();
+        $archive->open($path, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+
+        $sheetDefinitions = [];
+        $relationships = [];
+
+        foreach (array_keys($sheets) as $index => $name) {
+            $sheetNumber = $index + 1;
+            $relationshipId = 'rId' . $sheetNumber;
+            $sheetDefinitions[] = '<sheet name="' . e($name) . '" sheetId="' . $sheetNumber . '" r:id="' . $relationshipId . '"/>';
+            $relationships[] = '<Relationship Id="' . $relationshipId . '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' . $sheetNumber . '.xml"/>';
+
+            $archive->addFromString(
+                'xl/worksheets/sheet' . $sheetNumber . '.xml',
+                $this->makeWorksheet($sheets[$name]),
+            );
+        }
+
+        $archive->addFromString(
+            'xl/workbook.xml',
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            . '<sheets>' . implode('', $sheetDefinitions) . '</sheets>'
+            . '</workbook>',
+        );
+        $archive->addFromString(
+            'xl/_rels/workbook.xml.rels',
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            . implode('', $relationships)
+            . '</Relationships>',
+        );
+
+        $archive->close();
+
+        return $path;
+    }
+
+    private function makeWorksheet(array $rows): string
+    {
+        $rowXml = collect($rows)
+            ->map(function (array $row, int $rowIndex) {
+                $cells = collect($row)
+                    ->map(function (?string $value, int $columnIndex) use ($rowIndex) {
+                        $column = chr(65 + $columnIndex);
+                        $reference = $column . ($rowIndex + 1);
+
+                        return '<c r="' . $reference . '" t="inlineStr"><is><t>' . e((string) $value) . '</t></is></c>';
+                    })
+                    ->implode('');
+
+                return '<row r="' . ($rowIndex + 1) . '">' . $cells . '</row>';
+            })
+            ->implode('');
+
+        return '<?xml version="1.0" encoding="UTF-8"?>'
+            . '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            . '<sheetData>' . $rowXml . '</sheetData>'
+            . '</worksheet>';
     }
 }

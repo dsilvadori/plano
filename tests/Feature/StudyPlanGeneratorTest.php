@@ -748,6 +748,40 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertStringContainsString('Para cumprir 100% da carga até a prova', $plan->viability_message);
     }
 
+    public function test_generator_extends_automatic_end_date_until_all_lessons_are_planned(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Conhecimentos Básicos - Legislação',
+            'type' => 'basic',
+            'workload_minutes' => 2000,
+            'sort_order' => 1,
+        ]);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            null,
+            now()->next('monday')->toDateString(),
+            ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+            ['monday' => 120, 'tuesday' => 120, 'wednesday' => 120, 'thursday' => 120, 'friday' => 120],
+            'balanced',
+        );
+
+        $theoryMinutes = (int) $plan->items()
+            ->whereIn('type', ['basic', 'specific', 'complementary'])
+            ->sum('estimated_minutes');
+
+        $this->assertSame(2000, $plan->total_required_minutes);
+        $this->assertSame(2000, $theoryMinutes);
+        $this->assertGreaterThan($plan->total_required_minutes, $plan->planned_minutes);
+    }
+
     public function test_plan_progress_percentage_does_not_exceed_one_hundred_percent(): void
     {
         $course = Course::factory()->create();

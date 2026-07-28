@@ -91,15 +91,22 @@ class CourseSpreadsheetParser
                         continue;
                     }
 
-                    if (Str::startsWith($firstCell, 'Módulo - ')) {
-                        $groupName = trim(Str::after($firstCell, 'Módulo - '));
+                    if ($this->isModuleRow($firstCell)) {
+                        $groupName = $this->extractSectionName($firstCell);
 
                         continue;
                     }
 
-                    if (Str::startsWith($firstCell, 'Trilha - ')) {
+                    if ($this->isTrackRow($firstCell)) {
                         $flushTrack();
-                        $currentTrackName = trim(Str::after($firstCell, 'Trilha - '));
+                        $currentTrackName = $this->extractSectionName($firstCell);
+
+                        if (is_numeric($minutesCell)) {
+                            $currentLessons[] = [
+                                'name' => $this->normalizeLessonName($currentTrackName),
+                                'minutes' => (int) round((float) $minutesCell),
+                            ];
+                        }
 
                         continue;
                     }
@@ -136,6 +143,21 @@ class CourseSpreadsheetParser
             'horas aulas',
             'aula',
         ], true);
+    }
+
+    protected function isModuleRow(string $value): bool
+    {
+        return preg_match('/^M[oó]dulo\s*-\s*/iu', $value) === 1;
+    }
+
+    protected function isTrackRow(string $value): bool
+    {
+        return preg_match('/^Trilha\s*-\s*/iu', $value) === 1;
+    }
+
+    protected function extractSectionName(string $value): string
+    {
+        return trim(preg_replace('/^[^-]+-\s*/u', '', $value) ?? $value);
     }
 
     protected function resolveCourseName(ZipArchive $archive, array $sharedStrings, Collection $sheets, string $path): string

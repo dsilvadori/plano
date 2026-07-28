@@ -11,6 +11,7 @@ class CourseSpreadsheetImporter
 {
     public function __construct(
         protected CourseSpreadsheetParser $parser,
+        protected StudyPlanGenerator $studyPlanGenerator,
     ) {}
 
     public function import(string $path): Course
@@ -28,6 +29,7 @@ class CourseSpreadsheetImporter
             );
 
             $this->importStructure($course, $payload, $payload['study_track_name']);
+            $this->refreshActiveStudyPlans($course);
 
             return $course->fresh(['modules', 'studyTracks.modules']);
         });
@@ -41,6 +43,7 @@ class CourseSpreadsheetImporter
             $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - ' . $course->name;
 
             $this->importStructure($course, $payload, $studyTrackName);
+            $this->refreshActiveStudyPlans($course);
 
             return $course->fresh(['modules', 'studyTracks.modules']);
         });
@@ -83,7 +86,16 @@ class CourseSpreadsheetImporter
         );
 
         if ($replaceTrackModules) {
+            $previousModuleIds = $studyTrack->modules()->pluck('course_modules.id')->all();
+
             $studyTrack->modules()->sync($moduleIds);
+            $staleModuleIds = array_diff($previousModuleIds, array_keys($moduleIds));
+
+            if ($staleModuleIds !== []) {
+                CourseModule::query()
+                    ->whereKey($staleModuleIds)
+                    ->update(['is_active' => false]);
+            }
 
             return;
         }
@@ -97,5 +109,25 @@ class CourseSpreadsheetImporter
             ->where('name', 'like', 'Trilha Oficial -%')
             ->orderBy('id')
             ->value('name');
+    }
+
+    protected function refreshActiveStudyPlans(Course $course): void
+    {
+        $course->studyPlans()
+            ->where('status', 'active')
+            ->with(['course', 'studyTrack', 'user'])
+            ->get()
+            ->each(function ($studyPlan): void {
+                $this->studyPlanGenerator->regenerate(
+                    $studyPlan,
+                    $studyPlan->course,
+                    $studyPlan->studyTrack,
+                    $studyPlan->exam_date_confirmed ? $studyPlan->exam_date?->toDateString() : null,
+                    $studyPlan->start_date?->toDateString() ?? now()->toDateString(),
+                    $studyPlan->available_days ?? [],
+                    $studyPlan->available_minutes_by_day ?? [],
+                    $studyPlan->intensity ?: 'balanced',
+                );
+            });
     }
 }
