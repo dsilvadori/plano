@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\StudyTrack;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 
 class CourseSpreadsheetImporter
@@ -40,7 +41,7 @@ class CourseSpreadsheetImporter
         $payload = $this->parser->parse($path);
 
         return DB::transaction(function () use ($course, $payload) {
-            $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - ' . $course->name;
+            $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - '.$course->name;
 
             $this->importStructure($course, $payload, $studyTrackName);
             $this->refreshActiveStudyPlans($course);
@@ -119,7 +120,7 @@ class CourseSpreadsheetImporter
             ->with(['course', 'studyTrack', 'user'])
             ->get()
             ->each(function ($studyPlan): void {
-                $this->studyPlanGenerator->regenerate(
+                $this->studyPlanGenerator->regenerateFromDate(
                     $studyPlan,
                     $studyPlan->course,
                     $studyPlan->studyTrack,
@@ -128,6 +129,8 @@ class CourseSpreadsheetImporter
                     $studyPlan->available_days ?? [],
                     $studyPlan->available_minutes_by_day ?? [],
                     $studyPlan->intensity ?: 'balanced',
+                    now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
+                    false,
                 );
             });
     }

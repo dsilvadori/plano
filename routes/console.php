@@ -4,6 +4,7 @@ use App\Models\Course;
 use App\Models\StudyPlan;
 use App\Services\CourseAccessResolver;
 use App\Services\StudyPlanGenerator;
+use Carbon\CarbonInterface;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Str;
@@ -192,7 +193,7 @@ Artisan::command('study-plans:refresh-active {--course-id=* : Limita a correçã
                     continue;
                 }
 
-                $refreshedPlan = $generator->regenerate(
+                $refreshedPlan = $generator->regenerateFromDate(
                     $plan,
                     $plan->course,
                     $track,
@@ -201,6 +202,7 @@ Artisan::command('study-plans:refresh-active {--course-id=* : Limita a correçã
                     $plan->available_days ?? [],
                     $plan->available_minutes_by_day ?? [],
                     $plan->intensity ?: 'balanced',
+                    now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
                     false,
                 );
 

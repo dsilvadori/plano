@@ -109,6 +109,88 @@ class StudyPlanGenerator
         });
     }
 
+    public function regenerateFromDate(
+        StudyPlan $studyPlan,
+        Course $course,
+        ?StudyTrack $studyTrack,
+        ?string $examDate,
+        string $startDate,
+        array $availableDays,
+        array $availableMinutesByDay,
+        string $intensity,
+        string $regenerateFromDate,
+        bool $reloadItems = true,
+    ): StudyPlan {
+        return DB::transaction(function () use ($studyPlan, $course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity, $regenerateFromDate, $reloadItems) {
+            $studyPlan->loadMissing(['course', 'studyTrack', 'user']);
+
+            $payload = $this->buildPlanPayload($course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity);
+            $modules = $payload['modules'];
+            $moduleIds = $modules->pluck('id')->all();
+            $cutoff = Carbon::parse($regenerateFromDate)->startOfDay();
+            $preservedItems = $studyPlan->items()
+                ->where(function ($query) use ($cutoff) {
+                    $query
+                        ->whereDate('scheduled_date', '<', $cutoff->toDateString())
+                        ->orWhereNotNull('completed_at');
+                })
+                ->with('courseModule')
+                ->get()
+                ->values();
+            $preservedMinutesByModule = $preservedItems
+                ->filter(fn ($item) => filled($item->course_module_id) && in_array($item->course_module_id, $moduleIds, true))
+                ->groupBy('course_module_id')
+                ->map(fn (Collection $items) => (int) $items->sum('estimated_minutes'))
+                ->all();
+            $remainingByModule = $modules
+                ->mapWithKeys(fn (CourseModule $module) => [
+                    $module->id => max(0, (int) $module->workload_minutes - (int) ($preservedMinutesByModule[$module->id] ?? 0)),
+                ])
+                ->all();
+
+            $studyPlan->user
+                ->studyPlans()
+                ->where('status', 'active')
+                ->where('course_id', $course->id)
+                ->whereKeyNot($studyPlan->id)
+                ->update(['status' => 'archived']);
+
+            $studyPlan->items()
+                ->whereDate('scheduled_date', '>=', $cutoff->toDateString())
+                ->whereNull('completed_at')
+                ->delete();
+            $studyPlan->fill($payload['attributes']);
+            $studyPlan->save();
+
+            $completedModules = $preservedItems
+                ->map(fn ($item) => $item->courseModule?->name)
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+
+            if (array_sum($remainingByModule) > 0 && $cutoff->lte($payload['exam'])) {
+                $this->generateItems(
+                    $studyPlan,
+                    $modules,
+                    $cutoff,
+                    $payload['exam'],
+                    $availableDays,
+                    $availableMinutesByDay,
+                    $intensity,
+                    $payload['start'],
+                    $remainingByModule,
+                    $completedModules,
+                    ((int) $studyPlan->items()->max('sort_order')) + 1,
+                );
+            }
+
+            return $reloadItems
+                ? $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user'])
+                : $studyPlan->fresh(['course', 'studyTrack', 'user']);
+        });
+    }
+
     protected function regeneratePreservingProgress(
         StudyPlan $studyPlan,
         Course $course,
@@ -224,8 +306,8 @@ class StudyPlanGenerator
 
             $studyPlan->forceFill([
                 'name' => filled($examDate)
-                    ? 'Plano ' . Str::title($studyPlan->course->name) . ' até ' . $exam->format('d/m/Y')
-                    : 'Plano ' . Str::title($studyPlan->course->name) . ' sem previsão de prova',
+                    ? 'Plano '.Str::title($studyPlan->course->name).' até '.$exam->format('d/m/Y')
+                    : 'Plano '.Str::title($studyPlan->course->name).' sem previsão de prova',
                 'exam_date' => $exam,
                 'exam_date_confirmed' => $studyPlan->exam_date_confirmed,
                 'total_available_minutes' => $totalAvailableMinutes,
@@ -302,8 +384,8 @@ class StudyPlanGenerator
                 'course_id' => $course->id,
                 'study_track_id' => $studyTrack?->id,
                 'name' => filled($examDate)
-                    ? 'Plano ' . Str::title($course->name) . ' até ' . $exam->format('d/m/Y')
-                    : 'Plano ' . Str::title($course->name) . ' sem previsão de prova',
+                    ? 'Plano '.Str::title($course->name).' até '.$exam->format('d/m/Y')
+                    : 'Plano '.Str::title($course->name).' sem previsão de prova',
                 'exam_date' => $exam,
                 'exam_date_confirmed' => filled($examDate),
                 'start_date' => $start,
@@ -381,8 +463,7 @@ class StudyPlanGenerator
         ?Carbon $start = null,
         ?Carbon $exam = null,
         array $availableDays = [],
-    ): array
-    {
+    ): array {
         if (! $hasExamDate) {
             return ['good', 'Plano criado sem data de prova definida. Distribuímos o ciclo com foco em constância, revisão e questões até você informar a prova.'];
         }
@@ -394,7 +475,7 @@ class StudyPlanGenerator
             $message = 'Plano viável. Seu tempo disponível cobre a carga necessária até a prova.';
 
             if ($isCloseExam && $minimumDailyGuidance) {
-                $message .= ' ' . $minimumDailyGuidance;
+                $message .= ' '.$minimumDailyGuidance;
             }
 
             return ['good', $message];
@@ -404,7 +485,7 @@ class StudyPlanGenerator
             $message = 'Plano apertado. Há espaço para avançar, mas será importante manter constância e priorizar o essencial.';
 
             if ($minimumDailyGuidance) {
-                $message .= ' ' . $minimumDailyGuidance;
+                $message .= ' '.$minimumDailyGuidance;
             }
 
             return ['warning', $message];
@@ -413,7 +494,7 @@ class StudyPlanGenerator
         $message = 'Plano crítico. O tempo disponível não cobre a carga prevista, então o ciclo vai priorizar o que mais move sua preparação.';
 
         if ($minimumDailyGuidance) {
-            $message .= ' ' . $minimumDailyGuidance;
+            $message .= ' '.$minimumDailyGuidance;
         }
 
         return ['critical', $message];
@@ -439,10 +520,10 @@ class StudyPlanGenerator
         }
 
         return 'Para cumprir 100% da carga até a prova, mantenha pelo menos '
-            . StudyTime::formatMinutes($minimumDailyMinutes)
-            . ' por dia nos '
-            . $daysPerWeek
-            . ' dia(s) de estudo que você marcou por semana.';
+            .StudyTime::formatMinutes($minimumDailyMinutes)
+            .' por dia nos '
+            .$daysPerWeek
+            .' dia(s) de estudo que você marcou por semana.';
     }
 
     protected function countStudyDaysUntilExam(Carbon $start, Carbon $exam, array $availableDays): int
@@ -1121,7 +1202,7 @@ class StudyPlanGenerator
 
             if ($completedMinutes > 0 && $index < count($lessons)) {
                 $lessons[$index]['minutes'] = max(1, (int) $lessons[$index]['minutes'] - $completedMinutes);
-                $lessons[$index]['name'] = 'Continuação: ' . $lessons[$index]['name'];
+                $lessons[$index]['name'] = 'Continuação: '.$lessons[$index]['name'];
             }
 
             return [$module->id => [
@@ -1147,6 +1228,7 @@ class StudyPlanGenerator
 
             if ($lessonMinutes <= 0) {
                 $consumedLessons++;
+
                 continue;
             }
 
@@ -1217,27 +1299,27 @@ class StudyPlanGenerator
 
             return [
                 $currentModule,
-                'Bloco ' . $blockNumber . ' · Revisão',
+                'Bloco '.$blockNumber.' · Revisão',
                 $topic !== ''
-                    ? 'Reserva de até ' . $plannedMinutes . ' minutos para retomar resumos, mapas mentais e pontos críticos de ' . $topic . '.'
-                    : 'Reserva de até ' . $plannedMinutes . ' minutos para retomar resumos, mapas mentais e os principais pontos estudados para consolidar a memória.',
+                    ? 'Reserva de até '.$plannedMinutes.' minutos para retomar resumos, mapas mentais e pontos críticos de '.$topic.'.'
+                    : 'Reserva de até '.$plannedMinutes.' minutos para retomar resumos, mapas mentais e os principais pontos estudados para consolidar a memória.',
             ];
         }
 
         if ($type === 'questions') {
             return [
                 $currentModule,
-                'Bloco ' . $blockNumber . ' · Questões',
+                'Bloco '.$blockNumber.' · Questões',
                 $referenceModuleName
-                    ? 'Reserva de até ' . $plannedMinutes . ' minutos para resolver questões e consolidar o conteúdo de ' . $referenceModuleName . '.'
-                    : 'Reserva de até ' . $plannedMinutes . ' minutos para resolver questões e medir retenção.',
+                    ? 'Reserva de até '.$plannedMinutes.' minutos para resolver questões e consolidar o conteúdo de '.$referenceModuleName.'.'
+                    : 'Reserva de até '.$plannedMinutes.' minutos para resolver questões e medir retenção.',
             ];
         }
 
         return [
             null,
-            'Bloco ' . $blockNumber . ' · Bloco complementar',
-            'Reserva de até ' . $plannedMinutes . ' minutos para reforçar o conteúdo mais relevante da sua trilha.',
+            'Bloco '.$blockNumber.' · Bloco complementar',
+            'Reserva de até '.$plannedMinutes.' minutos para reforçar o conteúdo mais relevante da sua trilha.',
         ];
     }
 
@@ -1271,29 +1353,29 @@ class StudyPlanGenerator
     protected function makeItemTitle(string $type, string $moduleName, int $blockNumber): string
     {
         return match ($type) {
-            'basic' => 'Bloco ' . $blockNumber . ' · Matéria Básica: ' . $moduleName,
-            'specific' => 'Bloco ' . $blockNumber . ' · Conhecimentos Específicos: ' . $moduleName,
-            'complementary' => 'Bloco ' . $blockNumber . ' · Conhecimentos Complementares: ' . $moduleName,
-            'review' => 'Bloco ' . $blockNumber . ' · Revisão: ' . $moduleName,
-            'questions' => 'Bloco ' . $blockNumber . ' · Resolução de Questões: ' . $moduleName,
-            default => 'Bloco ' . $blockNumber . ' · ' . $moduleName,
+            'basic' => 'Bloco '.$blockNumber.' · Matéria Básica: '.$moduleName,
+            'specific' => 'Bloco '.$blockNumber.' · Conhecimentos Específicos: '.$moduleName,
+            'complementary' => 'Bloco '.$blockNumber.' · Conhecimentos Complementares: '.$moduleName,
+            'review' => 'Bloco '.$blockNumber.' · Revisão: '.$moduleName,
+            'questions' => 'Bloco '.$blockNumber.' · Resolução de Questões: '.$moduleName,
+            default => 'Bloco '.$blockNumber.' · '.$moduleName,
         };
     }
 
     protected function makeItemDescription(string $type, string $moduleName, string $dayKey, int $estimatedMinutes, array $lessonNames = []): string
     {
-        $durationLabel = $estimatedMinutes . ' minutos';
+        $durationLabel = $estimatedMinutes.' minutos';
         $lessonLabel = $this->summarizeLessonNames($lessonNames);
-        $lessonSuffix = $lessonLabel ? ' Aulas do bloco: ' . $lessonLabel . '.' : '';
+        $lessonSuffix = $lessonLabel ? ' Aulas do bloco: '.$lessonLabel.'.' : '';
 
         return match ($type) {
-            'basic' => 'Bloco de até ' . $durationLabel . ' para estudar ' . $moduleName . '.' . $lessonSuffix,
-            'specific' => 'Bloco de até ' . $durationLabel . ' para avançar em conhecimentos específicos com foco em ' . $moduleName . '.' . $lessonSuffix,
-            'complementary' => 'Bloco de até ' . $durationLabel . ' para avançar em conhecimentos complementares com foco em ' . $moduleName . '.' . $lessonSuffix,
+            'basic' => 'Bloco de até '.$durationLabel.' para estudar '.$moduleName.'.'.$lessonSuffix,
+            'specific' => 'Bloco de até '.$durationLabel.' para avançar em conhecimentos específicos com foco em '.$moduleName.'.'.$lessonSuffix,
+            'complementary' => 'Bloco de até '.$durationLabel.' para avançar em conhecimentos complementares com foco em '.$moduleName.'.'.$lessonSuffix,
             'review' => $dayKey === 'saturday'
-                ? 'Sábado de revisão com reserva de até ' . $durationLabel . ' para retomar pontos-chave de ' . $moduleName . ' com foco em fixação.'
-                : 'Bloco de revisão com reserva de até ' . $durationLabel . ' para reforçar a retenção em ' . $moduleName . '.',
-            'questions' => 'Bloco de resolução de questões com reserva de até ' . $durationLabel . ' para aplicar na prática o conteúdo de ' . $moduleName . '.',
+                ? 'Sábado de revisão com reserva de até '.$durationLabel.' para retomar pontos-chave de '.$moduleName.' com foco em fixação.'
+                : 'Bloco de revisão com reserva de até '.$durationLabel.' para reforçar a retenção em '.$moduleName.'.',
+            'questions' => 'Bloco de resolução de questões com reserva de até '.$durationLabel.' para aplicar na prática o conteúdo de '.$moduleName.'.',
             default => 'Bloco de estudo planejado para manter consistência até a prova.',
         };
     }
@@ -1305,8 +1387,8 @@ class StudyPlanGenerator
         return match (count($lessonNames)) {
             0 => '',
             1 => $lessonNames[0],
-            2 => $lessonNames[0] . ' e ' . $lessonNames[1],
-            default => implode(', ', array_slice($lessonNames, 0, -1)) . ' e ' . $lessonNames[array_key_last($lessonNames)],
+            2 => $lessonNames[0].' e '.$lessonNames[1],
+            default => implode(', ', array_slice($lessonNames, 0, -1)).' e '.$lessonNames[array_key_last($lessonNames)],
         };
     }
 
