@@ -61,11 +61,12 @@ class StudyPlanGenerator
         array $availableDays,
         array $availableMinutesByDay,
         string $intensity,
+        bool $reloadItems = true,
     ): StudyPlan {
-        return DB::transaction(function () use ($studyPlan, $course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity) {
-            $studyPlan->loadMissing(['course', 'studyTrack', 'user', 'items.courseModule']);
+        return DB::transaction(function () use ($studyPlan, $course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity, $reloadItems) {
+            $studyPlan->loadMissing(['course', 'studyTrack', 'user']);
 
-            if ($studyPlan->items->whereNotNull('completed_at')->isNotEmpty()) {
+            if ($studyPlan->items()->whereNotNull('completed_at')->exists()) {
                 return $this->regeneratePreservingProgress(
                     $studyPlan,
                     $course,
@@ -75,6 +76,7 @@ class StudyPlanGenerator
                     $availableDays,
                     $availableMinutesByDay,
                     $intensity,
+                    $reloadItems,
                 );
             }
 
@@ -101,7 +103,9 @@ class StudyPlanGenerator
                 $intensity,
             );
 
-            return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
+            return $reloadItems
+                ? $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user'])
+                : $studyPlan->fresh(['course', 'studyTrack', 'user']);
         });
     }
 
@@ -114,10 +118,15 @@ class StudyPlanGenerator
         array $availableDays,
         array $availableMinutesByDay,
         string $intensity,
+        bool $reloadItems = true,
     ): StudyPlan {
         $payload = $this->buildPlanPayload($course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity);
         $modules = $payload['modules'];
-        $completedItems = $studyPlan->items->whereNotNull('completed_at')->values();
+        $completedItems = $studyPlan->items()
+            ->whereNotNull('completed_at')
+            ->with('courseModule')
+            ->get()
+            ->values();
         $completedMinutesByModule = $completedItems
             ->filter(fn ($item) => filled($item->course_module_id))
             ->groupBy('course_module_id')
@@ -166,7 +175,9 @@ class StudyPlanGenerator
             );
         }
 
-        return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
+        return $reloadItems
+            ? $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user'])
+            : $studyPlan->fresh(['course', 'studyTrack', 'user']);
     }
 
     public function smartRebalance(StudyPlan $studyPlan): StudyPlan

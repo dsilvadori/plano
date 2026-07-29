@@ -144,22 +144,23 @@ Artisan::command('courses:link-santos-nivel-medio {--dry-run : Mostra o que seri
     return 0;
 })->purpose('Vincula alunos do combo Gabaritando Santos nível médio aos cursos ativos com prefixo Gabaritando Santos');
 
-Artisan::command('study-plans:refresh-active {--course-id=* : Limita a correção a um ou mais IDs de curso} {--dry-run : Mostra os planos que seriam corrigidos sem gravar}', function (StudyPlanGenerator $generator) {
+Artisan::command('study-plans:refresh-active {--course-id=* : Limita a correção a um ou mais IDs de curso} {--from-id= : Processa apenas planos com ID igual ou maior que o informado} {--dry-run : Mostra os planos que seriam corrigidos sem gravar}', function (StudyPlanGenerator $generator) {
     $courseIds = collect($this->option('course-id'))
         ->filter(fn ($value) => filled($value))
         ->map(fn ($value) => (int) $value)
         ->filter()
         ->unique()
         ->values();
+    $fromId = filled($this->option('from-id')) ? max(1, (int) $this->option('from-id')) : null;
 
-    $plans = StudyPlan::query()
-        ->with(['course', 'studyTrack', 'user'])
+    $plansQuery = StudyPlan::query()
         ->where('status', 'active')
         ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('course_id', $courseIds))
-        ->orderBy('id')
-        ->get();
+        ->when($fromId, fn ($query) => $query->where('id', '>=', $fromId));
 
-    if ($plans->isEmpty()) {
+    $plansCount = (clone $plansQuery)->count();
+
+    if ($plansCount === 0) {
         $this->warn('Nenhum plano ativo encontrado para corrigir.');
 
         return 0;
@@ -167,46 +168,52 @@ Artisan::command('study-plans:refresh-active {--course-id=* : Limita a correçã
 
     $refreshed = 0;
 
-    foreach ($plans as $plan) {
-        $beforeRequired = (int) $plan->total_required_minutes;
-        $beforePlanned = (int) $plan->items()->sum('estimated_minutes');
-        $track = $plan->studyTrack ?: $plan->course
-            ->studyTracks()
-            ->where('is_active', true)
-            ->where('name', 'like', 'Trilha Oficial -%')
-            ->orderBy('id')
-            ->first();
+    $plansQuery
+        ->with(['course', 'studyTrack', 'user'])
+        ->orderBy('id')
+        ->chunkById(25, function ($plans) use ($generator, &$refreshed): void {
+            foreach ($plans as $plan) {
+                $beforeRequired = (int) $plan->total_required_minutes;
+                $beforePlanned = (int) $plan->items()->sum('estimated_minutes');
+                $track = $plan->studyTrack ?: $plan->course
+                    ->studyTracks()
+                    ->where('is_active', true)
+                    ->where('name', 'like', 'Trilha Oficial -%')
+                    ->orderBy('id')
+                    ->first();
 
-        if ($this->option('dry-run')) {
-            $requiredMinutes = (int) ($track
-                ? $track->modules()->where('course_modules.is_active', true)->sum('workload_minutes')
-                : $plan->course->modules()->where('is_active', true)->sum('workload_minutes'));
+                if ($this->option('dry-run')) {
+                    $requiredMinutes = (int) ($track
+                        ? $track->modules()->where('course_modules.is_active', true)->sum('workload_minutes')
+                        : $plan->course->modules()->where('is_active', true)->sum('workload_minutes'));
 
-            $this->line("Plano {$plan->id}: {$beforeRequired} min -> {$requiredMinutes} min ({$plan->course->name})");
+                    $this->line("Plano {$plan->id}: {$beforeRequired} min -> {$requiredMinutes} min ({$plan->course->name})");
 
-            continue;
-        }
+                    continue;
+                }
 
-        $refreshedPlan = $generator->regenerate(
-            $plan,
-            $plan->course,
-            $track,
-            $plan->exam_date_confirmed ? $plan->exam_date?->toDateString() : null,
-            $plan->start_date?->toDateString() ?? now()->toDateString(),
-            $plan->available_days ?? [],
-            $plan->available_minutes_by_day ?? [],
-            $plan->intensity ?: 'balanced',
-        );
+                $refreshedPlan = $generator->regenerate(
+                    $plan,
+                    $plan->course,
+                    $track,
+                    $plan->exam_date_confirmed ? $plan->exam_date?->toDateString() : null,
+                    $plan->start_date?->toDateString() ?? now()->toDateString(),
+                    $plan->available_days ?? [],
+                    $plan->available_minutes_by_day ?? [],
+                    $plan->intensity ?: 'balanced',
+                    false,
+                );
 
-        $afterRequired = (int) $refreshedPlan->total_required_minutes;
-        $afterPlanned = (int) $refreshedPlan->items()->sum('estimated_minutes');
+                $afterRequired = (int) $refreshedPlan->total_required_minutes;
+                $afterPlanned = (int) $refreshedPlan->items()->sum('estimated_minutes');
 
-        $this->line("Plano {$plan->id}: necessário {$beforeRequired} -> {$afterRequired} min; planejado {$beforePlanned} -> {$afterPlanned} min.");
-        $refreshed++;
-    }
+                $this->line("Plano {$plan->id}: necessário {$beforeRequired} -> {$afterRequired} min; planejado {$beforePlanned} -> {$afterPlanned} min.");
+                $refreshed++;
+            }
+        });
 
     if ($this->option('dry-run')) {
-        $this->info("{$plans->count()} plano(s) ativo(s) avaliados em modo simulação.");
+        $this->info("{$plansCount} plano(s) ativo(s) avaliados em modo simulação.");
 
         return 0;
     }
