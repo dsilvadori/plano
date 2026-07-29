@@ -14,7 +14,6 @@ use Filament\Notifications\Notification;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Password;
 
@@ -57,7 +56,7 @@ class UsersTable
                     ->modalHeading('Entrar como este usuário?')
                     ->modalDescription('Você será levado para a área do aluno usando esta conta. Uma faixa ficará disponível para voltar ao admin.')
                     ->visible(fn ($record) => ! $record->is(auth()->user()))
-                    ->action(function ($record, Request $request, UserImpersonation $impersonation): RedirectResponse {
+                    ->action(function ($record, Request $request, UserImpersonation $impersonation) {
                         $impersonation->start($request, $record);
 
                         return redirect()
