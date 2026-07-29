@@ -401,6 +401,18 @@ class StudentDashboardTest extends TestCase
             'sort_order' => 1,
         ]);
 
+        $pastPendingItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->subDay()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->subDay()->englishDayOfWeek),
+            'type' => 'basic',
+            'estimated_minutes' => 60,
+            'completed_at' => null,
+            'sort_order' => 2,
+        ]);
+
         $pendingItem = StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $module->id,
@@ -410,7 +422,7 @@ class StudentDashboardTest extends TestCase
             'type' => 'basic',
             'estimated_minutes' => 60,
             'completed_at' => null,
-            'sort_order' => 2,
+            'sort_order' => 3,
         ]);
 
         $response = $this->actingAs($student)->put(route('study-plans.update', $plan), [
@@ -430,6 +442,10 @@ class StudentDashboardTest extends TestCase
 
         $this->assertDatabaseHas('study_plan_items', [
             'id' => $completedItem->id,
+            'study_plan_id' => $plan->id,
+        ]);
+        $this->assertDatabaseHas('study_plan_items', [
+            'id' => $pastPendingItem->id,
             'study_plan_id' => $plan->id,
         ]);
         $this->assertDatabaseMissing('study_plan_items', [
@@ -489,7 +505,7 @@ class StudentDashboardTest extends TestCase
             'sort_order' => 1,
         ]);
 
-        $pendingItem = StudyPlanItem::factory()->create([
+        $pastPendingItem = StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $moduleB->id,
             'scheduled_date' => now()->subDay()->toDateString(),
@@ -513,8 +529,9 @@ class StudentDashboardTest extends TestCase
             'id' => $completedItem->id,
             'study_plan_id' => $plan->id,
         ]);
-        $this->assertDatabaseMissing('study_plan_items', [
-            'id' => $pendingItem->id,
+        $this->assertDatabaseHas('study_plan_items', [
+            'id' => $pastPendingItem->id,
+            'study_plan_id' => $plan->id,
         ]);
         $this->assertTrue($plan->items()->whereNotNull('completed_at')->exists());
         $this->assertTrue($plan->items()->whereDate('scheduled_date', '>=', now()->toDateString())->exists());

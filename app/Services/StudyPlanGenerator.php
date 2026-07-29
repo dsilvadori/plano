@@ -66,7 +66,12 @@ class StudyPlanGenerator
         return DB::transaction(function () use ($studyPlan, $course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity, $reloadItems) {
             $studyPlan->loadMissing(['course', 'studyTrack', 'user']);
 
-            if ($studyPlan->items()->whereNotNull('completed_at')->exists()) {
+            $generationStart = Carbon::parse($startDate)->startOfDay()->max(now()->startOfDay());
+
+            if (
+                $studyPlan->items()->whereNotNull('completed_at')->exists()
+                || $studyPlan->items()->whereDate('scheduled_date', '<', $generationStart->toDateString())->exists()
+            ) {
                 return $this->regeneratePreservingProgress(
                     $studyPlan,
                     $course,
@@ -204,12 +209,17 @@ class StudyPlanGenerator
     ): StudyPlan {
         $payload = $this->buildPlanPayload($course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity);
         $modules = $payload['modules'];
-        $completedItems = $studyPlan->items()
-            ->whereNotNull('completed_at')
+        $generationStart = Carbon::parse($startDate)->startOfDay()->max(now()->startOfDay());
+        $preservedItems = $studyPlan->items()
+            ->where(function ($query) use ($generationStart) {
+                $query
+                    ->whereDate('scheduled_date', '<', $generationStart->toDateString())
+                    ->orWhereNotNull('completed_at');
+            })
             ->with('courseModule')
             ->get()
             ->values();
-        $completedMinutesByModule = $completedItems
+        $preservedMinutesByModule = $preservedItems
             ->filter(fn ($item) => filled($item->course_module_id))
             ->groupBy('course_module_id')
             ->map(fn (Collection $items) => (int) $items->sum('estimated_minutes'))
@@ -217,7 +227,7 @@ class StudyPlanGenerator
 
         $remainingByModule = $modules
             ->mapWithKeys(fn (CourseModule $module) => [
-                $module->id => max(0, (int) $module->workload_minutes - (int) ($completedMinutesByModule[$module->id] ?? 0)),
+                $module->id => max(0, (int) $module->workload_minutes - (int) ($preservedMinutesByModule[$module->id] ?? 0)),
             ])
             ->all();
 
@@ -228,11 +238,15 @@ class StudyPlanGenerator
             ->whereKeyNot($studyPlan->id)
             ->update(['status' => 'archived']);
 
-        $studyPlan->items()->whereNull('completed_at')->delete();
+        $studyPlan->items()
+            ->whereDate('scheduled_date', '>=', $generationStart->toDateString())
+            ->whereNull('completed_at')
+            ->delete();
         $studyPlan->fill($payload['attributes']);
         $studyPlan->save();
 
-        $completedModules = $completedItems
+        $completedModules = $preservedItems
+            ->whereNotNull('completed_at')
             ->map(fn ($item) => $item->courseModule?->name)
             ->filter()
             ->unique()
@@ -240,8 +254,6 @@ class StudyPlanGenerator
             ->all();
 
         if (array_sum($remainingByModule) > 0) {
-            $generationStart = Carbon::parse($startDate)->startOfDay()->max(now()->startOfDay());
-
             $this->generateItems(
                 $studyPlan,
                 $modules,
@@ -271,8 +283,11 @@ class StudyPlanGenerator
             $availableDays = $studyPlan->available_days ?? [];
             $availableMinutesByDay = $studyPlan->available_minutes_by_day ?? [];
             $modules = $this->resolveModules($studyPlan->course, $studyPlan->studyTrack);
-            $completedItems = $studyPlan->items->whereNotNull('completed_at')->values();
-            $completedMinutesByModule = $completedItems
+            $preservedItems = $studyPlan->items
+                ->filter(fn ($item) => $item->scheduled_date->lt($today) || filled($item->completed_at))
+                ->values();
+            $completedItems = $preservedItems->whereNotNull('completed_at')->values();
+            $preservedMinutesByModule = $preservedItems
                 ->filter(fn ($item) => filled($item->course_module_id))
                 ->groupBy('course_module_id')
                 ->map(fn (Collection $items) => (int) $items->sum('estimated_minutes'))
@@ -280,7 +295,7 @@ class StudyPlanGenerator
 
             $remainingByModule = $modules
                 ->mapWithKeys(fn (CourseModule $module) => [
-                    $module->id => max(0, (int) $module->workload_minutes - (int) ($completedMinutesByModule[$module->id] ?? 0)),
+                    $module->id => max(0, (int) $module->workload_minutes - (int) ($preservedMinutesByModule[$module->id] ?? 0)),
                 ])
                 ->all();
 
@@ -302,7 +317,10 @@ class StudyPlanGenerator
                 $availableDays,
             );
 
-            $studyPlan->items()->whereNull('completed_at')->delete();
+            $studyPlan->items()
+                ->whereDate('scheduled_date', '>=', $today->toDateString())
+                ->whereNull('completed_at')
+                ->delete();
 
             $studyPlan->forceFill([
                 'name' => filled($examDate)
