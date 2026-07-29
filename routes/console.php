@@ -4,6 +4,7 @@ use App\Models\Course;
 use App\Models\StudyPlan;
 use App\Services\CourseAccessResolver;
 use App\Services\StudyPlanGenerator;
+use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -224,6 +225,61 @@ Artisan::command('study-plans:refresh-active {--course-id=* : Limita a correçã
 
     return 0;
 })->purpose('Regenera planos ativos com a estrutura atual dos cursos, preservando progresso concluído');
+
+Artisan::command('study-plans:recover {planId} {fromDate} {--dry-run : Mostra o que seria feito sem gravar no banco}', function (int $planId, string $fromDate, StudyPlanGenerator $generator) {
+    $from = Carbon::parse($fromDate)->startOfDay();
+    $plan = StudyPlan::query()
+        ->with(['course', 'studyTrack', 'user'])
+        ->findOrFail($planId);
+
+    $this->info("Plano {$plan->id}: {$plan->user?->name} ({$plan->user?->email})");
+    $this->line("Curso: {$plan->course->name}");
+    $this->line('Recuperar a partir de: '.$from->format('d/m/Y'));
+
+    $before = $plan->items()
+        ->selectRaw('scheduled_date, day_of_week, week_number, count(*) as tarefas, sum(completed_at is not null) as concluidas, sum(estimated_minutes) as minutos')
+        ->whereDate('scheduled_date', '>=', $from->toDateString())
+        ->groupBy('scheduled_date', 'day_of_week', 'week_number')
+        ->orderBy('scheduled_date')
+        ->get();
+
+    $this->line('Antes:');
+    $before->each(fn ($row) => $this->line(" - {$row->scheduled_date}: {$row->tarefas} tarefa(s), {$row->concluidas} concluída(s), {$row->minutos} min"));
+
+    if ($this->option('dry-run')) {
+        $this->warn('Simulação concluída. Nada foi gravado.');
+
+        return 0;
+    }
+
+    $generator->regenerateFromDate(
+        $plan,
+        $plan->course,
+        $plan->studyTrack,
+        $plan->exam_date_confirmed ? $plan->exam_date?->toDateString() : null,
+        $plan->start_date?->toDateString() ?? $from->toDateString(),
+        $plan->available_days ?? [],
+        $plan->available_minutes_by_day ?? [],
+        $plan->intensity ?: 'balanced',
+        $from->toDateString(),
+        false,
+    );
+
+    $plan->refresh();
+
+    $after = $plan->items()
+        ->selectRaw('scheduled_date, day_of_week, week_number, count(*) as tarefas, sum(completed_at is not null) as concluidas, sum(estimated_minutes) as minutos')
+        ->whereDate('scheduled_date', '>=', $from->toDateString())
+        ->groupBy('scheduled_date', 'day_of_week', 'week_number')
+        ->orderBy('scheduled_date')
+        ->get();
+
+    $this->line('Depois:');
+    $after->each(fn ($row) => $this->line(" - {$row->scheduled_date}: {$row->tarefas} tarefa(s), {$row->concluidas} concluída(s), {$row->minutos} min"));
+    $this->info('Plano recuperado com sucesso.');
+
+    return 0;
+})->purpose('Recupera tarefas de um plano a partir de uma data, preservando tarefas concluídas');
 
 Artisan::command('courses:deactivate-stale-official-modules {--course-id=* : Limita a correção a um ou mais IDs de curso} {--dry-run : Mostra os módulos que seriam desativados sem gravar}', function () {
     $courseIds = collect($this->option('course-id'))
