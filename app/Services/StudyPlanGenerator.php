@@ -524,6 +524,7 @@ class StudyPlanGenerator
             $weekNumber = $weekReferenceStart
                 ->diffInWeeks($date->copy()->startOfWeek(CarbonInterface::MONDAY)) + 1;
             $blockNumber = 1;
+            $dailyTheoryModules = [];
             $reserveMinutes = $this->resolveReserveMinutes(
                 $dayKey,
                 $remainingToday,
@@ -552,6 +553,7 @@ class StudyPlanGenerator
                         $completedModules,
                         $orderedModules,
                         $remainingByModule,
+                        $dailyTheoryModules,
                         true,
                     );
 
@@ -580,6 +582,7 @@ class StudyPlanGenerator
                 $remainingByModule,
                 $completedModules,
                 $balancedTheoryBlocks,
+                $dailyTheoryModules,
             );
 
             if ($balancedAllocated > 0) {
@@ -605,6 +608,8 @@ class StudyPlanGenerator
                     $lessonStates,
                     $remainingByModule,
                     $completedModules,
+                    null,
+                    $dailyTheoryModules,
                 );
 
                 if ($allocated === 0) {
@@ -632,6 +637,7 @@ class StudyPlanGenerator
                     $completedModules,
                     $orderedModules,
                     $remainingByModule,
+                    $dailyTheoryModules,
                     $shouldExpandReserve,
                 );
             } else {
@@ -646,6 +652,7 @@ class StudyPlanGenerator
                     $completedModules,
                     $orderedModules,
                     $remainingByModule,
+                    $dailyTheoryModules,
                     true,
                 );
             }
@@ -668,6 +675,7 @@ class StudyPlanGenerator
         array &$remainingByModule,
         array &$completedModules,
         int &$createdBlocks,
+        array &$dailyTheoryModules,
     ): int {
         if (
             $theoryBudget < 30
@@ -711,6 +719,7 @@ class StudyPlanGenerator
                 $remainingByModule,
                 $completedModules,
                 $preferredTypes,
+                $dailyTheoryModules,
             );
 
             if ($blockAllocated <= 0 && $index === 0 && $availableForBlock < $remainingBudget) {
@@ -730,6 +739,7 @@ class StudyPlanGenerator
                     $remainingByModule,
                     $completedModules,
                     $preferredTypes,
+                    $dailyTheoryModules,
                 );
             }
 
@@ -826,6 +836,7 @@ class StudyPlanGenerator
         array $completedModules,
         Collection $orderedModules,
         array $remainingByModule,
+        array $dailyTheoryModules = [],
         bool $fillAvailable = false,
     ): int {
         $allocated = 0;
@@ -843,6 +854,7 @@ class StudyPlanGenerator
                 $completedModules,
                 $orderedModules,
                 $remainingByModule,
+                $dailyTheoryModules,
             );
 
             $allocated += $reserveBlock['minutes'];
@@ -868,6 +880,7 @@ class StudyPlanGenerator
         array &$remainingByModule,
         array &$completedModules,
         ?array $preferredTypes = null,
+        ?array &$dailyTheoryModules = null,
     ): int {
         [$type, $module] = $preferredTypes
             ? $this->resolveCurrentTheoryModuleFromTypes($preferredTypes, $typeQueues, $typePointers, $typeRotationIndex, $lastSubjectsByType, $lessonStates)
@@ -887,6 +900,7 @@ class StudyPlanGenerator
         $type = $this->normalizeModuleType($module->type);
         $lessonNames = $lessonBlock['lesson_names'] ?? [];
         $lastSubjectsByType[$type] = $this->moduleSubject($module);
+        $dailyTheoryModules[$module->id] = $module;
 
         $plan->items()->create([
             'course_module_id' => $module->id,
@@ -924,12 +938,14 @@ class StudyPlanGenerator
         array $completedModules,
         Collection $orderedModules,
         array $remainingByModule,
+        array $dailyTheoryModules,
     ): void {
         [$module, $title, $description] = $this->pickReserveContext(
             $type,
             $orderedModules,
             $remainingByModule,
             $completedModules,
+            $dailyTheoryModules,
             $blockNumber,
             $dayKey,
             $plannedMinutes,
@@ -1171,15 +1187,22 @@ class StudyPlanGenerator
         Collection $orderedModules,
         array $remainingByModule,
         array $completedModules,
+        array $dailyTheoryModules,
         int $blockNumber,
         string $dayKey,
         int $plannedMinutes,
     ): array {
-        $currentModule = $orderedModules->first(fn (CourseModule $module) => ($remainingByModule[$module->id] ?? 0) > 0);
-        $referenceModuleName = $currentModule?->name ?? collect($completedModules)->last();
+        $dailyModules = collect($dailyTheoryModules)->values();
+        $currentModule = $dailyModules->first()
+            ?? $orderedModules->first(fn (CourseModule $module) => ($remainingByModule[$module->id] ?? 0) > 0);
+        $referenceModuleName = $dailyModules->isNotEmpty()
+            ? $this->summarizeReserveModules($dailyModules)
+            : ($currentModule?->name ?? collect($completedModules)->last());
 
         if ($type === 'review') {
-            $topic = collect($completedModules)->take(-2)->implode(' e ');
+            $topic = $dailyModules->isNotEmpty()
+                ? $this->summarizeReserveModules($dailyModules)
+                : collect($completedModules)->take(-2)->implode(' e ');
 
             return [
                 $currentModule,
@@ -1205,6 +1228,33 @@ class StudyPlanGenerator
             'Bloco ' . $blockNumber . ' · Bloco complementar',
             'Reserva de até ' . $plannedMinutes . ' minutos para reforçar o conteúdo mais relevante da sua trilha.',
         ];
+    }
+
+    protected function summarizeReserveModules(Collection $modules): string
+    {
+        return $modules
+            ->map(fn (CourseModule $module) => $this->reserveModuleLabel($module))
+            ->filter()
+            ->unique()
+            ->take(2)
+            ->implode(' e ');
+    }
+
+    protected function reserveModuleLabel(CourseModule $module): string
+    {
+        $name = trim($module->name);
+
+        if (str_contains($name, ' - ')) {
+            return trim(Str::afterLast($name, ' - '));
+        }
+
+        $lessonNames = collect($module->planning_lessons)
+            ->pluck('name')
+            ->filter()
+            ->take(2)
+            ->implode(' e ');
+
+        return $lessonNames !== '' ? $lessonNames : $name;
     }
 
     protected function makeItemTitle(string $type, string $moduleName, int $blockNumber): string

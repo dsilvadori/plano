@@ -483,6 +483,108 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertSame([60, 15, 15], $items->pluck('estimated_minutes')->all());
     }
 
+    public function test_generator_uses_same_day_tracks_for_questions_and_review_context(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Raciocínio Lógico - Raciocínio Lógico',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Proposições e Sentenças Abertas', 'minutes' => 31],
+            ],
+            'workload_minutes' => 31,
+            'sort_order' => 1,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Legislação Educacional - Estatuto da Criança e do Adolescente',
+            'type' => 'specific',
+            'lessons' => [
+                ['name' => '01 - ECA.', 'minutes' => 58],
+            ],
+            'workload_minutes' => 58,
+            'sort_order' => 2,
+        ]);
+
+        $startDate = now()->next('monday');
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            $startDate->toDateString(),
+            $startDate->toDateString(),
+            ['monday'],
+            ['monday' => 120],
+            'balanced',
+        );
+
+        $questions = $plan->items()->where('type', 'questions')->first();
+        $review = $plan->items()->where('type', 'review')->first();
+
+        $this->assertStringContainsString('Raciocínio Lógico', $questions->description);
+        $this->assertStringContainsString('Estatuto da Criança e do Adolescente', $questions->description);
+        $this->assertStringNotContainsString('Legislação Educacional - Estatuto da Criança e do Adolescente', $questions->description);
+        $this->assertStringContainsString('Raciocínio Lógico', $review->description);
+        $this->assertStringContainsString('Estatuto da Criança e do Adolescente', $review->description);
+        $this->assertStringNotContainsString('Legislação Educacional - Estatuto da Criança e do Adolescente', $review->description);
+    }
+
+    public function test_generator_uses_same_day_lessons_for_reserve_context_when_track_name_is_unavailable(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Módulo sem trilha',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Aula 1 - Protocolo', 'minutes' => 30],
+            ],
+            'workload_minutes' => 30,
+            'sort_order' => 1,
+        ]);
+
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Outro módulo sem trilha',
+            'type' => 'specific',
+            'lessons' => [
+                ['name' => 'Aula 2 - Atendimento', 'minutes' => 30],
+            ],
+            'workload_minutes' => 30,
+            'sort_order' => 2,
+        ]);
+
+        $startDate = now()->next('monday');
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            $startDate->toDateString(),
+            $startDate->toDateString(),
+            ['monday'],
+            ['monday' => 120],
+            'balanced',
+        );
+
+        $questions = $plan->items()->where('type', 'questions')->first();
+        $review = $plan->items()->where('type', 'review')->first();
+
+        $this->assertStringContainsString('Aula 1 - Protocolo', $questions->description);
+        $this->assertStringContainsString('Aula 2 - Atendimento', $questions->description);
+        $this->assertStringContainsString('Aula 1 - Protocolo', $review->description);
+        $this->assertStringContainsString('Aula 2 - Atendimento', $review->description);
+    }
+
     public function test_generator_distributes_remaining_day_time_between_questions_and_review(): void
     {
         $course = Course::factory()->create();
