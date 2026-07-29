@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Users\Tables;
 
 use App\Models\Course;
 use App\Services\ManualStudentCourseLinker;
+use App\Services\UserImpersonation;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -12,8 +13,10 @@ use Filament\Forms\Components\Select;
 use Filament\Notifications\Notification;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
-use Illuminate\Support\Facades\Password;
 use Filament\Tables\Table;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Password;
 
 class UsersTable
 {
@@ -46,6 +49,21 @@ class UsersTable
             ])
             ->recordActions([
                 EditAction::make(),
+                Action::make('impersonate')
+                    ->label('Entrar como usuário')
+                    ->icon('heroicon-o-user-circle')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->modalHeading('Entrar como este usuário?')
+                    ->modalDescription('Você será levado para a área do aluno usando esta conta. Uma faixa ficará disponível para voltar ao admin.')
+                    ->visible(fn ($record) => ! $record->is(auth()->user()))
+                    ->action(function ($record, Request $request, UserImpersonation $impersonation): RedirectResponse {
+                        $impersonation->start($request, $record);
+
+                        return redirect()
+                            ->route('dashboard')
+                            ->with('status', "Você está visualizando o sistema como {$record->name}.");
+                    }),
                 Action::make('linkCourses')
                     ->label('Vincular curso')
                     ->icon('heroicon-o-link')

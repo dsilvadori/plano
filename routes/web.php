@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Admin\UserImpersonationController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\StudyPlanController;
@@ -19,6 +20,11 @@ Route::get('/', function () {
 Route::post('/webhooks/tutory', TutoryWebhookController::class)->name('webhooks.tutory');
 
 Route::middleware('auth')->group(function () {
+    Route::post('/admin/users/{user}/impersonate', [UserImpersonationController::class, 'start'])
+        ->name('admin.users.impersonate');
+    Route::post('/admin/impersonation/stop', [UserImpersonationController::class, 'stop'])
+        ->name('admin.impersonation.stop');
+
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
     Route::get('/dashboard/plano/novo', [StudyPlanController::class, 'create'])->name('study-plans.create');
     Route::post('/dashboard/plano', [StudyPlanController::class, 'store'])->name('study-plans.store');

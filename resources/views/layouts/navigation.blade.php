@@ -3,6 +3,7 @@
         ? Auth::user()->studyPlans()->with('course')->where('status', 'active')->latest()->get()
         : collect();
     $currentStudyPlan = request()->route('studyPlan');
+    $impersonatorName = session(\App\Services\UserImpersonation::SESSION_NAME_KEY);
 @endphp
 
 <nav x-data="{ open: false }">
@@ -46,6 +47,19 @@
                     {{ Auth::user()->isAdmin() ? 'Admin' : 'Aluno' }}
                 </p>
             </div>
+
+            @if ($impersonatorName)
+                <div class="mt-3 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-100">
+                    <p class="font-semibold">Visualizando como aluno</p>
+                    <p class="mt-1 text-xs text-amber-100/80">Admin: {{ $impersonatorName }}</p>
+                    <form method="POST" action="{{ route('admin.impersonation.stop') }}" class="mt-3">
+                        @csrf
+                        <button type="submit" class="w-full rounded-xl border border-amber-200/30 bg-amber-200/10 px-3 py-2 text-sm font-semibold text-amber-50 transition hover:bg-amber-200/20">
+                            Voltar ao admin
+                        </button>
+                    </form>
+                </div>
+            @endif
         </div>
 
         <div class="mt-8 flex-1 space-y-2 px-4">
@@ -94,6 +108,18 @@
 
         <div :class="{'block': open, 'hidden': ! open}" class="hidden border-b border-white/10 bg-slate-950/95 px-4 pb-4 lg:hidden">
         <div class="space-y-2">
+            @if ($impersonatorName)
+                <div class="rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-100">
+                    <p class="font-semibold">Visualizando como aluno</p>
+                    <p class="mt-1 text-xs text-amber-100/80">Admin: {{ $impersonatorName }}</p>
+                    <form method="POST" action="{{ route('admin.impersonation.stop') }}" class="mt-3">
+                        @csrf
+                        <button type="submit" class="w-full rounded-xl border border-amber-200/30 bg-amber-200/10 px-3 py-2 text-sm font-semibold text-amber-50">
+                            Voltar ao admin
+                        </button>
+                    </form>
+                </div>
+            @endif
             <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->canAccessStudentArea())
                 <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
