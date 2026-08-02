@@ -39,6 +39,27 @@ class CourseModulesTable
                     ->sortable(query: fn ($query, $direction) => $query->orderBy('workload_minutes', $direction)),
                 TextColumn::make('tracks_count')->label('Trilhas')->counts('tracks'),
                 TextColumn::make('online_lessons_count')->label('Aulas online')->counts('onlineLessons'),
+                TextColumn::make('media_coverage_label')
+                    ->label('Mídias')
+                    ->badge()
+                    ->color(fn ($record): string => match (true) {
+                        $record->lessons_count === 0 => 'gray',
+                        $record->missing_media_lessons_count === 0 => 'success',
+                        $record->imported_media_lessons_count > 0 => 'warning',
+                        default => 'danger',
+                    }),
+                TextColumn::make('missing_media_lessons_count')
+                    ->label('Sem mídia')
+                    ->badge()
+                    ->color(fn (int $state): string => $state === 0 ? 'success' : 'danger'),
+                TextColumn::make('published_lessons_count')
+                    ->label('Publicadas')
+                    ->badge()
+                    ->color(fn ($record): string => $record->lessons_count > 0 && $record->published_lessons_count === $record->lessons_count ? 'success' : 'warning'),
+                TextColumn::make('missing_media_lessons_label')
+                    ->label('Aulas sem mídia')
+                    ->wrap()
+                    ->toggleable(),
                 TextColumn::make('workload_minutes')->label('Minutos')->sortable(),
                 TextColumn::make('sort_order')->label('Ordem')->sortable(),
                 TextColumn::make('panda_folder_id')->label('Pasta do provedor')->toggleable(),

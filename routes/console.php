@@ -6,6 +6,7 @@ use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\QuestionBank;
 use App\Services\CourseAccessResolver;
+use App\Services\CourseLessonMediaImporter;
 use App\Services\QuestionBankAutoLinker;
 use App\Services\QuestionPdfImporter;
 use App\Support\LessonTitleNormalizer;
@@ -321,3 +322,20 @@ Artisan::command('questions:apply-answer-key {bank_id} {answer_key}', function (
 
     return 0;
 })->purpose('Aplica gabarito em um banco de questões. Ex.: "1:C,2:A,3:D"');
+
+Artisan::command('course-modules:sync-drive-media {courseId} {--folder-id= : ID da pasta do Google Drive com as mídias} {--manifest= : Caminho para JSON com arquivos, útil para testar sem API} {--confidence=0.72 : Confiança mínima do matching aproximado}', function (int $courseId, CourseLessonMediaImporter $importer) {
+    $course = Course::query()->findOrFail($courseId);
+    $confidence = (float) $this->option('confidence');
+
+    $summary = filled($this->option('manifest'))
+        ? $importer->importFromManifest($course, (string) $this->option('manifest'), $confidence)
+        : $importer->importFromDrive($course, $this->option('folder-id') ?: null, $confidence);
+
+    $this->info("Curso {$course->id}: {$course->name}");
+    $this->line("Módulos avaliados: {$summary['modules']}");
+    $this->line("Aulas avaliadas: {$summary['lessons']}");
+    $this->line("Com mídia importada: {$summary['imported']}");
+    $this->line("Sem mídia: {$summary['missing']}");
+
+    return 0;
+})->purpose('Marca aulas dos módulos com mídia importada a partir do Google Drive ou de um manifesto JSON');

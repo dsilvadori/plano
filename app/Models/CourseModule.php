@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 
 class CourseModule extends Model
 {
@@ -62,6 +63,45 @@ class CourseModule extends Model
         'lessons' => 'array',
         'metadata' => 'array',
     ];
+
+    public function setLessonsAttribute(?array $lessons): void
+    {
+        $existingLessonsByName = collect($this->lessons ?? [])
+            ->mapWithKeys(fn (array $lesson): array => [$this->lessonMediaKey((string) ($lesson['name'] ?? '')) => $lesson]);
+
+        $this->attributes['lessons'] = json_encode(
+            collect($lessons ?? [])
+                ->map(function (array $lesson) use ($existingLessonsByName): array {
+                    if (array_key_exists('media_status', $lesson)) {
+                        return $lesson;
+                    }
+
+                    $existingLesson = $existingLessonsByName->get($this->lessonMediaKey((string) ($lesson['name'] ?? '')));
+
+                    if (! $existingLesson) {
+                        return $lesson;
+                    }
+
+                    return array_merge($lesson, collect($existingLesson)
+                        ->only([
+                            'has_media',
+                            'media_status',
+                            'media_source',
+                            'media_file_id',
+                            'media_name',
+                            'media_mime_type',
+                            'media_url',
+                            'media_match_confidence',
+                            'media_matched_at',
+                            'is_published',
+                            'published_at',
+                        ])
+                        ->all());
+                })
+                ->values()
+                ->all()
+        );
+    }
 
     public function course(): BelongsTo
     {
@@ -176,6 +216,88 @@ class CourseModule extends Model
         return count($this->planning_lessons);
     }
 
+    public function getImportedMediaLessonsCountAttribute(): int
+    {
+        if ($this->hasOnlineLessonsForMedia()) {
+            return $this->onlineLessonsForMedia()
+                ->filter(fn (Lesson $lesson): bool => $this->lessonHasMedia($lesson))
+                ->count();
+        }
+
+        return $this->jsonLessonsForMedia()
+            ->filter(fn (array $lesson): bool => ($lesson['has_media'] ?? false) === true || ($lesson['media_status'] ?? null) === 'imported')
+            ->count();
+    }
+
+    public function getMissingMediaLessonsCountAttribute(): int
+    {
+        if ($this->hasOnlineLessonsForMedia()) {
+            return $this->onlineLessonsForMedia()
+                ->filter(fn (Lesson $lesson): bool => ! $this->lessonHasMedia($lesson))
+                ->count();
+        }
+
+        return $this->jsonLessonsForMedia()
+            ->filter(fn (array $lesson): bool => ! (($lesson['has_media'] ?? false) === true || ($lesson['media_status'] ?? null) === 'imported'))
+            ->count();
+    }
+
+    public function getPublishedLessonsCountAttribute(): int
+    {
+        if ($this->hasOnlineLessonsForMedia()) {
+            return $this->onlineLessonsForMedia()
+                ->where('status', 'published')
+                ->count();
+        }
+
+        return $this->jsonLessonsForMedia()
+            ->where('is_published', true)
+            ->count();
+    }
+
+    public function getMediaCoverageLabelAttribute(): string
+    {
+        $total = $this->hasOnlineLessonsForMedia()
+            ? $this->onlineLessonsForMedia()->count()
+            : count($this->lessons ?? []);
+
+        if ($total === 0) {
+            return 'Sem aulas';
+        }
+
+        return "{$this->imported_media_lessons_count}/{$total}";
+    }
+
+    public function getMissingMediaLessonsLabelAttribute(): string
+    {
+        if ($this->hasOnlineLessonsForMedia()) {
+            $missingLessons = $this->onlineLessonsForMedia()
+                ->filter(fn (Lesson $lesson): bool => ! $this->lessonHasMedia($lesson))
+                ->pluck('title')
+                ->filter()
+                ->values();
+        } else {
+            $missingLessons = $this->jsonLessonsForMedia()
+                ->filter(fn (array $lesson): bool => ! (($lesson['has_media'] ?? false) === true || ($lesson['media_status'] ?? null) === 'imported'))
+                ->pluck('name')
+                ->filter()
+                ->values();
+        }
+
+        if ($missingLessons->isEmpty()) {
+            return $this->mediaLessonsTotal() === 0
+                ? 'Sem aulas'
+                : 'Todas com mídia';
+        }
+
+        $visible = $missingLessons->take(3)->implode(', ');
+        $remaining = $missingLessons->count() - 3;
+
+        return $remaining > 0
+            ? "{$visible} + {$remaining} aula(s)"
+            : $visible;
+    }
+
     protected function sortLessonsNaturally(Collection $lessons): Collection
     {
         return $lessons
@@ -189,5 +311,55 @@ class CourseModule extends Model
                 ]);
             })
             ->values();
+    }
+
+    protected function hasOnlineLessonsForMedia(): bool
+    {
+        return $this->relationLoaded('onlineLessons')
+            ? $this->onlineLessons->isNotEmpty()
+            : $this->onlineLessons()->exists();
+    }
+
+    protected function mediaLessonsTotal(): int
+    {
+        return $this->hasOnlineLessonsForMedia()
+            ? $this->onlineLessonsForMedia()->count()
+            : count($this->lessons ?? []);
+    }
+
+    protected function onlineLessonsForMedia(): Collection
+    {
+        return $this->relationLoaded('onlineLessons')
+            ? $this->onlineLessons
+            : $this->onlineLessons()->get();
+    }
+
+    protected function jsonLessonsForMedia(): Collection
+    {
+        return collect($this->lessons ?? []);
+    }
+
+    protected function lessonHasMedia(Lesson $lesson): bool
+    {
+        return filled($lesson->panda_video_id)
+            || filled($lesson->panda_embed_url)
+            || filled($lesson->panda_player_url)
+            || in_array((string) $lesson->source_status, [
+                'media_ready',
+                'published',
+                'panda_processing',
+                'upload_queued',
+                'uploading',
+            ], true);
+    }
+
+    protected function lessonMediaKey(string $name): string
+    {
+        return Str::of($name)
+            ->ascii()
+            ->lower()
+            ->replaceMatches('/[^a-z0-9]+/u', ' ')
+            ->squish()
+            ->value();
     }
 }

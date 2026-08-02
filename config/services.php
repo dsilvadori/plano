@@ -104,6 +104,7 @@ return [
         'download_timeout' => env('GOOGLE_DRIVE_DOWNLOAD_TIMEOUT', 7200),
         'download_retry_attempts' => env('GOOGLE_DRIVE_DOWNLOAD_RETRY_ATTEMPTS', 3),
         'download_retry_delay_seconds' => env('GOOGLE_DRIVE_DOWNLOAD_RETRY_DELAY_SECONDS', 5),
+        'media_folder_id' => env('GOOGLE_DRIVE_MEDIA_FOLDER_ID'),
     ],
 
 ];
