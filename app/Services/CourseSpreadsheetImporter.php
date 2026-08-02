@@ -15,6 +15,7 @@ class CourseSpreadsheetImporter
 {
     public function __construct(
         protected CourseSpreadsheetParser $parser,
+        protected ActiveStudyPlanRefresher $activeStudyPlanRefresher,
     ) {}
 
     public function preview(string $path, ?Course $course = null): array
@@ -72,6 +73,7 @@ class CourseSpreadsheetImporter
             );
 
             $this->importStructure($course, $payload, $payload['study_track_name']);
+            $this->activeStudyPlanRefresher->refreshCourseFromNextWeek($course);
 
             return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
@@ -82,9 +84,10 @@ class CourseSpreadsheetImporter
         $payload = $this->parser->parse($path);
 
         return DB::transaction(function () use ($course, $payload) {
-            $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - ' . $course->name;
+            $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - '.$course->name;
 
             $this->importStructure($course, $payload, $studyTrackName);
+            $this->activeStudyPlanRefresher->refreshCourseFromNextWeek($course);
 
             return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
@@ -286,14 +289,14 @@ class CourseSpreadsheetImporter
     {
         $slug = Str::slug($title);
 
-        return $slug !== '' ? $slug : 'aula-' . $sortOrder;
+        return $slug !== '' ? $slug : 'aula-'.$sortOrder;
     }
 
     protected function trackSlug(string $title, int $sortOrder): string
     {
         $slug = Str::slug($title);
 
-        return $slug !== '' ? $slug : 'trilha-' . $sortOrder;
+        return $slug !== '' ? $slug : 'trilha-'.$sortOrder;
     }
 
     protected function normalizeLessonType(string $type): string

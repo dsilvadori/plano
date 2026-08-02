@@ -7,7 +7,10 @@ use App\Models\CourseModule;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
 use App\Models\User;
+use App\Services\ActiveStudyPlanRefresher;
 use App\Services\StudyPlanGenerator;
+use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -120,8 +123,8 @@ class StudyPlanGeneratorTest extends TestCase
         ]);
 
         $generator = app(StudyPlanGenerator::class);
-        $startDate = now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->addDays(2);
-        $examDate = $startDate->copy()->addWeek()->endOfWeek(\Carbon\CarbonInterface::SUNDAY);
+        $startDate = now()->startOfWeek(CarbonInterface::MONDAY)->addDays(2);
+        $examDate = $startDate->copy()->addWeek()->endOfWeek(CarbonInterface::SUNDAY);
 
         $plan = $generator->generate(
             $student,
@@ -208,8 +211,8 @@ class StudyPlanGeneratorTest extends TestCase
             $student,
             $course,
             null,
-            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->addDay()->toDateString(),
-            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->toDateString(),
+            now()->startOfWeek(CarbonInterface::MONDAY)->addDay()->toDateString(),
+            now()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
             ['monday', 'tuesday'],
             ['monday' => 90, 'tuesday' => 60],
             'balanced',
@@ -598,8 +601,8 @@ class StudyPlanGeneratorTest extends TestCase
             $student,
             $course,
             null,
-            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->addDays(5)->toDateString(),
-            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->toDateString(),
+            now()->startOfWeek(CarbonInterface::MONDAY)->addDays(5)->toDateString(),
+            now()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
             ['monday', 'saturday'],
             ['monday' => 60, 'saturday' => 90],
             'balanced',
@@ -651,7 +654,7 @@ class StudyPlanGeneratorTest extends TestCase
         foreach (range(1, 8) as $index) {
             CourseModule::factory()->create([
                 'course_id' => $course->id,
-                'name' => 'Português - Conteúdo ' . $index,
+                'name' => 'Português - Conteúdo '.$index,
                 'type' => 'basic',
                 'workload_minutes' => 60,
                 'sort_order' => $index,
@@ -662,8 +665,8 @@ class StudyPlanGeneratorTest extends TestCase
             $student,
             $course,
             null,
-            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->addDays(5)->toDateString(),
-            now()->startOfWeek(\Carbon\CarbonInterface::MONDAY)->toDateString(),
+            now()->startOfWeek(CarbonInterface::MONDAY)->addDays(5)->toDateString(),
+            now()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
             ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'],
             ['monday' => 120, 'tuesday' => 120, 'wednesday' => 120, 'thursday' => 120, 'friday' => 120, 'saturday' => 60],
             'balanced',
@@ -993,5 +996,76 @@ class StudyPlanGeneratorTest extends TestCase
         ]);
 
         $this->assertSame(99, $plan->fresh()->progress_percentage);
+    }
+
+    public function test_active_course_updates_refresh_student_plans_from_the_following_week(): void
+    {
+        Carbon::setTestNow('2026-07-21 09:00:00');
+
+        try {
+            $course = Course::factory()->create();
+            $student = User::factory()->create();
+            $student->courses()->attach($course, ['source' => 'manual']);
+
+            CourseModule::factory()->create([
+                'course_id' => $course->id,
+                'name' => 'Português',
+                'type' => 'basic',
+                'workload_minutes' => 240,
+                'sort_order' => 1,
+            ]);
+
+            $plan = app(StudyPlanGenerator::class)->generate(
+                $student,
+                $course,
+                null,
+                '2026-08-31',
+                '2026-07-21',
+                ['monday', 'tuesday'],
+                ['monday' => 120, 'tuesday' => 120],
+                'balanced',
+            );
+
+            $cutoff = Carbon::parse('2026-07-27')->startOfDay();
+            $currentWeekItemIds = $plan->items()
+                ->whereDate('scheduled_date', '<', $cutoff->toDateString())
+                ->pluck('id')
+                ->all();
+            $futureItemIds = $plan->items()
+                ->whereDate('scheduled_date', '>=', $cutoff->toDateString())
+                ->pluck('id')
+                ->all();
+
+            $newModule = CourseModule::factory()->create([
+                'course_id' => $course->id,
+                'name' => 'Direito Administrativo',
+                'type' => 'specific',
+                'workload_minutes' => 120,
+                'sort_order' => 2,
+            ]);
+
+            $refreshed = app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($course);
+
+            $this->assertSame(1, $refreshed);
+            $this->assertNotEmpty($currentWeekItemIds);
+            $this->assertNotEmpty($futureItemIds);
+
+            foreach ($currentWeekItemIds as $itemId) {
+                $this->assertDatabaseHas('study_plan_items', ['id' => $itemId]);
+            }
+
+            foreach ($futureItemIds as $itemId) {
+                $this->assertDatabaseMissing('study_plan_items', ['id' => $itemId]);
+            }
+
+            $this->assertTrue(
+                $plan->items()
+                    ->where('course_module_id', $newModule->id)
+                    ->whereDate('scheduled_date', '>=', $cutoff->toDateString())
+                    ->exists(),
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 }

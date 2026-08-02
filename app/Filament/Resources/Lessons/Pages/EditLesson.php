@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Lessons\Pages;
 
 use App\Filament\Resources\Lessons\LessonResource;
+use App\Services\ActiveStudyPlanRefresher;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
 use Filament\Actions\Action;
@@ -14,6 +15,13 @@ use Throwable;
 class EditLesson extends EditRecord
 {
     protected static string $resource = LessonResource::class;
+
+    protected array $courseIdsPendingPlanRefresh = [];
+
+    protected function afterSave(): void
+    {
+        app(ActiveStudyPlanRefresher::class)->refreshCoursesForLesson($this->record);
+    }
 
     protected function getHeaderActions(): array
     {
@@ -62,7 +70,11 @@ class EditLesson extends EditRecord
                             ->send();
                     }
                 }),
-            DeleteAction::make(),
+            DeleteAction::make()
+                ->before(function (): void {
+                    $this->courseIdsPendingPlanRefresh = app(ActiveStudyPlanRefresher::class)->courseIdsForLesson($this->record);
+                })
+                ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCoursesByIds($this->courseIdsPendingPlanRefresh)),
         ];
     }
 }

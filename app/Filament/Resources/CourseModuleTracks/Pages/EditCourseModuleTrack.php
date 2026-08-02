@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\CourseModuleTracks\Pages;
 
 use App\Filament\Resources\CourseModuleTracks\CourseModuleTrackResource;
+use App\Services\ActiveStudyPlanRefresher;
 use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
 use Illuminate\Support\Arr;
@@ -10,6 +11,13 @@ use Illuminate\Support\Arr;
 class EditCourseModuleTrack extends EditRecord
 {
     protected static string $resource = CourseModuleTrackResource::class;
+
+    protected array $courseIdsPendingPlanRefresh = [];
+
+    protected function afterSave(): void
+    {
+        app(ActiveStudyPlanRefresher::class)->refreshCoursesForTrack($this->record);
+    }
 
     protected function mutateFormDataBeforeSave(array $data): array
     {
@@ -25,7 +33,11 @@ class EditCourseModuleTrack extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
-            DeleteAction::make(),
+            DeleteAction::make()
+                ->before(function (): void {
+                    $this->courseIdsPendingPlanRefresh = app(ActiveStudyPlanRefresher::class)->courseIdsForTrack($this->record);
+                })
+                ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCoursesByIds($this->courseIdsPendingPlanRefresh)),
         ];
     }
 

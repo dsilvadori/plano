@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Courses\RelationManagers;
 
+use App\Services\ActiveStudyPlanRefresher;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
@@ -57,14 +58,18 @@ class StudyTracksRelationManager extends RelationManager
                 CreateAction::make()
                     ->mutateDataUsing(fn (array $data): array => $data + [
                         'course_id' => $this->getOwnerRecord()->getKey(),
-                    ]),
+                    ])
+                    ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),
             ])
             ->recordActions([
-                EditAction::make(),
-                DeleteAction::make(),
+                EditAction::make()
+                    ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),
+                DeleteAction::make()
+                    ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),
             ])
             ->toolbarActions([
-                DeleteBulkAction::make(),
+                DeleteBulkAction::make()
+                    ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),
             ]);
     }
 }

@@ -3,12 +3,18 @@
 namespace App\Filament\Resources\CourseModuleTracks\Pages;
 
 use App\Filament\Resources\CourseModuleTracks\CourseModuleTrackResource;
+use App\Services\ActiveStudyPlanRefresher;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Support\Arr;
 
 class CreateCourseModuleTrack extends CreateRecord
 {
     protected static string $resource = CourseModuleTrackResource::class;
+
+    protected function afterCreate(): void
+    {
+        app(ActiveStudyPlanRefresher::class)->refreshCoursesForTrack($this->record);
+    }
 
     protected function mutateFormDataBeforeCreate(array $data): array
     {

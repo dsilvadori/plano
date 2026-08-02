@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\CourseModules\Pages;
 
 use App\Filament\Resources\CourseModules\CourseModuleResource;
+use App\Services\ActiveStudyPlanRefresher;
 use App\Services\PandaCourseImporter;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -15,6 +16,13 @@ use Throwable;
 class EditCourseModule extends EditRecord
 {
     protected static string $resource = CourseModuleResource::class;
+
+    protected array $courseIdsPendingPlanRefresh = [];
+
+    protected function afterSave(): void
+    {
+        app(ActiveStudyPlanRefresher::class)->refreshCoursesForModule($this->record);
+    }
 
     protected function getHeaderActions(): array
     {
@@ -58,6 +66,7 @@ class EditCourseModule extends EditRecord
                             (string) ($data['lesson_status'] ?? 'draft'),
                             (string) ($data['module_type'] ?? $this->record->type),
                         );
+                        app(ActiveStudyPlanRefresher::class)->refreshCoursesForModule($this->record);
 
                         Notification::make()
                             ->title('Aulas importadas da integração de vídeo.')
@@ -72,7 +81,11 @@ class EditCourseModule extends EditRecord
                             ->send();
                     }
                 }),
-            DeleteAction::make(),
+            DeleteAction::make()
+                ->before(function (): void {
+                    $this->courseIdsPendingPlanRefresh = app(ActiveStudyPlanRefresher::class)->courseIdsForModule($this->record);
+                })
+                ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCoursesByIds($this->courseIdsPendingPlanRefresh)),
         ];
     }
 }
