@@ -51,7 +51,7 @@ class UsersTable
                 Action::make('impersonate')
                     ->label('Entrar como usuário')
                     ->icon('heroicon-o-user-circle')
-                    ->color('warning')
+                    ->color('primary')
                     ->requiresConfirmation()
                     ->modalHeading('Entrar como este usuário?')
                     ->modalDescription('Você será levado para a área do aluno usando esta conta. Uma faixa ficará disponível para voltar ao admin.')
@@ -88,6 +88,7 @@ class UsersTable
                     }),
                 Action::make('sendReset')
                     ->label('Reenviar acesso')
+                    ->color('gray')
                     ->action(function ($record) {
                         $token = Password::broker()->createToken($record);
                         $record->sendSetPasswordNotification($token);

@@ -30,7 +30,7 @@ class ListUsers extends ListRecords
             Action::make('openStudentArea')
                 ->label('Visualizar área do aluno')
                 ->icon('heroicon-o-eye')
-                ->color('warning')
+                ->color('primary')
                 ->button()
                 ->openUrlInNewTab()
                 ->url(route('dashboard')),
