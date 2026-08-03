@@ -7,6 +7,7 @@ use App\Models\Lesson;
 use App\Models\QuestionBank;
 use App\Services\CourseAccessResolver;
 use App\Services\CourseLessonMediaImporter;
+use App\Services\LessonCourseLinker;
 use App\Services\QuestionBankAutoLinker;
 use App\Services\QuestionPdfImporter;
 use App\Support\LessonTitleNormalizer;
@@ -280,6 +281,35 @@ Artisan::command('lessons:normalize-titles {--dry-run}', function () {
 
     return 0;
 })->purpose('Normaliza nomes e numeração das aulas importadas');
+
+Artisan::command('lessons:sync-course-links {courseId?} {--dry-run}', function (LessonCourseLinker $linker) {
+    $courseId = $this->argument('courseId');
+    $course = filled($courseId) ? Course::query()->findOrFail((int) $courseId) : null;
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+        $stats = $linker->sync($course);
+        DB::rollBack();
+
+        $this->info('Simulação concluída. Nada foi gravado.');
+    } else {
+        $stats = $linker->sync($course);
+
+        $this->info('Sincronização concluída.');
+    }
+
+    if ($course instanceof Course) {
+        $this->line("Curso {$course->id}: {$course->name}");
+    }
+
+    $this->line("Trilhas avaliadas: {$stats['tracks']}");
+    $this->line("Aulas vinculadas: {$stats['linked']}");
+    $this->line("Placeholders substituídos: {$stats['replaced']}");
+    $this->line("Aulas publicadas: {$stats['published']}");
+    $this->line("Planos ativos sincronizados: {$stats['plans_synced']}");
+
+    return 0;
+})->purpose('Substitui aulas sem mídia por aulas prontas correspondentes no curso');
 
 Artisan::command('questions:import-pdf {path} {--title=} {--answer-key=}', function (QuestionPdfImporter $importer) {
     $path = (string) $this->argument('path');

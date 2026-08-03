@@ -13,7 +13,7 @@ class LessonTitleNormalizer
         $title = self::titleCase($title);
         $title = self::applyCorrections($title);
 
-        return str_pad((string) $position, 2, '0', STR_PAD_LEFT) . ' - ' . $title;
+        return str_pad((string) $position, 2, '0', STR_PAD_LEFT).' - '.$title;
     }
 
     public static function normalizePreservingNumber(string $title, int $fallbackPosition): string
@@ -23,7 +23,7 @@ class LessonTitleNormalizer
 
     public static function matchKey(string $title): string
     {
-        return Str::of(self::cleanTitle($title))
+        return Str::of(self::expandAliases(self::cleanTitle($title)))
             ->lower()
             ->ascii()
             ->replaceMatches('/\baula\b/u', ' ')
@@ -110,6 +110,13 @@ class LessonTitleNormalizer
             ->replaceMatches('/\b(Raciocínio\s+Lógico)\s+\d{1,3}\s*-\s*/iu', '$1 - ')
             ->replaceMatches('/\s+/', ' ')
             ->trim(" \t\n\r\0\x0B-")
+            ->value();
+    }
+
+    protected static function expandAliases(string $title): string
+    {
+        return Str::of($title)
+            ->replaceMatches('/\bL\.?\s*O\.?\s+Santos\b/iu', 'Lei Orgânica Santos')
             ->value();
     }
 

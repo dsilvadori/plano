@@ -62,7 +62,7 @@ class LessonCourseLinker
                                 continue;
                             }
 
-                            $candidate = $this->findReadyCandidate($readyLessons, $lesson, $module, $track);
+                            $candidate = $this->findReadyCandidate($readyLessons, $lesson, $module, $track, $sortOrder);
 
                             if (! $candidate instanceof Lesson) {
                                 continue;
@@ -145,13 +145,13 @@ class LessonCourseLinker
             ->get();
     }
 
-    protected function findReadyCandidate(Collection $readyLessons, Lesson $placeholder, CourseModule $module, CourseModuleTrack $track): ?Lesson
+    protected function findReadyCandidate(Collection $readyLessons, Lesson $placeholder, CourseModule $module, CourseModuleTrack $track, ?int $sortOrder = null): ?Lesson
     {
         return $readyLessons
             ->where('id', '!=', $placeholder->id)
             ->map(fn (Lesson $lesson): array => [
                 'lesson' => $lesson,
-                'score' => $this->lessonMatchScore($lesson, $placeholder->title, $module, $track),
+                'score' => $this->lessonMatchScore($lesson, $placeholder->title, $module, $track, $sortOrder),
                 'priority' => $this->lessonMediaPriority($lesson),
             ])
             ->filter(fn (array $candidate): bool => $candidate['score'] >= 72)
@@ -159,7 +159,7 @@ class LessonCourseLinker
             ->first()['lesson'] ?? null;
     }
 
-    protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, CourseModuleTrack $track): float
+    protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, CourseModuleTrack $track, ?int $sortOrder = null): float
     {
         $score = LessonTitleNormalizer::matchScore($lesson->title, $title);
 
@@ -169,11 +169,15 @@ class LessonCourseLinker
 
         $lessonKey = LessonTitleNormalizer::matchKey($lesson->title);
         $titleKey = LessonTitleNormalizer::matchKey($title);
-        $lessonNumber = LessonTitleNormalizer::leadingNumber($lesson->title);
-        $titleNumber = LessonTitleNormalizer::leadingNumber($title);
+        $lessonNumber = $this->contextualLessonNumber($lesson->title);
+        $titleNumber = $this->contextualLessonNumber($title) ?? $sortOrder;
 
         if ($lessonNumber && $titleNumber && $lessonNumber === $titleNumber) {
-            $score += 8;
+            $score += 20;
+        }
+
+        if ($lessonNumber && $titleNumber && $lessonNumber !== $titleNumber) {
+            return 0.0;
         }
 
         if ($this->romanSuffix($lessonKey) !== $this->romanSuffix($titleKey)) {
@@ -273,6 +277,18 @@ class LessonCourseLinker
         return in_array($last, ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x'], true)
             ? $last
             : null;
+    }
+
+    protected function contextualLessonNumber(string $title): ?int
+    {
+        $key = LessonTitleNormalizer::matchKey($title);
+        $leadingNumber = LessonTitleNormalizer::leadingNumber($title);
+
+        if (preg_match('/\blei\s+organica\s+santos\s+0*(\d{1,3})\b/u', $key, $matches) === 1) {
+            return max(1, (int) $matches[1]);
+        }
+
+        return $leadingNumber;
     }
 
     protected function pathMatchesContext(string $path, string $context): bool
