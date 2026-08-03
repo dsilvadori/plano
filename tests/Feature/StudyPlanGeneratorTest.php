@@ -681,65 +681,71 @@ class StudyPlanGeneratorTest extends TestCase
 
     public function test_generator_keeps_questions_and_reviews_at_end_of_day_while_theory_remains(): void
     {
-        $course = Course::factory()->create();
-        $student = User::factory()->create();
-        $student->courses()->attach($course, ['source' => 'manual']);
+        Carbon::setTestNow('2026-07-20 09:00:00');
 
-        CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'name' => 'Português - Classes de Palavras',
-            'type' => 'basic',
-            'workload_minutes' => 240,
-            'sort_order' => 1,
-        ]);
+        try {
+            $course = Course::factory()->create();
+            $student = User::factory()->create();
+            $student->courses()->attach($course, ['source' => 'manual']);
 
-        CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'name' => 'Informática - Windows',
-            'type' => 'complementary',
-            'workload_minutes' => 240,
-            'sort_order' => 2,
-        ]);
+            CourseModule::factory()->create([
+                'course_id' => $course->id,
+                'name' => 'Português - Classes de Palavras',
+                'type' => 'basic',
+                'workload_minutes' => 240,
+                'sort_order' => 1,
+            ]);
 
-        CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'name' => 'Caderno de Questões',
-            'type' => 'questions',
-            'workload_minutes' => 600,
-            'sort_order' => 3,
-        ]);
+            CourseModule::factory()->create([
+                'course_id' => $course->id,
+                'name' => 'Informática - Windows',
+                'type' => 'complementary',
+                'workload_minutes' => 240,
+                'sort_order' => 2,
+            ]);
 
-        CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'name' => 'Revisão Geral',
-            'type' => 'review',
-            'workload_minutes' => 600,
-            'sort_order' => 4,
-        ]);
+            CourseModule::factory()->create([
+                'course_id' => $course->id,
+                'name' => 'Caderno de Questões',
+                'type' => 'questions',
+                'workload_minutes' => 600,
+                'sort_order' => 3,
+            ]);
 
-        $plan = app(StudyPlanGenerator::class)->generate(
-            $student,
-            $course,
-            null,
-            now()->addWeek()->toDateString(),
-            now()->next('monday')->toDateString(),
-            ['monday', 'tuesday', 'wednesday'],
-            ['monday' => 150, 'tuesday' => 150, 'wednesday' => 150],
-            'balanced',
-        );
+            CourseModule::factory()->create([
+                'course_id' => $course->id,
+                'name' => 'Revisão Geral',
+                'type' => 'review',
+                'workload_minutes' => 600,
+                'sort_order' => 4,
+            ]);
 
-        $theoryDays = $plan->items()
-            ->orderBy('sort_order')
-            ->get()
-            ->groupBy('day_of_week')
-            ->map(fn ($items) => $items->takeWhile(fn ($item) => ! in_array($item->type, ['questions', 'review'], true))->pluck('type')->all());
+            $plan = app(StudyPlanGenerator::class)->generate(
+                $student,
+                $course,
+                null,
+                '2026-08-02',
+                '2026-07-20',
+                ['monday', 'tuesday', 'wednesday'],
+                ['monday' => 150, 'tuesday' => 150, 'wednesday' => 150],
+                'balanced',
+            );
 
-        $this->assertContains('basic', $theoryDays['monday']);
-        $this->assertContains('complementary', $theoryDays['monday']);
-        $this->assertContains('basic', $theoryDays['tuesday']);
-        $this->assertContains('complementary', $theoryDays['tuesday']);
-        $this->assertTrue($plan->items()->where('type', 'questions')->exists());
-        $this->assertTrue($plan->items()->where('type', 'review')->exists());
+            $theoryDays = $plan->items()
+                ->orderBy('sort_order')
+                ->get()
+                ->groupBy('day_of_week')
+                ->map(fn ($items) => $items->takeWhile(fn ($item) => ! in_array($item->type, ['questions', 'review'], true))->pluck('type')->all());
+
+            $this->assertContains('basic', $theoryDays['monday']);
+            $this->assertContains('complementary', $theoryDays['monday']);
+            $this->assertContains('basic', $theoryDays['tuesday']);
+            $this->assertContains('complementary', $theoryDays['tuesday']);
+            $this->assertTrue($plan->items()->where('type', 'questions')->exists());
+            $this->assertTrue($plan->items()->where('type', 'review')->exists());
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_generator_skips_intro_module_and_uses_generic_review_when_needed(): void

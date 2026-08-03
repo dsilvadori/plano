@@ -3,8 +3,10 @@
 namespace App\Filament\Resources\Courses\Pages;
 
 use App\Filament\Resources\Courses\CourseResource;
+use App\Support\FilamentThumbnailUpload;
 use Filament\Resources\Pages\CreateRecord;
-use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class CreateCourse extends CreateRecord
 {
@@ -12,33 +14,50 @@ class CreateCourse extends CreateRecord
 
     protected function mutateFormDataBeforeCreate(array $data): array
     {
-        $data['thumbnail_path'] = $this->resolveUploadedPath($data['thumbnail_path'] ?? null, 'course-thumbnails');
+        $previousPath = $data['thumbnail_path'] ?? null;
+        $uploadState = $data['thumbnail_upload'] ?? null;
+
+        try {
+            $data['thumbnail_path'] = $this->resolveUploadedPath($uploadState, $previousPath, 'course-thumbnails');
+        } catch (Throwable $exception) {
+            $this->logThumbnailDebug('create.thumbnail_failed', [
+                'course_name' => $data['name'] ?? null,
+                'previous_path' => $previousPath,
+                'error' => $exception->getMessage(),
+            ]);
+
+            throw $exception;
+        }
+
+        unset($data['thumbnail_upload']);
+
+        $this->logThumbnailDebug('create.thumbnail_resolved', [
+            'course_name' => $data['name'] ?? null,
+            'previous_path' => $previousPath,
+            'resolved_path' => $data['thumbnail_path'] ?? null,
+            'has_upload_state' => filled($uploadState),
+        ]);
 
         return $data;
     }
 
-    protected function resolveUploadedPath(mixed $state, ?string $directory = null): ?string
+    protected function resolveUploadedPath(mixed $state, mixed $fallback = null, ?string $directory = null): ?string
     {
-        if (is_string($state) && $state !== '') {
-            return $state;
+        $path = $directory ? FilamentThumbnailUpload::store($state, $directory) : null;
+
+        if ($path !== null) {
+            return $path;
         }
 
-        if ($directory && is_object($state) && method_exists($state, 'storePublicly')) {
-            return $state->storePublicly($directory, ['disk' => 'public']) ?: null;
+        return is_string($fallback) && $fallback !== '' ? $fallback : null;
+    }
+
+    protected function logThumbnailDebug(string $event, array $context = []): void
+    {
+        try {
+            Log::channel('course_debug')->info($event, $context);
+        } catch (Throwable) {
+            //
         }
-
-        if (is_array($state)) {
-            $first = Arr::first($state, fn ($value) => (is_string($value) && $value !== '') || (is_object($value) && method_exists($value, 'storePublicly')));
-
-            if (is_string($first)) {
-                return $first;
-            }
-
-            if ($directory && is_object($first) && method_exists($first, 'storePublicly')) {
-                return $first->storePublicly($directory, ['disk' => 'public']) ?: null;
-            }
-        }
-
-        return null;
     }
 }
