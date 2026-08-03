@@ -149,6 +149,55 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('Comprar acesso');
     }
 
+    public function test_course_page_shows_published_lessons_from_tracks_when_only_module_is_attached_to_course(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso Português',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Substantivo',
+            'status' => 'published',
+            'source_status' => 'media_ready',
+            'panda_embed_url' => 'https://player.test/substantivo',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->attach($course->id, ['sort_order' => 1]);
+        $track->lessons()->attach($lesson->id, ['sort_order' => 1]);
+        $lesson->modules()->attach($module->id, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Português')
+            ->assertSee('Classe de palavras')
+            ->assertSee('01 - Substantivo');
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('01 - Substantivo')
+            ->assertSee('https://player.test/substantivo', false);
+    }
+
     public function test_course_catalog_uses_uploaded_thumbnail_before_external_url(): void
     {
         $student = User::factory()->create(['role' => 'student']);
@@ -306,7 +355,7 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertDontSee('Assistir aula');
     }
 
-    public function test_courses_only_show_tracks_explicitly_linked_to_them(): void
+    public function test_courses_show_published_tracks_from_attached_modules(): void
     {
         $student = User::factory()->create(['role' => 'student']);
         $firstCourse = Course::factory()->create([
@@ -365,8 +414,8 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertOk()
             ->assertSee('Classe de palavras')
             ->assertSee('Aula da primeira trilha')
-            ->assertDontSee('Crase')
-            ->assertDontSee('Aula da segunda trilha');
+            ->assertSee('Crase')
+            ->assertSee('Aula da segunda trilha');
 
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$firstCourse->slug, $firstLesson]))
@@ -374,7 +423,7 @@ class CourseCatalogFoundationTest extends TestCase
 
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$firstCourse->slug, $secondLesson]))
-            ->assertNotFound();
+            ->assertOk();
     }
 
     public function test_deleting_course_module_or_track_preserves_lessons(): void
@@ -531,6 +580,8 @@ class CourseCatalogFoundationTest extends TestCase
             'duration_seconds' => 1800,
             'status' => 'published',
         ]);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
 
         $student->courses()->attach($course, ['source' => 'manual']);
 
