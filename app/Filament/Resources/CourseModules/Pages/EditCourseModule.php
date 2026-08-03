@@ -55,7 +55,7 @@ class EditCourseModule extends EditRecord
                             'draft' => 'Rascunho',
                             'published' => 'Publicado',
                         ])
-                        ->default('draft')
+                        ->default('published')
                         ->required(),
                 ])
                 ->action(function (array $data, PandaCourseImporter $importer): void {

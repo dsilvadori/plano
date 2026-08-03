@@ -788,6 +788,38 @@ class PandaImportTest extends TestCase
         $this->assertTrue($secondCourse->modules()->first()->onlineLessons()->whereKey($lesson->id)->exists());
     }
 
+    public function test_panda_import_publishes_ready_media_even_when_initial_status_is_draft(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'ready-video',
+                        'title' => 'Aula Pronta',
+                        'duration_seconds' => 600,
+                        'embed_url' => 'https://player.test/ready-video',
+                        'status' => 'CONVERTED',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $course = Course::factory()->create();
+
+        app(PandaCourseImporter::class)->importFolder($course, 'folder-ready', 'Módulo Pronto', 'draft');
+
+        $lesson = Lesson::query()->where('panda_video_id', 'ready-video')->firstOrFail();
+
+        $this->assertSame('published', $lesson->status);
+        $this->assertSame('media_ready', $lesson->source_status);
+    }
+
     public function test_panda_import_orders_track_lessons_by_numeric_title_prefix(): void
     {
         config([

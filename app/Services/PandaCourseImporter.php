@@ -78,7 +78,7 @@ class PandaCourseImporter
                         'thumbnail_url' => $video['thumbnail_url'],
                         'duration_seconds' => $video['duration_seconds'],
                         'sort_order' => $index + 1,
-                        'status' => $this->normalizeLessonStatus($lessonStatus),
+                        'status' => $this->statusForReadyPandaLesson($lessonStatus),
                         'panda_video_id' => $video['panda_video_id'],
                         'panda_status' => $video['panda_status'],
                         'panda_embed_url' => $video['panda_embed_url'],
@@ -183,7 +183,7 @@ class PandaCourseImporter
                         'thumbnail_url' => $video['thumbnail_url'],
                         'duration_seconds' => $video['duration_seconds'],
                         'sort_order' => $index + 1,
-                        'status' => $this->normalizeLessonStatus($lessonStatus),
+                        'status' => $this->statusForReadyPandaLesson($lessonStatus),
                         'panda_video_id' => $video['panda_video_id'],
                         'panda_status' => $video['panda_status'],
                         'panda_embed_url' => $video['panda_embed_url'],
@@ -294,7 +294,7 @@ class PandaCourseImporter
                         'thumbnail_url' => $video['thumbnail_url'],
                         'duration_seconds' => $video['duration_seconds'],
                         'sort_order' => $sortOrder,
-                        'status' => $this->normalizeLessonStatus($lessonStatus),
+                        'status' => $this->statusForReadyPandaLesson($lessonStatus),
                         'panda_video_id' => $video['panda_video_id'],
                         'panda_status' => $video['panda_status'],
                         'panda_embed_url' => $video['panda_embed_url'],
@@ -471,6 +471,13 @@ class PandaCourseImporter
     protected function normalizeLessonStatus(string $status): string
     {
         return in_array($status, ['draft', 'published', 'archived'], true) ? $status : 'draft';
+    }
+
+    protected function statusForReadyPandaLesson(string $status): string
+    {
+        $normalizedStatus = $this->normalizeLessonStatus($status);
+
+        return $normalizedStatus === 'archived' ? 'archived' : 'published';
     }
 
     protected function normalizeModuleType(string $type): string
