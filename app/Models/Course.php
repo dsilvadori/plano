@@ -138,8 +138,7 @@ class Course extends Model
     {
         return Lesson::query()
             ->where(function (Builder $query): void {
-                $query->where('course_id', $this->id)
-                    ->orWhereHas('modules.courses', fn (Builder $query) => $query->whereKey($this->id))
+                $query->whereHas('modules.courses', fn (Builder $query) => $query->whereKey($this->id))
                     ->orWhereHas('tracks.courses', fn (Builder $query) => $query->whereKey($this->id));
             })
             ->with(['module', 'track', 'modules', 'tracks'])

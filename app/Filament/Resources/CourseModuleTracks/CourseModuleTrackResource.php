@@ -5,7 +5,6 @@ namespace App\Filament\Resources\CourseModuleTracks;
 use App\Filament\Resources\CourseModuleTracks\Pages\CreateCourseModuleTrack;
 use App\Filament\Resources\CourseModuleTracks\Pages\EditCourseModuleTrack;
 use App\Filament\Resources\CourseModuleTracks\Pages\ListCourseModuleTracks;
-use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Support\FilamentThumbnailUpload;
@@ -79,7 +78,7 @@ class CourseModuleTrackResource extends Resource
                     $path = (string) ($get('thumbnail_path') ?: $record?->thumbnail_path ?: '');
                     $url = ThumbnailUrl::fromPathOrUrl($path, (string) ($get('thumbnail_url') ?: $record?->thumbnail_url ?: ''));
 
-                    return new HtmlString('<img src="' . e($url) . '" alt="" style="height: 120px; max-width: 240px; object-fit: cover; border-radius: 8px;">');
+                    return new HtmlString('<img src="'.e($url).'" alt="" style="height: 120px; max-width: 240px; object-fit: cover; border-radius: 8px;">');
                 })
                 ->columnSpanFull(),
             FileUpload::make('thumbnail_upload')
@@ -121,14 +120,6 @@ class CourseModuleTrackResource extends Resource
                 ->label('Google Docs')
                 ->url()
                 ->maxLength(2048),
-            Select::make('courses')
-                ->label('Cursos que usam esta trilha')
-                ->relationship('courses', 'name')
-                ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
-                ->multiple()
-                ->searchable()
-                ->preload()
-                ->columnSpanFull(),
         ]);
     }
 

@@ -113,9 +113,9 @@ class GoogleDriveTrackImporter
                     ->first()
                     ?? $this->resolveReusableDriveLesson($course, $module, $track, $title, $slug, $file)
                     ?? new Lesson([
-                        'course_id' => $course?->id,
-                        'course_module_id' => $module->id,
-                        'course_module_track_id' => $track->id,
+                        'course_id' => null,
+                        'course_module_id' => null,
+                        'course_module_track_id' => null,
                         'slug' => $slug,
                     ]);
                 $lessonWasCreated = ! $lesson->exists;
@@ -171,9 +171,9 @@ class GoogleDriveTrackImporter
                 }
 
                 $lesson->fill([
-                    'course_id' => $lesson->exists ? $lesson->course_id : $course?->id,
-                    'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
-                    'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track->id) : $track->id,
+                    'course_id' => null,
+                    'course_module_id' => null,
+                    'course_module_track_id' => null,
                     'title' => $title,
                     'slug' => $lesson->exists ? $lesson->slug : $slug,
                     'description' => 'Aula adicionada à plataforma.',
@@ -323,13 +323,13 @@ class GoogleDriveTrackImporter
             $lesson = $this->lessonQueryForScope($course, $module, $track)
                 ->where('slug', $slug)
                 ->first()
-                ?? $this->resolveReusableDriveLesson($course, $module, $track, $title, $slug, $file)
-                ?? new Lesson([
-                    'course_id' => $course?->id,
-                    'course_module_id' => $module?->id,
-                    'course_module_track_id' => $track?->id,
-                    'slug' => $slug,
-                ]);
+            ?? $this->resolveReusableDriveLesson($course, $module, $track, $title, $slug, $file)
+            ?? new Lesson([
+                'course_id' => null,
+                'course_module_id' => null,
+                'course_module_track_id' => null,
+                'slug' => $slug,
+            ]);
             $lessonWasCreated = ! $lesson->exists;
             $type = $this->lessonTypeForMimeType((string) ($file['mimeType'] ?? ''));
             $pandaVideo = null;
@@ -387,9 +387,9 @@ class GoogleDriveTrackImporter
             }
 
             $lesson->fill([
-                'course_id' => $lesson->exists ? $lesson->course_id : $course?->id,
-                'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module?->id,
-                'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track?->id) : $track?->id,
+                'course_id' => null,
+                'course_module_id' => null,
+                'course_module_track_id' => null,
                 'title' => $title,
                 'slug' => $lesson->exists ? $lesson->slug : $slug,
                 'description' => 'Aula adicionada à plataforma.',
@@ -594,9 +594,13 @@ class GoogleDriveTrackImporter
     protected function lessonQueryForScope(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track): Builder
     {
         return Lesson::query()
-            ->when($course, fn ($query) => $query->where('course_id', $course->id), fn ($query) => $query->whereNull('course_id'))
-            ->when($module, fn ($query) => $query->where('course_module_id', $module->id), fn ($query) => $query->whereNull('course_module_id'))
-            ->when($track, fn ($query) => $query->where('course_module_track_id', $track->id), fn ($query) => $query->whereNull('course_module_track_id'));
+            ->when($module, fn ($query) => $query->where(fn ($query) => $query
+                ->where('course_module_id', $module->id)
+                ->orWhereHas('modules', fn ($query) => $query->whereKey($module->id))))
+            ->when($track, fn ($query) => $query->where(fn ($query) => $query
+                ->where('course_module_track_id', $track->id)
+                ->orWhereHas('tracks', fn ($query) => $query->whereKey($track->id))))
+            ->when(! $module && ! $track, fn ($query) => $query->whereNull('course_module_id')->whereNull('course_module_track_id'));
     }
 
     protected function resolveReusableDriveLesson(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $title, string $slug, array $file): ?Lesson

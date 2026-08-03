@@ -4,7 +4,6 @@ namespace App\Filament\Resources\Lessons\Pages;
 
 use App\Filament\Resources\Lessons\LessonResource;
 use App\Jobs\ImportGoogleDriveLessons;
-use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\GoogleDriveImportRun;
@@ -36,26 +35,12 @@ class ListLessons extends ListRecords
                 ->label('Importar Panda')
                 ->icon('heroicon-o-video-camera')
                 ->modalHeading('Importar aulas do Panda')
-                ->modalDescription('Informe uma pasta do Panda. Os vídeos serão criados ou atualizados como aulas, com curso, módulo e trilha opcionais.')
+                ->modalDescription('Informe uma pasta do Panda. Os vídeos serão criados ou atualizados como aulas reutilizáveis, com módulo e trilha opcionais.')
                 ->form([
-                    Select::make('course_id')
-                        ->label('Curso')
-                        ->options(fn (): array => Course::query()
-                            ->orderBy('name')
-                            ->pluck('name', 'id')
-                            ->all())
-                        ->searchable()
-                        ->preload()
-                        ->live()
-                        ->nullable()
-                        ->afterStateUpdated(function (Set $set): void {
-                            $set('course_module_id', null);
-                            $set('course_module_track_id', null);
-                        }),
                     Select::make('course_module_id')
                         ->label('Módulo')
-                        ->options(fn (Get $get): array => $this->moduleOptions($get('course_id')))
-                        ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->moduleSearchResults($get('course_id'), $search))
+                        ->options(fn (): array => $this->moduleOptions(null))
+                        ->getSearchResultsUsing(fn (?string $search): array => $this->moduleSearchResults(null, $search))
                         ->getOptionLabelUsing(fn ($value): ?string => $this->moduleOptionLabel($value))
                         ->searchable()
                         ->preload()
@@ -87,9 +72,7 @@ class ListLessons extends ListRecords
                 ])
                 ->action(function (array $data, PandaCourseImporter $importer): void {
                     try {
-                        $course = filled($data['course_id'] ?? null)
-                            ? Course::query()->findOrFail((int) $data['course_id'])
-                            : null;
+                        $course = null;
                         [$module, $track] = $this->resolveImportStructure($data, $course);
 
                         $run = $importer->importLessons(
@@ -117,26 +100,12 @@ class ListLessons extends ListRecords
                 ->label('Importar Drive')
                 ->icon('heroicon-o-folder')
                 ->modalHeading('Importar aulas do Google Drive')
-                ->modalDescription('Informe uma pasta do Drive. Os arquivos dentro dela serão criados ou atualizados como aulas, com curso, módulo e trilha opcionais.')
+                ->modalDescription('Informe uma pasta do Drive. Os arquivos dentro dela serão criados ou atualizados como aulas reutilizáveis, com módulo e trilha opcionais.')
                 ->form([
-                    Select::make('course_id')
-                        ->label('Curso')
-                        ->options(fn (): array => Course::query()
-                            ->orderBy('name')
-                            ->pluck('name', 'id')
-                            ->all())
-                        ->searchable()
-                        ->preload()
-                        ->live()
-                        ->nullable()
-                        ->afterStateUpdated(function (Set $set): void {
-                            $set('course_module_id', null);
-                            $set('course_module_track_id', null);
-                        }),
                     Select::make('course_module_id')
                         ->label('Módulo')
-                        ->options(fn (Get $get): array => $this->moduleOptions($get('course_id')))
-                        ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->moduleSearchResults($get('course_id'), $search))
+                        ->options(fn (): array => $this->moduleOptions(null))
+                        ->getSearchResultsUsing(fn (?string $search): array => $this->moduleSearchResults(null, $search))
                         ->getOptionLabelUsing(fn ($value): ?string => $this->moduleOptionLabel($value))
                         ->searchable()
                         ->preload()
@@ -181,8 +150,8 @@ class ListLessons extends ListRecords
                 ])
                 ->action(function (array $data): void {
                     try {
-                        $courseId = filled($data['course_id'] ?? null) ? (int) $data['course_id'] : null;
-                        $course = $courseId ? Course::query()->findOrFail($courseId) : null;
+                        $courseId = null;
+                        $course = null;
                         [$module, $track] = $this->resolveImportStructure($data, $course);
                         $moduleId = $module?->id;
                         $trackId = $track?->id;
@@ -335,7 +304,7 @@ class ListLessons extends ListRecords
             $moduleName = $this->newModuleName($moduleValue);
 
             $module = CourseModule::query()->create([
-                'course_id' => $course?->id,
+                'course_id' => null,
                 'name' => $moduleName,
                 'type' => 'other',
                 'workload_minutes' => 0,
@@ -386,8 +355,7 @@ class ListLessons extends ListRecords
         }
 
         return ((int) CourseModule::query()
-            ->where('course_id', $course->id)
-            ->orWhereHas('courses', fn ($query) => $query->whereKey($course->id))
+            ->whereHas('courses', fn ($query) => $query->whereKey($course->id))
             ->max('sort_order')) + 1;
     }
 
@@ -418,7 +386,6 @@ class ListLessons extends ListRecords
 
         $track = CourseModuleTrack::query()
             ->select(['id', 'course_module_id'])
-            ->with('module:id,course_id')
             ->find($state);
 
         if (! $track) {
@@ -437,8 +404,7 @@ class ListLessons extends ListRecords
         if (filled($courseId)) {
             $query->where(function ($query) use ($courseId): void {
                 $query
-                    ->where('course_id', $courseId)
-                    ->orWhereHas('courses', fn ($query) => $query->whereKey($courseId))
+                    ->whereHas('courses', fn ($query) => $query->whereKey($courseId))
                     ->orWhereNull('course_id');
             });
         }

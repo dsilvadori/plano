@@ -137,9 +137,6 @@ class CourseModulesRelationManager extends RelationManager
             ])
             ->headerActions([
                 CreateAction::make()
-                    ->mutateDataUsing(fn (array $data): array => $data + [
-                        'course_id' => $this->getOwnerRecord()->getKey(),
-                    ])
                     ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),
             ])
             ->recordActions([

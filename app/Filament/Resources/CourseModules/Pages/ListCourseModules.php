@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\CourseModules\Pages;
 
 use App\Filament\Resources\CourseModules\CourseModuleResource;
-use App\Models\Course;
 use App\Services\PandaCourseImporter;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
@@ -24,15 +23,8 @@ class ListCourseModules extends ListRecords
                 ->label('Importar vídeos')
                 ->icon('heroicon-o-video-camera')
                 ->modalHeading('Importar módulo da integração de vídeo')
-                ->modalDescription('Informe o nome do módulo já cadastrado e a pasta do provedor de vídeo. Se existir módulo com o mesmo nome, ele será atualizado; se não existir, será criado no curso de referência.')
+                ->modalDescription('Informe o nome do módulo já cadastrado e a pasta do provedor de vídeo. Se existir módulo com o mesmo nome, ele será atualizado; se não existir, será criado no catálogo.')
                 ->form([
-                    Select::make('course_id')
-                        ->label('Curso de referência')
-                        ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
-                        ->searchable()
-                        ->preload()
-                        ->nullable()
-                        ->helperText('Opcional. Deixe vazio para criar ou atualizar um módulo independente.'),
                     TextInput::make('module_name')
                         ->label('Nome do módulo')
                         ->required(),
@@ -62,11 +54,8 @@ class ListCourseModules extends ListRecords
                 ])
                 ->action(function (array $data, PandaCourseImporter $importer): void {
                     try {
-                        $course = filled($data['course_id'] ?? null)
-                            ? Course::query()->findOrFail($data['course_id'])
-                            : null;
                         $run = $importer->importReplacingModuleByName(
-                            $course,
+                            null,
                             (string) $data['module_name'],
                             (string) $data['panda_folder_id'],
                             (string) ($data['lesson_status'] ?? 'draft'),

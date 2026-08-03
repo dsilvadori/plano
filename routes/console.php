@@ -228,22 +228,6 @@ Artisan::command('lessons:normalize-titles {--dry-run}', function () {
                         $track->id => ['sort_order' => $position],
                     ]);
 
-                    $courseIds = $track->courses()->pluck('courses.id')->all();
-                    $moduleCourseIds = $module->courses()->pluck('courses.id')->all();
-                    $courseId = collect([...$courseIds, ...$moduleCourseIds])->filter()->first();
-
-                    if ($courseId && blank($candidate->course_id)) {
-                        $candidate->forceFill(['course_id' => $courseId])->save();
-                    }
-
-                    if (blank($candidate->course_module_id)) {
-                        $candidate->forceFill(['course_module_id' => $module->id])->save();
-                    }
-
-                    if (blank($candidate->course_module_track_id)) {
-                        $candidate->forceFill(['course_module_track_id' => $track->id])->save();
-                    }
-
                     $linked++;
 
                     if (! $hasMedia($lesson)) {
@@ -281,6 +265,89 @@ Artisan::command('lessons:normalize-titles {--dry-run}', function () {
 
     return 0;
 })->purpose('Normaliza nomes e numeração das aulas importadas');
+
+Artisan::command('catalog:detach-course-bindings {--dry-run}', function () {
+    $modules = CourseModule::query()
+        ->whereNotNull('course_id')
+        ->orderBy('id')
+        ->get();
+    $lessons = Lesson::query()
+        ->where(function ($query): void {
+            $query
+                ->whereNotNull('course_id')
+                ->orWhereNotNull('course_module_id')
+                ->orWhereNotNull('course_module_track_id');
+        })
+        ->orderBy('id')
+        ->get();
+
+    $modulesLinked = 0;
+    $modulesDetached = 0;
+    $lessonModuleLinks = 0;
+    $lessonTrackLinks = 0;
+    $lessonsDetached = 0;
+
+    $sync = function () use ($modules, $lessons, &$modulesLinked, &$modulesDetached, &$lessonModuleLinks, &$lessonTrackLinks, &$lessonsDetached): void {
+        foreach ($modules as $module) {
+            $courseId = $module->course_id;
+
+            if (blank($courseId)) {
+                continue;
+            }
+
+            $module->courses()->syncWithoutDetaching([
+                $courseId => ['sort_order' => (int) $module->sort_order],
+            ]);
+            $modulesLinked++;
+
+            $module->forceFill(['course_id' => null])->save();
+            $modulesDetached++;
+        }
+
+        foreach ($lessons as $lesson) {
+            if (filled($lesson->course_module_id)) {
+                $lesson->modules()->syncWithoutDetaching([
+                    $lesson->course_module_id => ['sort_order' => (int) $lesson->sort_order],
+                ]);
+                $lessonModuleLinks++;
+            }
+
+            if (filled($lesson->course_module_track_id)) {
+                $lesson->tracks()->syncWithoutDetaching([
+                    $lesson->course_module_track_id => ['sort_order' => (int) $lesson->sort_order],
+                ]);
+                $lessonTrackLinks++;
+            }
+
+            $lesson->forceFill([
+                'course_id' => null,
+                'course_module_id' => null,
+                'course_module_track_id' => null,
+            ])->save();
+            $lessonsDetached++;
+        }
+    };
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+        $sync();
+        DB::rollBack();
+        $this->info('Simulação concluída. Nada foi gravado.');
+    } else {
+        DB::transaction($sync);
+        $this->info('Saneamento concluído.');
+    }
+
+    $this->line("Módulos avaliados: {$modules->count()}");
+    $this->line("Vínculos de módulo preservados no agrupamento do curso: {$modulesLinked}");
+    $this->line("Módulos desvinculados do course_id legado: {$modulesDetached}");
+    $this->line("Aulas avaliadas: {$lessons->count()}");
+    $this->line("Vínculos de aula com módulo preservados: {$lessonModuleLinks}");
+    $this->line("Vínculos de aula com trilha preservados: {$lessonTrackLinks}");
+    $this->line("Aulas desvinculadas dos campos legados: {$lessonsDetached}");
+
+    return 0;
+})->purpose('Transforma vínculos diretos legados em agrupamentos reutilizáveis por pivot');
 
 Artisan::command('lessons:sync-course-links {courseId?} {--dry-run}', function (LessonCourseLinker $linker) {
     $courseId = $this->argument('courseId');

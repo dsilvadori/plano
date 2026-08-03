@@ -148,14 +148,17 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertTrue($windowsTrack->courses()->whereKey($course->id)->exists());
         $this->assertSame(2, $windowsTrack->lessons()->count());
         $this->assertDatabaseHas('lessons', [
-            'course_module_id' => $module->id,
-            'course_module_track_id' => $windowsTrack->id,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
             'title' => '01 - Windows 10',
             'type' => 'text',
             'status' => 'draft',
             'source_status' => 'awaiting_media',
             'google_doc_url' => 'https://drive.test/docs/windows-01',
         ]);
+        $windowsLesson = Lesson::query()->where('title', '01 - Windows 10')->firstOrFail();
+        $this->assertTrue($module->onlineLessons()->whereKey($windowsLesson->id)->exists());
+        $this->assertTrue($windowsTrack->lessons()->whereKey($windowsLesson->id)->exists());
         $this->assertDatabaseHas('lessons', [
             'title' => '02 - Explorador de Arquivos',
             'type' => 'pdf',

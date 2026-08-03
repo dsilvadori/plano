@@ -8,11 +8,18 @@ use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
 use App\Support\LessonTitleNormalizer;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class CourseSpreadsheetImporter
 {
+    protected ?Collection $reusableLessonCandidates = null;
+
+    protected array $matchKeyCache = [];
+
+    protected array $leadingNumberCache = [];
+
     public function __construct(
         protected CourseSpreadsheetParser $parser,
         protected ActiveStudyPlanRefresher $activeStudyPlanRefresher,
@@ -21,6 +28,7 @@ class CourseSpreadsheetImporter
     public function preview(string $path, ?Course $course = null): array
     {
         $payload = $this->parser->parse($path);
+        $this->resetImportCaches();
         $targetCourse = $course ?: Course::query()->where('slug', $payload['course_slug'])->first();
         $moduleStats = ['create' => 0, 'update' => 0];
         $lessonStats = ['create' => 0, 'update' => 0];
@@ -61,6 +69,7 @@ class CourseSpreadsheetImporter
     public function import(string $path): Course
     {
         $payload = $this->parser->parse($path);
+        $this->resetImportCaches();
 
         return DB::transaction(function () use ($payload) {
             $course = Course::updateOrCreate(
@@ -82,6 +91,7 @@ class CourseSpreadsheetImporter
     public function importInto(Course $course, string $path): Course
     {
         $payload = $this->parser->parse($path);
+        $this->resetImportCaches();
 
         return DB::transaction(function () use ($course, $payload) {
             $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - '.$course->name;
@@ -98,16 +108,21 @@ class CourseSpreadsheetImporter
         $moduleIds = [];
 
         foreach ($payload['modules'] as $moduleData) {
+            $moduleData = $this->attachCompoundTrackModules($course, $moduleData, $moduleIds);
+
+            if (empty($moduleData['tracks']) && empty($moduleData['lessons'])) {
+                continue;
+            }
+
             $module = $this->resolveModuleForCourse($course, $moduleData['name'])
                 ?? $this->resolveReusableModule($moduleData['name'])
                 ?? new CourseModule([
-                    'course_id' => $course->id,
+                    'course_id' => null,
                     'name' => $moduleData['name'],
                 ]);
-            $moduleIsNew = ! $module->exists;
 
             $module->fill([
-                'course_id' => $moduleIsNew ? $course->id : $module->course_id,
+                'course_id' => null,
                 'name' => $module->name ?: $moduleData['name'],
                 'type' => $moduleData['type'],
                 'lessons' => $moduleData['lessons'] ?? [],
@@ -146,6 +161,76 @@ class CourseSpreadsheetImporter
         }
 
         $studyTrack->modules()->syncWithoutDetaching($moduleIds);
+    }
+
+    protected function attachCompoundTrackModules(Course $course, array $moduleData, array &$moduleIds): array
+    {
+        $tracks = $moduleData['tracks'] ?? [];
+
+        if ($tracks === []) {
+            return $moduleData;
+        }
+
+        $remainingTracks = [];
+
+        foreach (array_values($tracks) as $index => $trackData) {
+            $trackName = trim((string) ($trackData['name'] ?? ''));
+            $compoundModule = $trackName !== ''
+                ? $this->resolveCompoundTrackModule($course, (string) $moduleData['name'], $trackName)
+                : null;
+
+            if (! $compoundModule) {
+                $remainingTracks[] = $trackData;
+
+                continue;
+            }
+
+            $sortOrder = (int) ($trackData['sort_order'] ?? ($index + 1));
+            $lessons = $this->lessonsForCompoundTrackModule($compoundModule, $trackData);
+            $metadata = is_array($compoundModule->metadata) ? $compoundModule->metadata : [];
+
+            $compoundModule->fill([
+                'course_id' => null,
+                'type' => $moduleData['type'],
+                'lessons' => $lessons,
+                'workload_minutes' => (int) ($trackData['workload_minutes'] ?? collect($lessons)->sum('minutes')),
+                'sort_order' => $moduleData['sort_order'] * 100 + $sortOrder,
+                'is_active' => true,
+                'metadata' => array_merge($metadata, [
+                    'matched_from_spreadsheet_module' => $moduleData['name'],
+                    'matched_from_spreadsheet_track' => $trackName,
+                    'matched_as_compound_track_module' => true,
+                    'imported_at' => now()->toIso8601String(),
+                ]),
+            ]);
+            $compoundModule->save();
+            $compoundModule->courses()->syncWithoutDetaching([
+                $course->id => ['sort_order' => $compoundModule->sort_order],
+            ]);
+
+            $this->importTracks($course, $compoundModule, [
+                ...$moduleData,
+                'name' => $compoundModule->name,
+                'workload_minutes' => $compoundModule->workload_minutes,
+                'lessons' => $lessons,
+                'tracks' => [[
+                    ...$trackData,
+                    'lessons' => $lessons,
+                ]],
+            ]);
+
+            $moduleIds[$compoundModule->id] = [
+                'weight' => 1,
+                'sort_order' => $compoundModule->sort_order,
+            ];
+        }
+
+        return [
+            ...$moduleData,
+            'tracks' => $remainingTracks,
+            'lessons' => $remainingTracks === [] ? [] : ($moduleData['lessons'] ?? []),
+            'workload_minutes' => collect($remainingTracks)->sum(fn (array $track): int => (int) ($track['workload_minutes'] ?? 0)),
+        ];
     }
 
     protected function resolveOfficialStudyTrackName(Course $course): ?string
@@ -191,9 +276,6 @@ class CourseSpreadsheetImporter
                 ],
             ]);
             $track->save();
-            $track->courses()->syncWithoutDetaching([
-                $course->id => ['sort_order' => $sortOrder],
-            ]);
 
             $this->importLessons($course, $module, $track, $trackData['lessons'] ?? []);
         }
@@ -219,8 +301,8 @@ class CourseSpreadsheetImporter
                 ?? ($pandaVideoId
                     ? Lesson::query()->firstOrNew(['panda_video_id' => $pandaVideoId])
                     : new Lesson([
-                        'course_module_id' => $module->id,
-                        'course_module_track_id' => $track->id,
+                        'course_module_id' => null,
+                        'course_module_track_id' => null,
                         'slug' => $slug,
                     ]));
             $lessonExists = $lesson->exists;
@@ -239,7 +321,7 @@ class CourseSpreadsheetImporter
             $previousMetadata = is_array($lesson->metadata) ? $lesson->metadata : [];
 
             $lesson->fill([
-                'course_id' => $this->resolveLessonCourseId($lesson, $course),
+                'course_id' => null,
                 'course_module_id' => $this->resolveLessonModuleId($lesson, $module),
                 'course_module_track_id' => $this->resolveLessonTrackId($lesson, $track),
                 'title' => $title,
@@ -283,33 +365,17 @@ class CourseSpreadsheetImporter
             }
 
             $usedLessonIds[] = $lesson->id;
+            $this->rememberReusableLessonCandidate($lesson->fresh());
         }
-    }
-
-    protected function resolveLessonCourseId(Lesson $lesson, Course $course): int|string|null
-    {
-        if (! $lesson->exists || blank($lesson->course_id) || (int) $lesson->course_id === (int) $course->id) {
-            return $course->id;
-        }
-
-        return $lesson->course_id;
     }
 
     protected function resolveLessonModuleId(Lesson $lesson, CourseModule $module): int|string|null
     {
-        if (! $lesson->exists || blank($lesson->course_module_id) || (int) $lesson->course_module_id === (int) $module->id) {
-            return $module->id;
-        }
-
         return $lesson->course_module_id;
     }
 
     protected function resolveLessonTrackId(Lesson $lesson, CourseModuleTrack $track): int|string|null
     {
-        if (! $lesson->exists || blank($lesson->course_module_track_id) || (int) $lesson->course_module_track_id === (int) $track->id) {
-            return $track->id;
-        }
-
         return $lesson->course_module_track_id;
     }
 
@@ -343,9 +409,9 @@ class CourseSpreadsheetImporter
             ->where('course_modules.name', $moduleName)
             ->first()
             ?? CourseModule::query()
-                ->where('course_id', $course->id)
                 ->where('name', $moduleName)
-                ->first();
+                ->get()
+                ->first(fn (CourseModule $module): bool => $this->normalizeName($module->name) === $this->normalizeName($moduleName));
     }
 
     protected function resolveReusableModule(string $moduleName): ?CourseModule
@@ -356,6 +422,29 @@ class CourseSpreadsheetImporter
             ->orderBy('id')
             ->get()
             ->first(fn (CourseModule $module) => $this->normalizeName($module->name) === $normalizedName);
+    }
+
+    protected function resolveCompoundTrackModule(Course $course, string $moduleName, string $trackName): ?CourseModule
+    {
+        $normalizedName = $this->normalizeName($moduleName.' '.$trackName);
+
+        return $course->modules()
+            ->get()
+            ->first(fn (CourseModule $module): bool => $this->normalizeName($module->name) === $normalizedName)
+            ?? CourseModule::query()
+                ->orderBy('id')
+                ->get()
+                ->first(fn (CourseModule $module): bool => $this->normalizeName($module->name) === $normalizedName);
+    }
+
+    protected function lessonsForCompoundTrackModule(CourseModule $module, array $trackData): array
+    {
+        $moduleLessons = collect($module->lessons ?? [])
+            ->filter(fn (array $lesson): bool => trim((string) ($lesson['name'] ?? '')) !== '')
+            ->values()
+            ->all();
+
+        return $moduleLessons !== [] ? $moduleLessons : ($trackData['lessons'] ?? []);
     }
 
     protected function resolveTrackForModule(CourseModule $module, string $trackName, string $slug): ?CourseModuleTrack
@@ -414,10 +503,8 @@ class CourseSpreadsheetImporter
 
         $fallbackLesson ??= $lesson;
 
-        return Lesson::query()
-            ->when($excludeLessonIds !== [], fn ($query) => $query->whereNotIn('id', $excludeLessonIds))
-            ->orderBy('id')
-            ->get()
+        return $this->reusableLessonCandidates()
+            ->when($excludeLessonIds !== [], fn (Collection $lessons) => $lessons->whereNotIn('id', $excludeLessonIds))
             ->map(fn (Lesson $lesson): array => [
                 'lesson' => $lesson,
                 'score' => $this->lessonMatchScore($lesson, $title, $module, $track),
@@ -460,30 +547,30 @@ class CourseSpreadsheetImporter
 
     protected function lessonNamesMatch(string $left, string $right): bool
     {
-        return LessonTitleNormalizer::matches($left, $right);
+        return $this->matchScoreForKeys($this->matchKey($left), $this->matchKey($right)) >= 72;
     }
 
     protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null): float
     {
-        $score = LessonTitleNormalizer::matchScore($lesson->title, $title);
+        $lessonKey = $this->matchKey($lesson->title, 'lesson-title-'.$lesson->id);
+        $titleKey = $this->matchKey($title);
+        $score = $this->matchScoreForKeys($lessonKey, $titleKey);
 
         if ($score <= 0) {
             return 0;
         }
 
-        $lessonKey = LessonTitleNormalizer::matchKey($lesson->title);
-        $titleKey = LessonTitleNormalizer::matchKey($title);
-        $lessonNumber = LessonTitleNormalizer::leadingNumber($lesson->title);
-        $titleNumber = LessonTitleNormalizer::leadingNumber($title);
+        $lessonNumber = $this->leadingNumber($lesson->title, 'lesson-title-'.$lesson->id);
+        $titleNumber = $this->leadingNumber($title);
 
         if ($lessonNumber && $titleNumber) {
             $score += $lessonNumber === $titleNumber ? 8 : 0;
         }
 
         $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
-        $path = LessonTitleNormalizer::matchKey((string) ($metadata['drive_source_folder_path'] ?? ''));
-        $trackKey = $track ? LessonTitleNormalizer::matchKey($track->name) : '';
-        $moduleKey = LessonTitleNormalizer::matchKey($module->name);
+        $path = $this->matchKey((string) ($metadata['drive_source_folder_path'] ?? ''), 'lesson-path-'.$lesson->id);
+        $trackKey = $track ? $this->matchKey($track->name, 'track-'.$track->id) : '';
+        $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
         $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
         $lessonProduct = $this->contentProduct($path) ?? $this->contentProduct($lessonKey);
         $trackProduct = $this->contentProduct($trackKey);
@@ -539,7 +626,113 @@ class CourseSpreadsheetImporter
 
     protected function isGenericLessonTitle(string $title): bool
     {
-        return count(array_filter(explode(' ', LessonTitleNormalizer::matchKey($title)))) <= 2;
+        return count(array_filter(explode(' ', $this->matchKey($title)))) <= 2;
+    }
+
+    protected function reusableLessonCandidates(): Collection
+    {
+        if ($this->reusableLessonCandidates instanceof Collection) {
+            return $this->reusableLessonCandidates;
+        }
+
+        return $this->reusableLessonCandidates = Lesson::query()
+            ->select([
+                'id',
+                'course_id',
+                'course_module_id',
+                'course_module_track_id',
+                'title',
+                'slug',
+                'description',
+                'type',
+                'thumbnail_url',
+                'duration_seconds',
+                'sort_order',
+                'status',
+                'panda_video_id',
+                'panda_embed_url',
+                'panda_player_url',
+                'google_doc_url',
+                'source_status',
+                'metadata',
+            ])
+            ->orderBy('id')
+            ->get();
+    }
+
+    protected function rememberReusableLessonCandidate(?Lesson $lesson): void
+    {
+        if (! $lesson || ! $this->reusableLessonCandidates instanceof Collection) {
+            return;
+        }
+
+        $this->reusableLessonCandidates = $this->reusableLessonCandidates
+            ->reject(fn (Lesson $candidate): bool => (int) $candidate->id === (int) $lesson->id)
+            ->push($lesson)
+            ->sortBy('id')
+            ->values();
+    }
+
+    protected function resetImportCaches(): void
+    {
+        $this->reusableLessonCandidates = null;
+        $this->matchKeyCache = [];
+        $this->leadingNumberCache = [];
+    }
+
+    protected function matchKey(string $value, ?string $cacheKey = null): string
+    {
+        $cacheKey ??= 'value:'.$value;
+
+        return $this->matchKeyCache[$cacheKey] ??= LessonTitleNormalizer::matchKey($value);
+    }
+
+    protected function leadingNumber(string $value, ?string $cacheKey = null): ?int
+    {
+        $cacheKey ??= 'value:'.$value;
+
+        return $this->leadingNumberCache[$cacheKey] ??= LessonTitleNormalizer::leadingNumber($value);
+    }
+
+    protected function matchScoreForKeys(string $leftKey, string $rightKey): float
+    {
+        if ($leftKey === '' || $rightKey === '') {
+            return 0.0;
+        }
+
+        if ($leftKey === $rightKey) {
+            return 100.0;
+        }
+
+        similar_text($leftKey, $rightKey, $percent);
+
+        return max($this->tokenOverlapPercent($leftKey, $rightKey), $percent);
+    }
+
+    protected function tokenOverlapPercent(string $leftKey, string $rightKey): float
+    {
+        $leftTokens = $this->comparisonTokens($leftKey);
+        $rightTokens = $this->comparisonTokens($rightKey);
+
+        if ($leftTokens === [] || $rightTokens === []) {
+            return 0.0;
+        }
+
+        $intersection = array_intersect($leftTokens, $rightTokens);
+        $union = array_unique([...$leftTokens, ...$rightTokens]);
+
+        return count($union) > 0 ? (count($intersection) / count($union)) * 100 : 0.0;
+    }
+
+    protected function comparisonTokens(string $key): array
+    {
+        $ignored = ['a', 'as', 'ao', 'aos', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na', 'nas', 'no', 'nos', 'o', 'os', 'para', 'por', 'um', 'uma'];
+
+        return collect(explode(' ', $key))
+            ->filter(fn (string $token): bool => $token !== '' && ! in_array($token, $ignored, true))
+            ->unique()
+            ->values()
+            ->all();
     }
 
     protected function romanSuffix(string $key): ?string

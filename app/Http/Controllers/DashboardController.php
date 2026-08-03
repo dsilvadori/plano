@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\Course;
-use App\Models\Lesson;
 use App\Models\LessonProgress;
 use App\Models\User;
 use Carbon\CarbonInterface;
@@ -67,13 +66,14 @@ class DashboardController extends Controller
         }
 
         $lessonTotals = DB::table('course_module_lessons')
+            ->join('course_module_course', 'course_module_course.course_module_id', '=', 'course_module_lessons.course_module_id')
             ->join('course_modules', 'course_modules.id', '=', 'course_module_lessons.course_module_id')
             ->join('lessons', 'lessons.id', '=', 'course_module_lessons.lesson_id')
-            ->whereIn('course_modules.course_id', $courseIds)
+            ->whereIn('course_module_course.course_id', $courseIds)
             ->where('lessons.status', 'published')
-            ->selectRaw('course_modules.course_id, count(distinct lessons.id) as total')
-            ->groupBy('course_modules.course_id')
-            ->pluck('total', 'course_modules.course_id');
+            ->selectRaw('course_module_course.course_id, count(distinct lessons.id) as total')
+            ->groupBy('course_module_course.course_id')
+            ->pluck('total', 'course_module_course.course_id');
 
         $completedTotals = LessonProgress::query()
             ->where('user_id', $user->id)

@@ -11,6 +11,7 @@ use App\Models\StudyTrack;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Tests\TestCase;
 
 class CourseSpreadsheetImportTest extends TestCase
@@ -79,13 +80,13 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('Trilha Oficial - Oficial de Administração', $course->studyTracks->first()->name);
         $this->assertCount(8, $course->studyTracks->first()->modules);
         $this->assertDatabaseHas('course_modules', [
-            'course_id' => $course->id,
+            'course_id' => null,
             'name' => 'Informáitca',
             'workload_minutes' => 1332,
             'type' => 'basic',
         ]);
         $this->assertDatabaseHas('course_modules', [
-            'course_id' => $course->id,
+            'course_id' => null,
             'name' => 'Legislação',
             'workload_minutes' => 354,
             'type' => 'specific',
@@ -97,14 +98,17 @@ class CourseSpreadsheetImportTest extends TestCase
         $track = $module->tracks()->where('name', 'Classe de palavras')->first();
         $this->assertNotNull($track);
         $this->assertDatabaseHas('lessons', [
-            'course_id' => $course->id,
-            'course_module_id' => $module->id,
-            'course_module_track_id' => $track->id,
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
             'title' => $module->lessons[0]['name'],
             'duration_seconds' => $module->lessons[0]['minutes'] * 60,
             'status' => 'draft',
             'source_status' => 'awaiting_media',
         ]);
+        $lesson = Lesson::query()->where('title', $module->lessons[0]['name'])->firstOrFail();
+        $this->assertTrue($module->onlineLessons()->whereKey($lesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($lesson->id)->exists());
     }
 
     public function test_importer_can_add_spreadsheet_structure_to_existing_course(): void
@@ -118,6 +122,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'name' => 'Módulo criado manualmente',
             'sort_order' => 999,
         ]);
+        $course->modules()->attach($existingModule->id, ['sort_order' => 999]);
 
         $importedCourse = app(CourseSpreadsheetImporter::class)->importInto(
             $course,
@@ -134,7 +139,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'name' => 'Módulo criado manualmente',
         ]);
         $this->assertDatabaseHas('course_modules', [
-            'course_id' => $course->id,
+            'course_id' => null,
             'name' => 'Português',
             'workload_minutes' => 730,
         ]);
@@ -230,9 +235,9 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('Curso CSV', $course->name);
         $this->assertSame(2, $course->modules()->count());
         $this->assertSame(2, CourseModuleTrack::query()->count());
-        $this->assertSame(3, $course->lessons()->count());
+        $this->assertSame(3, $course->linkedLessonsCount());
         $this->assertDatabaseHas('lessons', [
-            'course_id' => $course->id,
+            'course_id' => null,
             'title' => 'Classes de palavras',
             'duration_seconds' => 1800,
             'panda_video_id' => 'video_1',
@@ -240,7 +245,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'status' => 'published',
         ]);
         $this->assertDatabaseHas('lessons', [
-            'course_id' => $course->id,
+            'course_id' => null,
             'title' => 'Lei Orgânica',
             'duration_seconds' => 2700,
             'status' => 'draft',
@@ -263,7 +268,7 @@ class CourseSpreadsheetImportTest extends TestCase
 
         try {
             $course = app(CourseSpreadsheetImporter::class)->import($firstPath);
-            $removedLesson = $course->lessons()->where('title', 'Advérbio')->firstOrFail();
+            $removedLesson = $course->linkedLessonsQuery()->where('title', 'Advérbio')->firstOrFail();
 
             app(CourseSpreadsheetImporter::class)->importInto($course, $secondPath);
         } finally {
@@ -315,6 +320,55 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('https://player.example.com/original', $existingLesson->fresh()->panda_embed_url);
     }
 
+    public function test_spreadsheet_import_reuses_compound_track_modules_from_catalog(): void
+    {
+        $classesModule = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português - Classe de palavras',
+            'type' => 'basic',
+            'workload_minutes' => 50,
+            'lessons' => [
+                ['name' => 'Substantivo', 'minutes' => 25],
+                ['name' => 'Adjetivo', 'minutes' => 25],
+            ],
+        ]);
+        $syntaxModule = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português - Análise sintática',
+            'type' => 'basic',
+            'workload_minutes' => 40,
+            'lessons' => [
+                ['name' => 'Sujeito', 'minutes' => 20],
+                ['name' => 'Predicado', 'minutes' => 20],
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-compound-modules-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,track_sort_order,lesson_title,lesson_minutes',
+            'Curso Português,Português,basic,1,Classe de palavras,1,Substantivo,25',
+            'Curso Português,Português,basic,1,Análise sintática,2,Sujeito,20',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertTrue($course->modules()->whereKey($classesModule->id)->exists());
+        $this->assertTrue($course->modules()->whereKey($syntaxModule->id)->exists());
+        $this->assertFalse($course->modules()->where('name', 'Português')->exists());
+        $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($classesModule->id)->exists());
+        $this->assertTrue($classesModule->fresh()->tracks()->where('name', 'Classe de palavras')->exists());
+        $this->assertTrue($syntaxModule->fresh()->tracks()->where('name', 'Análise sintática')->exists());
+        $this->assertDatabaseHas('lessons', [
+            'course_id' => null,
+            'title' => 'Substantivo',
+            'duration_seconds' => 1500,
+        ]);
+    }
+
     public function test_spreadsheet_import_links_standalone_lessons_by_name_without_overwriting_media(): void
     {
         $existingLesson = Lesson::query()->create([
@@ -353,9 +407,9 @@ class CourseSpreadsheetImportTest extends TestCase
         $existingLesson->refresh();
 
         $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-drive-video')->count());
-        $this->assertSame($course->id, $existingLesson->course_id);
-        $this->assertSame($module->id, $existingLesson->course_module_id);
-        $this->assertSame($track->id, $existingLesson->course_module_track_id);
+        $this->assertNull($existingLesson->course_id);
+        $this->assertNull($existingLesson->course_module_id);
+        $this->assertNull($existingLesson->course_module_track_id);
         $this->assertSame('panda-drive-video', $existingLesson->panda_video_id);
         $this->assertSame('https://player.example.com/drive-video', $existingLesson->panda_embed_url);
         $this->assertSame('media_ready', $existingLesson->source_status);
@@ -528,15 +582,137 @@ class CourseSpreadsheetImportTest extends TestCase
 
         $readyLesson->refresh();
 
-        $this->assertSame($course->id, $readyLesson->course_id);
-        $this->assertSame($module->id, $readyLesson->course_module_id);
-        $this->assertSame($track->id, $readyLesson->course_module_track_id);
+        $this->assertNull($readyLesson->course_id);
+        $this->assertNull($readyLesson->course_module_id);
+        $this->assertNull($readyLesson->course_module_track_id);
         $this->assertSame('panda-seguranca', $readyLesson->panda_video_id);
         $this->assertSame('media_ready', $readyLesson->source_status);
         $this->assertSame('published', $readyLesson->status);
         $this->assertTrue($track->lessons()->whereKey($readyLesson->id)->exists());
         $this->assertFalse($track->lessons()->whereKey($placeholder->id)->exists());
         $this->assertSame(1, $track->lessons()->count());
+    }
+
+    public function test_spreadsheet_import_reuses_ready_lesson_without_moving_it_into_module_when_slug_conflicts(): void
+    {
+        $course = Course::factory()->create(['name' => 'Curso Reuso', 'slug' => 'curso-reuso']);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Direito Constitucional',
+            'type' => 'basic',
+            'workload_minutes' => 30,
+            'sort_order' => 1,
+        ]);
+        $course->modules()->attach($module->id, ['sort_order' => 1]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Conceitos Iniciais',
+            'slug' => 'conceitos-iniciais',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $placeholder = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Conceitos Iniciais',
+            'slug' => '01-conceitos-iniciais',
+            'description' => 'Placeholder sem mídia.',
+            'type' => 'video',
+            'duration_seconds' => 1800,
+            'sort_order' => 1,
+            'source_status' => 'awaiting_media',
+            'status' => 'draft',
+        ]);
+
+        $readyLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Conceitos Iniciais',
+            'slug' => '01-conceitos-iniciais',
+            'description' => 'Aula pronta.',
+            'type' => 'video',
+            'duration_seconds' => 1800,
+            'sort_order' => 1,
+            'panda_video_id' => 'panda-conceitos-iniciais',
+            'panda_embed_url' => 'https://player.example.com/conceitos-iniciais',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-slug-conflict-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Reuso,Direito Constitucional,basic,1,Conceitos Iniciais,01 - Conceitos Iniciais,30',
+        ]));
+
+        try {
+            app(CourseSpreadsheetImporter::class)->importInto($course, $path);
+        } finally {
+            @unlink($path);
+        }
+
+        $readyLesson->refresh();
+
+        $this->assertNull($readyLesson->course_id);
+        $this->assertNull($readyLesson->course_module_id);
+        $this->assertNull($readyLesson->course_module_track_id);
+        $this->assertTrue($module->onlineLessons()->whereKey($readyLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($readyLesson->id)->exists());
+        $this->assertFalse($track->lessons()->whereKey($placeholder->id)->exists());
+    }
+
+    public function test_catalog_detach_course_bindings_preserves_legacy_direct_links_in_pivots(): void
+    {
+        $course = Course::factory()->create(['name' => 'Curso Legado']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Módulo Legado',
+            'sort_order' => 3,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Trilha Legada',
+            'slug' => 'trilha-legada',
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::query()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => 'Aula Legada',
+            'slug' => 'aula-legada',
+            'type' => 'video',
+            'duration_seconds' => 600,
+            'sort_order' => 4,
+            'status' => 'published',
+            'source_status' => 'media_ready',
+        ]);
+
+        Artisan::call('catalog:detach-course-bindings');
+
+        $this->assertDatabaseHas('course_module_course', [
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'sort_order' => 3,
+        ]);
+        $this->assertDatabaseHas('course_module_lessons', [
+            'course_module_id' => $module->id,
+            'lesson_id' => $lesson->id,
+            'sort_order' => 4,
+        ]);
+        $this->assertDatabaseHas('course_module_track_lessons', [
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $lesson->id,
+            'sort_order' => 4,
+        ]);
+        $this->assertNull($module->fresh()->course_id);
+        $this->assertNull($lesson->fresh()->course_id);
+        $this->assertNull($lesson->fresh()->course_module_id);
+        $this->assertNull($lesson->fresh()->course_module_track_id);
     }
 
     public function test_spreadsheet_import_uses_track_context_for_generic_lesson_titles(): void

@@ -38,10 +38,10 @@ class PandaCourseImporter
 
                 $module = CourseModule::updateOrCreate(
                     [
-                        'course_id' => $course->id,
                         'panda_folder_id' => $folderId,
                     ],
                     [
+                        'course_id' => null,
                         'name' => $resolvedModuleName,
                         'type' => $this->normalizeModuleType($moduleType),
                         'workload_minutes' => (int) ceil($videos->sum('duration_seconds') / 60),
@@ -58,6 +58,9 @@ class PandaCourseImporter
                 $updated = 0;
                 $planningLessons = [];
                 $track = $this->ensureTrackForModule($module, $course, $resolvedModuleName, $folderId);
+                $module->courses()->syncWithoutDetaching([
+                    $course->id => ['sort_order' => (int) $module->sort_order],
+                ]);
 
                 foreach ($videos->values() as $index => $video) {
                     $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $index + 1);
@@ -65,9 +68,9 @@ class PandaCourseImporter
                     $wasRecentlyCreated = ! $lesson->exists;
 
                     $lesson->fill([
-                        'course_id' => $lesson->exists ? $lesson->course_id : $course->id,
-                        'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
-                        'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track->id) : $track->id,
+                        'course_id' => null,
+                        'course_module_id' => null,
+                        'course_module_track_id' => null,
                         'title' => $normalizedTitle,
                         'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $index + 1),
                         'description' => $video['description'] ?: 'Aula em vídeo.',
@@ -170,9 +173,9 @@ class PandaCourseImporter
                     $wasRecentlyCreated = ! $lesson->exists;
 
                     $lesson->fill([
-                        'course_id' => $lesson->exists ? $lesson->course_id : $course?->id,
-                        'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module->id,
-                        'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track->id) : $track->id,
+                        'course_id' => null,
+                        'course_module_id' => null,
+                        'course_module_track_id' => null,
                         'title' => $normalizedTitle,
                         'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $index + 1),
                         'description' => $video['description'] ?: 'Aula em vídeo.',
@@ -281,9 +284,9 @@ class PandaCourseImporter
                     $wasRecentlyCreated = ! $lesson->exists;
 
                     $lesson->fill([
-                        'course_id' => $lesson->exists ? $lesson->course_id : $course?->id,
-                        'course_module_id' => $lesson->exists ? $lesson->course_module_id : $module?->id,
-                        'course_module_track_id' => $lesson->exists ? ($lesson->course_module_track_id ?: $track?->id) : $track?->id,
+                        'course_id' => null,
+                        'course_module_id' => null,
+                        'course_module_track_id' => null,
                         'title' => $normalizedTitle,
                         'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $sortOrder),
                         'description' => $video['description'] ?: 'Aula em vídeo.',
@@ -374,7 +377,7 @@ class PandaCourseImporter
 
         if (! $module) {
             $module = CourseModule::create([
-                'course_id' => $fallbackCourse?->id,
+                'course_id' => null,
                 'name' => $moduleName,
                 'type' => $this->normalizeModuleType($moduleType),
                 'workload_minutes' => 0,
@@ -458,7 +461,7 @@ class PandaCourseImporter
             return false;
         }
 
-        if (! $module && ! $track && $course && (int) $lesson->course_id !== (int) $course->id) {
+        if (! $module && ! $track && $course && ! $lesson->modules()->whereHas('courses', fn ($query) => $query->whereKey($course->id))->exists()) {
             return false;
         }
 

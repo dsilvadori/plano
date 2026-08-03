@@ -24,7 +24,6 @@ use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Utilities\Get;
-use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
@@ -49,42 +48,16 @@ class LessonResource extends Resource
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Select::make('course_id')
-                ->label('Curso')
-                ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
-                ->searchable()
-                ->preload()
-                ->live()
-                ->afterStateUpdated(function (Set $set): void {
-                    $set('course_module_id', null);
-                    $set('course_module_track_id', null);
-                })
-                ->nullable(),
             Select::make('course_module_id')
                 ->label('Módulo')
-                ->options(fn (Get $get): array => filled($get('course_id'))
-                    ? CourseModule::query()
-                        ->where('course_id', $get('course_id'))
-                        ->orWhereHas('courses', fn ($query) => $query->whereKey($get('course_id')))
-                        ->orWhereNull('course_id')
-                        ->orderBy('sort_order')
-                        ->orderBy('name')
-                        ->pluck('name', 'id')
-                        ->all()
-                    : CourseModule::query()
-                        ->orderBy('sort_order')
-                        ->orderBy('name')
-                        ->pluck('name', 'id')
-                        ->all())
+                ->options(fn (): array => CourseModule::query()
+                    ->orderBy('sort_order')
+                    ->orderBy('name')
+                    ->pluck('name', 'id')
+                    ->all())
                 ->searchable()
                 ->preload()
                 ->createOptionForm([
-                    Select::make('course_id')
-                        ->label('Curso')
-                        ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
-                        ->searchable()
-                        ->preload()
-                        ->nullable(),
                     TextInput::make('name')
                         ->label('Nome')
                         ->required(),

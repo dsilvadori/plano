@@ -150,15 +150,9 @@ class ActiveStudyPlanRefresher
 
     protected function coursesForModule(CourseModule $module): Collection
     {
-        $module->loadMissing(['course', 'courses']);
+        $module->loadMissing(['courses']);
 
-        $courses = $module->courses;
-
-        if ($module->course) {
-            $courses->push($module->course);
-        }
-
-        return $courses;
+        return $module->courses;
     }
 
     protected function refreshCourses(Collection $courses): int

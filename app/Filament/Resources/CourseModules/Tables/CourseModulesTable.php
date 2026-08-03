@@ -16,9 +16,9 @@ class CourseModulesTable
     {
         return $table
             ->columns([
-                TextColumn::make('course.name')
-                    ->label('Curso de referência')
-                    ->placeholder('Catálogo')
+                TextColumn::make('courses.name')
+                    ->label('Cursos')
+                    ->placeholder('Não agrupado')
                     ->searchable()
                     ->sortable(),
                 TextColumn::make('name')->label('Módulo')->searchable()->sortable(),

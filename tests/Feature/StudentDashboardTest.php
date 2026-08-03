@@ -376,6 +376,7 @@ class StudentDashboardTest extends TestCase
             'workload_minutes' => 180,
             'sort_order' => 1,
         ]);
+        $course->modules()->attach($module->id, ['sort_order' => 1]);
 
         $plan = StudyPlan::factory()->create([
             'user_id' => $student->id,

@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\StudyTracks\Schemas;
 
 use App\Models\Course;
-use App\Models\CourseModule;
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -36,7 +35,7 @@ class StudyTrackForm
                         $courseId = $get('course_id');
 
                         return $courseId
-                            ? CourseModule::query()->where('course_id', $courseId)->orderBy('sort_order')->pluck('name', 'id')
+                            ? Course::query()->find($courseId)?->modules()->pluck('name', 'course_modules.id')->all() ?? []
                             : [];
                     })
                     ->columns(2)

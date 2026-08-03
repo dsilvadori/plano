@@ -34,15 +34,6 @@ class CourseModule extends Model
                 ]);
         });
 
-        static::saved(function (CourseModule $module): void {
-            if (! $module->course_id) {
-                return;
-            }
-
-            $module->courses()->syncWithoutDetaching([
-                $module->course_id => ['sort_order' => (int) $module->sort_order],
-            ]);
-        });
     }
 
     protected $fillable = [

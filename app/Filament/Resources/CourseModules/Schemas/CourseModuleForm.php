@@ -2,9 +2,7 @@
 
 namespace App\Filament\Resources\CourseModules\Schemas;
 
-use App\Models\Course;
 use App\Models\CourseModule;
-use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -16,13 +14,6 @@ class CourseModuleForm
     {
         return $schema
             ->components([
-                Select::make('course_id')
-                    ->label('Curso de referência')
-                    ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
-                    ->searchable()
-                    ->preload()
-                    ->nullable()
-                    ->helperText('Opcional. Deixe vazio para cadastrar um módulo independente e reutilizável.'),
                 TextInput::make('name')
                     ->label('Nome')
                     ->required(),

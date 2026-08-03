@@ -42,7 +42,6 @@ class LessonCourseLinker
                         $courseIds = $track->courses
                             ->pluck('id')
                             ->merge($module->courses->pluck('id'))
-                            ->when($module->course_id, fn ($ids) => $ids->push($module->course_id))
                             ->unique()
                             ->values()
                             ->all();
@@ -128,8 +127,7 @@ class LessonCourseLinker
         return $query->where(function (Builder $query) use ($course): void {
             $query
                 ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
-                ->orWhereHas('module.courses', fn (Builder $query) => $query->whereKey($course->id))
-                ->orWhereHas('module', fn (Builder $query) => $query->where('course_id', $course->id));
+                ->orWhereHas('module.courses', fn (Builder $query) => $query->whereKey($course->id));
         });
     }
 

@@ -863,6 +863,7 @@ class PandaImportTest extends TestCase
             'course_id' => $course->id,
             'name' => 'Módulo reutilizável',
         ]);
+        $course->modules()->attach($module->id, ['sort_order' => (int) $module->sort_order]);
 
         $run = app(PandaCourseImporter::class)->importIntoModule($module, 'folder-module', 'published');
 
