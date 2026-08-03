@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Courses\Pages;
 use App\Filament\Resources\Courses\CourseResource;
 use App\Support\FilamentThumbnailUpload;
 use Filament\Resources\Pages\CreateRecord;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -43,6 +44,12 @@ class CreateCourse extends CreateRecord
 
     protected function resolveUploadedPath(mixed $state, mixed $fallback = null, ?string $directory = null): ?string
     {
+        foreach (Arr::wrap($state) as $value) {
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+
         $path = $directory ? FilamentThumbnailUpload::store($state, $directory) : null;
 
         if ($path !== null) {

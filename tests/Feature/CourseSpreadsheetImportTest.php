@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\Courses\Pages\EditCourse;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
@@ -39,6 +40,17 @@ class CourseSpreadsheetImportTest extends TestCase
 
         $this->assertSame('Oficial de Administração', $payload['course_name']);
         $this->assertSame('Trilha Oficial - Oficial de Administração', $payload['study_track_name']);
+    }
+
+    public function test_course_edit_accepts_stored_spreadsheet_upload_path(): void
+    {
+        $method = new \ReflectionMethod(EditCourse::class, 'resolveUploadedSpreadsheetPath');
+        $method->setAccessible(true);
+
+        $this->assertSame(
+            'imports/courses/Administrador.xlsx',
+            $method->invoke(null, 'imports/courses/Administrador.xlsx'),
+        );
     }
 
     public function test_parser_detects_complementary_module_type(): void
@@ -201,7 +213,7 @@ class CourseSpreadsheetImportTest extends TestCase
 
     public function test_csv_import_creates_course_modules_and_online_lessons(): void
     {
-        $path = tempnam(sys_get_temp_dir(), 'course-import-') . '.csv';
+        $path = tempnam(sys_get_temp_dir(), 'course-import-').'.csv';
         file_put_contents($path, implode("\n", [
             'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes,lesson_type,lesson_status,panda_video_id,panda_embed_url',
             'Curso CSV,Português,basic,1,Classes de palavras,30,video,published,video_1,https://player.example.com/video_1',
@@ -237,8 +249,8 @@ class CourseSpreadsheetImportTest extends TestCase
 
     public function test_reimport_preserves_removed_spreadsheet_lessons_for_manual_review(): void
     {
-        $firstPath = tempnam(sys_get_temp_dir(), 'course-import-first-') . '.csv';
-        $secondPath = tempnam(sys_get_temp_dir(), 'course-import-second-') . '.csv';
+        $firstPath = tempnam(sys_get_temp_dir(), 'course-import-first-').'.csv';
+        $secondPath = tempnam(sys_get_temp_dir(), 'course-import-second-').'.csv';
         file_put_contents($firstPath, implode("\n", [
             'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes',
             'Curso CSV,Português,basic,1,Classes de palavras,30',
@@ -282,7 +294,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'status' => 'published',
         ]);
 
-        $path = tempnam(sys_get_temp_dir(), 'course-import-reuse-') . '.csv';
+        $path = tempnam(sys_get_temp_dir(), 'course-import-reuse-').'.csv';
         file_put_contents($path, implode("\n", [
             'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes',
             'Curso Novo,Portugues,basic,1,Classes de palavras,30',
@@ -324,7 +336,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'status' => 'published',
         ]);
 
-        $path = tempnam(sys_get_temp_dir(), 'course-import-link-standalone-') . '.csv';
+        $path = tempnam(sys_get_temp_dir(), 'course-import-link-standalone-').'.csv';
         file_put_contents($path, implode("\n", [
             'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
             'Curso com Aula Avulsa,Informática,basic,1,Windows 10,Aula avulsa do Drive,30',
@@ -375,7 +387,7 @@ class CourseSpreadsheetImportTest extends TestCase
             ],
         ]);
 
-        $path = tempnam(sys_get_temp_dir(), 'course-import-link-approximate-') . '.csv';
+        $path = tempnam(sys_get_temp_dir(), 'course-import-link-approximate-').'.csv';
         file_put_contents($path, implode("\n", [
             'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
             'Curso com Match Aproximado,Informática,basic,1,Windows 10,01 - Recursos e configurações do Windows 10,30',
@@ -430,7 +442,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'status' => 'published',
         ]);
 
-        $path = tempnam(sys_get_temp_dir(), 'course-import-ready-priority-') . '.csv';
+        $path = tempnam(sys_get_temp_dir(), 'course-import-ready-priority-').'.csv';
         file_put_contents($path, implode("\n", [
             'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
             'Curso Prioridade Midia,Informática,basic,1,Excel 2016,Guia Inserir,30',
@@ -485,7 +497,7 @@ class CourseSpreadsheetImportTest extends TestCase
             ],
         ]);
 
-        $path = tempnam(sys_get_temp_dir(), 'course-import-track-context-') . '.csv';
+        $path = tempnam(sys_get_temp_dir(), 'course-import-track-context-').'.csv';
         file_put_contents($path, implode("\n", [
             'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
             'Curso Contexto Trilha,Informática,basic,1,Power Point 2016,Guia Inserir,30',

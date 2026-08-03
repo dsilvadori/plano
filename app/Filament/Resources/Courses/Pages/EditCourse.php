@@ -15,6 +15,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\HtmlString;
@@ -271,6 +272,12 @@ class EditCourse extends EditRecord
 
     protected static function resolveUploadedPath(mixed $state, ?string $fallback = null, ?string $directory = null): ?string
     {
+        foreach (Arr::wrap($state) as $value) {
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+
         $path = $directory ? FilamentThumbnailUpload::store($state, $directory) : null;
 
         if ($path !== null) {
