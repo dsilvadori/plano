@@ -224,7 +224,7 @@ class CourseSpreadsheetImporter
                         'slug' => $slug,
                     ]));
             $lessonExists = $lesson->exists;
-            $isStandaloneLibraryLesson = $lessonExists
+            $matchedStandaloneLibraryLesson = $lessonExists
                 && blank($lesson->course_id)
                 && blank($lesson->course_module_id)
                 && blank($lesson->course_module_track_id);
@@ -236,11 +236,12 @@ class CourseSpreadsheetImporter
                 || filled($lesson->panda_player_url);
             $requestedStatus = filled($lessonData['status'] ?? null) ? (string) $lessonData['status'] : null;
             $hasExplicitStatus = (bool) ($lessonData['status_explicit'] ?? false);
+            $previousMetadata = is_array($lesson->metadata) ? $lesson->metadata : [];
 
             $lesson->fill([
-                'course_id' => $isStandaloneLibraryLesson ? null : ($lessonExists ? $lesson->course_id : $course->id),
-                'course_module_id' => $isStandaloneLibraryLesson ? null : ($lessonExists ? $lesson->course_module_id : $module->id),
-                'course_module_track_id' => $isStandaloneLibraryLesson ? null : ($lessonExists ? ($lesson->course_module_track_id ?: $track->id) : $track->id),
+                'course_id' => $this->resolveLessonCourseId($lesson, $course),
+                'course_module_id' => $this->resolveLessonModuleId($lesson, $module),
+                'course_module_track_id' => $this->resolveLessonTrackId($lesson, $track),
                 'title' => $title,
                 'slug' => $lessonExists ? $lesson->slug : $slug,
                 'description' => 'Aula importada por planilha.',
@@ -256,13 +257,13 @@ class CourseSpreadsheetImporter
                 'panda_player_url' => $lessonData['panda_player_url'] ?? $lesson->panda_player_url,
                 'google_doc_url' => $lessonData['google_doc_url'] ?? $lesson->google_doc_url,
                 'source_status' => $hasReadyMedia ? 'media_ready' : ($lesson->source_status ?: 'awaiting_media'),
-                'metadata' => [
+                'metadata' => array_merge($previousMetadata, [
                     'source' => 'spreadsheet',
                     'matched_existing_lesson' => $lessonExists,
-                    'matched_standalone_library_lesson' => $isStandaloneLibraryLesson,
+                    'matched_standalone_library_lesson' => $matchedStandaloneLibraryLesson,
                     'matched_by_name' => $lessonExists && $this->lessonNamesMatch($lesson->title, $title),
                     'imported_at' => now()->toIso8601String(),
-                ],
+                ]),
             ]);
             $lesson->save();
             $lesson->modules()->syncWithoutDetaching([
@@ -283,6 +284,33 @@ class CourseSpreadsheetImporter
 
             $usedLessonIds[] = $lesson->id;
         }
+    }
+
+    protected function resolveLessonCourseId(Lesson $lesson, Course $course): int|string|null
+    {
+        if (! $lesson->exists || blank($lesson->course_id) || (int) $lesson->course_id === (int) $course->id) {
+            return $course->id;
+        }
+
+        return $lesson->course_id;
+    }
+
+    protected function resolveLessonModuleId(Lesson $lesson, CourseModule $module): int|string|null
+    {
+        if (! $lesson->exists || blank($lesson->course_module_id) || (int) $lesson->course_module_id === (int) $module->id) {
+            return $module->id;
+        }
+
+        return $lesson->course_module_id;
+    }
+
+    protected function resolveLessonTrackId(Lesson $lesson, CourseModuleTrack $track): int|string|null
+    {
+        if (! $lesson->exists || blank($lesson->course_module_track_id) || (int) $lesson->course_module_track_id === (int) $track->id) {
+            return $track->id;
+        }
+
+        return $lesson->course_module_track_id;
     }
 
     protected function lessonSlug(string $title, int $sortOrder): string

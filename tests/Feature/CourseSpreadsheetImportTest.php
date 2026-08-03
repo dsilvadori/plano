@@ -353,9 +353,9 @@ class CourseSpreadsheetImportTest extends TestCase
         $existingLesson->refresh();
 
         $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-drive-video')->count());
-        $this->assertNull($existingLesson->course_id);
-        $this->assertNull($existingLesson->course_module_id);
-        $this->assertNull($existingLesson->course_module_track_id);
+        $this->assertSame($course->id, $existingLesson->course_id);
+        $this->assertSame($module->id, $existingLesson->course_module_id);
+        $this->assertSame($track->id, $existingLesson->course_module_track_id);
         $this->assertSame('panda-drive-video', $existingLesson->panda_video_id);
         $this->assertSame('https://player.example.com/drive-video', $existingLesson->panda_embed_url);
         $this->assertSame('media_ready', $existingLesson->source_status);
@@ -459,6 +459,83 @@ class CourseSpreadsheetImportTest extends TestCase
 
         $this->assertTrue($track->lessons()->whereKey($readyLesson->id)->exists());
         $this->assertSame('published', $readyLesson->fresh()->status);
+        $this->assertSame(1, $track->lessons()->count());
+    }
+
+    public function test_spreadsheet_import_promotes_ready_media_lesson_over_course_placeholder(): void
+    {
+        $course = Course::factory()->create(['name' => 'Curso Placeholder', 'slug' => 'curso-placeholder']);
+        $module = CourseModule::factory()->for($course)->create([
+            'name' => 'Informática',
+            'type' => 'basic',
+            'workload_minutes' => 30,
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->attach($course->id, ['sort_order' => 1]);
+
+        $placeholder = Lesson::query()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => 'Aula de Segurança',
+            'slug' => 'aula-de-seguranca',
+            'description' => 'Placeholder sem mídia.',
+            'type' => 'video',
+            'duration_seconds' => 1800,
+            'sort_order' => 1,
+            'source_status' => 'awaiting_media',
+            'status' => 'draft',
+        ]);
+
+        $readyLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Aula de Segurança',
+            'slug' => 'aula-de-seguranca-com-midia',
+            'description' => 'Aula com mídia pronta.',
+            'type' => 'video',
+            'duration_seconds' => 1800,
+            'sort_order' => 9,
+            'panda_video_id' => 'panda-seguranca',
+            'panda_embed_url' => 'https://player.example.com/seguranca',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => [
+                'source' => 'google_drive',
+                'drive_source_folder_path' => 'Windows 10',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-promote-media-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Placeholder,Informática,basic,1,Windows 10,Aula de Segurança,30',
+        ]));
+
+        try {
+            app(CourseSpreadsheetImporter::class)->importInto($course, $path);
+        } finally {
+            @unlink($path);
+        }
+
+        $readyLesson->refresh();
+
+        $this->assertSame($course->id, $readyLesson->course_id);
+        $this->assertSame($module->id, $readyLesson->course_module_id);
+        $this->assertSame($track->id, $readyLesson->course_module_track_id);
+        $this->assertSame('panda-seguranca', $readyLesson->panda_video_id);
+        $this->assertSame('media_ready', $readyLesson->source_status);
+        $this->assertSame('published', $readyLesson->status);
+        $this->assertTrue($track->lessons()->whereKey($readyLesson->id)->exists());
+        $this->assertFalse($track->lessons()->whereKey($placeholder->id)->exists());
         $this->assertSame(1, $track->lessons()->count());
     }
 
