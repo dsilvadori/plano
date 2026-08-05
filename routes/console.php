@@ -5,6 +5,7 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\QuestionBank;
+use App\Services\ActiveStudyPlanRefresher;
 use App\Services\CourseAccessResolver;
 use App\Services\CourseLessonMediaImporter;
 use App\Services\LessonCourseLinker;
@@ -20,6 +21,38 @@ use Illuminate\Support\Facades\Storage;
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('study-plans:refresh-active {--course-id=* : Limita a atualização a um ou mais cursos} {--dry-run}', function (ActiveStudyPlanRefresher $refresher) {
+    $courseIds = collect((array) $this->option('course-id'))
+        ->filter()
+        ->map(fn ($id): int => (int) $id)
+        ->values();
+    $query = Course::query()
+        ->where('is_active', true)
+        ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('id', $courseIds));
+    $courses = $query->get();
+
+    if ($courses->isEmpty()) {
+        $this->warn('Nenhum curso ativo encontrado para atualizar.');
+
+        return 0;
+    }
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+    }
+
+    $refreshed = $courses->sum(fn (Course $course): int => $refresher->refreshCourseFromNextWeek($course));
+
+    if ($this->option('dry-run')) {
+        DB::rollBack();
+        $this->info('Simulação concluída. Nada foi gravado.');
+    }
+
+    $this->info("Planos ativos atualizados: {$refreshed}.");
+
+    return 0;
+})->purpose('Atualiza planos ativos preservando progresso e semanas próximas');
 
 Artisan::command('question-banks:auto-link', function (QuestionBankAutoLinker $linker) {
     $totals = $linker->linkAll(function (QuestionBank $bank, array $result): void {

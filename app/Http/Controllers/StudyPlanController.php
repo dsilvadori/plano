@@ -3,13 +3,17 @@
 namespace App\Http\Controllers;
 
 use App\Models\Course;
+use App\Models\CourseModule;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Services\StudyPlanGenerator;
 use App\Support\StudyTime;
+use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Validation\Rule;
 
 class StudyPlanController extends Controller
@@ -96,7 +100,7 @@ class StudyPlanController extends Controller
                 ->withInput();
         }
 
-        $plan = $generator->regenerate(
+        $plan = $generator->regenerateFromDate(
             $studyPlan,
             $course,
             null,
@@ -105,6 +109,7 @@ class StudyPlanController extends Controller
             $data['available_days'],
             $parsedAvailability,
             $data['intensity'],
+            now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
         );
 
         return redirect()
@@ -185,7 +190,7 @@ class StudyPlanController extends Controller
             $data['available_minutes_by_day'][$day] = StudyTime::formatMinutes($minutes);
 
             if ($minutes < 30) {
-                return throw \Illuminate\Validation\ValidationException::withMessages([
+                $this->throwValidationWithInput([
                     "available_minutes_by_day.$day" => 'Informe o tempo no formato 1:20, com pelo menos 30 minutos e no máximo 8 horas por dia.',
                 ]);
             }
@@ -193,7 +198,77 @@ class StudyPlanController extends Controller
             $parsedAvailability[$day] = $minutes;
         }
 
+        $minimumWeeklyMinutes = $this->minimumWeeklyMinutesForExam($course, $data['start_date'], $data['exam_date'], $data['intensity']);
+        $weeklyMinutes = array_sum($parsedAvailability);
+
+        if ($minimumWeeklyMinutes && $weeklyMinutes < $minimumWeeklyMinutes) {
+            $this->throwValidationWithInput([
+                'available_days' => 'Para gerar este plano até a prova, informe pelo menos '
+                    .StudyTime::formatMinutes($minimumWeeklyMinutes)
+                    .' por semana. Hoje você informou '
+                    .StudyTime::formatMinutes($weeklyMinutes)
+                    .'.',
+            ]);
+        }
+
         return [$data, $parsedAvailability];
+    }
+
+    protected function minimumWeeklyMinutesForExam(Course $course, string $startDate, ?string $examDate, string $intensity): ?int
+    {
+        if (blank($examDate)) {
+            return null;
+        }
+
+        $start = Carbon::parse($startDate)->startOfDay();
+        $exam = Carbon::parse($examDate)->startOfDay();
+
+        if ($exam->lt($start)) {
+            return null;
+        }
+
+        $theoryMinutes = (int) $this->modulesForMinimumWeeklyCalculation($course)->sum('workload_minutes');
+
+        if ($theoryMinutes <= 0) {
+            return null;
+        }
+
+        $practicePercent = match ($intensity) {
+            'light' => 0.35,
+            'intense' => 0.25,
+            default => 0.30,
+        };
+        $requiredMinutes = $theoryMinutes + (int) ceil($theoryMinutes * $practicePercent);
+        $weeks = max(1, (int) ceil(($start->diffInDays($exam) + 1) / 7));
+
+        return (int) ceil(($requiredMinutes / $weeks) / 15) * 15;
+    }
+
+    protected function modulesForMinimumWeeklyCalculation(Course $course): Collection
+    {
+        $officialTrack = $course->studyTracks()
+            ->where('is_active', true)
+            ->where('name', 'like', 'Trilha Oficial -%')
+            ->orderBy('id')
+            ->first();
+        $modules = $officialTrack
+            ? $officialTrack->modules()->where('course_modules.is_active', true)->get()
+            : $course->modules()->where('is_active', true)->get();
+
+        return $modules
+            ->reject(fn (CourseModule $module): bool => $this->shouldSkipModuleForMinimumWeeklyCalculation($module))
+            ->values();
+    }
+
+    protected function shouldSkipModuleForMinimumWeeklyCalculation(CourseModule $module): bool
+    {
+        $normalizedName = str($module->name)->lower()->ascii()->value();
+
+        return str_contains($normalizedName, 'apresentacao')
+            || str_contains($normalizedName, 'boas-vindas')
+            || str_contains($normalizedName, 'boas vindas')
+            || str_contains($normalizedName, 'bem-vindo')
+            || str_contains($normalizedName, 'bem vindo');
     }
 
     protected function validationMessages(): array
@@ -209,6 +284,20 @@ class StudyPlanController extends Controller
             'min' => 'Selecione pelo menos :min opção em :attribute.',
             'in' => 'O valor selecionado para :attribute é inválido.',
         ];
+    }
+
+    protected function throwValidationWithInput(array $messages): never
+    {
+        $validator = \Illuminate\Support\Facades\Validator::make([], []);
+
+        foreach ($messages as $field => $message) {
+            $validator->errors()->add($field, $message);
+        }
+
+        throw new \Illuminate\Validation\ValidationException(
+            $validator,
+            back()->withInput()->withErrors($validator),
+        );
     }
 
     protected function validationAttributes(): array
@@ -237,6 +326,10 @@ class StudyPlanController extends Controller
 
     protected function resetBuilderSession(): void
     {
+        if (session()->has('errors') || session()->hasOldInput()) {
+            return;
+        }
+
         session()->forget('_old_input');
         session()->forget('errors');
     }

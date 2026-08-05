@@ -6,6 +6,7 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
+use App\Models\StudyTrack;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
@@ -18,14 +19,15 @@ class ActiveStudyPlanRefresher
 
     public function refreshCourseFromNextWeek(Course $course, ?CarbonInterface $referenceDate = null): int
     {
-        $cutoff = $this->nextWeekStart($referenceDate);
+        $replaceRemovedModulesFrom = $this->nextWeekStart($referenceDate);
+        $cutoff = $this->thirdWeekStart($referenceDate);
         $refreshed = 0;
 
         $course->studyPlans()
             ->where('status', 'active')
             ->with(['course', 'studyTrack', 'user'])
             ->get()
-            ->each(function ($plan) use ($course, $cutoff, &$refreshed): void {
+            ->each(function ($plan) use ($course, $cutoff, $replaceRemovedModulesFrom, &$refreshed): void {
                 if (! $plan->user) {
                     return;
                 }
@@ -33,18 +35,20 @@ class ActiveStudyPlanRefresher
                 $examDate = $plan->exam_date_confirmed && $plan->exam_date
                     ? $plan->exam_date->toDateString()
                     : null;
+                $studyTrack = $plan->studyTrack ?: $this->officialStudyTrackFor($course);
 
                 $this->generator->regenerateFromDate(
                     $plan,
                     $plan->course ?: $course,
-                    $plan->studyTrack,
+                    $studyTrack,
                     $examDate,
                     $plan->start_date?->toDateString() ?? now()->toDateString(),
                     $plan->available_days ?? [],
                     $plan->available_minutes_by_day ?? [],
                     $plan->intensity,
                     $cutoff->toDateString(),
-                    true,
+                    false,
+                    $replaceRemovedModulesFrom->toDateString(),
                 );
 
                 $refreshed++;
@@ -163,11 +167,28 @@ class ActiveStudyPlanRefresher
             ->sum(fn (Course $course): int => $this->refreshCourseFromNextWeek($course));
     }
 
+    protected function officialStudyTrackFor(Course $course): ?StudyTrack
+    {
+        return $course->studyTracks()
+            ->where('is_active', true)
+            ->where('name', 'like', 'Trilha Oficial -%')
+            ->orderBy('id')
+            ->first();
+    }
+
     protected function nextWeekStart(?CarbonInterface $referenceDate = null): Carbon
     {
         return ($referenceDate ? Carbon::parse($referenceDate->toDateString()) : now())
             ->startOfDay()
             ->startOfWeek(CarbonInterface::MONDAY)
             ->addWeek();
+    }
+
+    protected function thirdWeekStart(?CarbonInterface $referenceDate = null): Carbon
+    {
+        return ($referenceDate ? Carbon::parse($referenceDate->toDateString()) : now())
+            ->startOfDay()
+            ->startOfWeek(CarbonInterface::MONDAY)
+            ->addWeeks(3);
     }
 }

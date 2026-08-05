@@ -173,11 +173,145 @@
 
             <div class="mt-6 space-y-4">
                 @foreach ($selectedWeekItems as $date => $items)
-                    <div class="card-subtle">
+                    @php
+                        $isoDate = \Illuminate\Support\Carbon::createFromFormat('d/m/Y', $date)->toDateString();
+                    @endphp
+                    <div wire:key="study-plan-day-{{ $isoDate }}" class="card-subtle">
                         <div class="flex items-center justify-between">
                             <h4 class="text-lg font-semibold text-white">{{ $date }}</h4>
-                            <p class="text-sm text-slate-400">{{ $dayLabels[$items->first()->day_of_week] ?? $items->first()->day_of_week }}</p>
+                            <div class="flex items-center gap-3">
+                                <p class="text-sm text-slate-400">{{ $dayLabels[$items->first()->day_of_week] ?? $items->first()->day_of_week }}</p>
+                                <button
+                                    wire:click.prevent.stop="editDay('{{ $isoDate }}')"
+                                    wire:loading.attr="disabled"
+                                    wire:target="editDay('{{ $isoDate }}')"
+                                    type="button"
+                                    class="rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-xs font-semibold text-sky-100 transition hover:border-sky-300/40 disabled:cursor-wait disabled:opacity-60"
+                                >
+                                    <span wire:loading.remove wire:target="editDay('{{ $isoDate }}')">Editar dia</span>
+                                    <span wire:loading wire:target="editDay('{{ $isoDate }}')">Abrindo...</span>
+                                </button>
+                            </div>
                         </div>
+
+                        @if ($editingDate === $isoDate)
+                            <form wire:key="manual-day-editor-{{ $isoDate }}" wire:submit.prevent="saveManualDay" class="mt-4 rounded-2xl border border-sky-400/20 bg-sky-400/10 p-4">
+                                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                        <p class="text-sm font-semibold text-white">Ajuste manual do dia</p>
+                                        <p class="mt-1 text-xs text-slate-300">Blocos concluídos neste dia serão preservados.</p>
+                                    </div>
+                                    <button wire:click="addManualDayRow" type="button" class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100">
+                                        Adicionar aula
+                                    </button>
+                                </div>
+
+                                @error('manualDayRows')
+                                    <p class="mt-3 text-sm text-rose-300">{{ $message }}</p>
+                                @enderror
+
+                                <div class="mt-4 space-y-3">
+                                    @foreach ($manualDayRows as $rowIndex => $row)
+                                        @php
+                                            $selectedModule = $editableModules->firstWhere('id', (int) ($row['module_id'] ?? 0));
+                                            $selectedLessons = $selectedModule?->planning_lessons ?? [];
+                                        @endphp
+                                        <div class="grid gap-3 rounded-xl border border-white/10 bg-slate-950/70 p-3 lg:grid-cols-[0.35fr_1.15fr_1.15fr_0.45fr_auto]">
+                                            <div>
+                                                <label class="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-slate-500">Bloco</label>
+                                                <div class="mt-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-slate-100">
+                                                    {{ $row['block_number'] ?? $rowIndex + 1 }}
+                                                </div>
+                                            </div>
+
+                                            <div>
+                                                <label class="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-slate-500">Módulo</label>
+                                                <select wire:model.live="manualDayRows.{{ $rowIndex }}.module_id" class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100">
+                                                    <option value="">Selecione o módulo</option>
+                                                    @foreach ($editableModules as $module)
+                                                        <option value="{{ $module->id }}">{{ $module->name }}</option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+
+                                            <div>
+                                                <label class="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-slate-500">Aula</label>
+                                                <select wire:model.live="manualDayRows.{{ $rowIndex }}.lesson_index" class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100">
+                                                    <option value="">Módulo inteiro</option>
+                                                    @foreach ($selectedLessons as $lessonIndex => $lesson)
+                                                        <option value="{{ $lessonIndex }}">{{ $lesson['name'] ?? 'Aula '.($lessonIndex + 1) }} · {{ $lesson['minutes'] ?? 0 }} min</option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+
+                                            <div>
+                                                <label class="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-slate-500">Tempo</label>
+                                                <input wire:model="manualDayRows.{{ $rowIndex }}.minutes" type="text" placeholder="0:30" class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100">
+                                            </div>
+
+                                            <div class="flex items-end">
+                                                <button wire:click="removeManualDayRow({{ $rowIndex }})" type="button" class="w-full rounded-xl border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-xs font-semibold text-rose-100">
+                                                    Remover
+                                                </button>
+                                            </div>
+                                        </div>
+                                    @endforeach
+                                </div>
+
+                                <div class="mt-4 flex justify-end gap-3">
+                                    <button wire:click="cancelDayEdit" type="button" class="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100">
+                                        Cancelar
+                                    </button>
+                                    <button type="submit" class="rounded-xl border border-emerald-400/20 bg-emerald-400/15 px-4 py-2 text-sm font-semibold text-emerald-100">
+                                        Salvar dia
+                                    </button>
+                                </div>
+                            </form>
+
+                            @if ($manualDayConfirmation)
+                                <div class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 px-4 py-6 sm:py-10">
+                                    <div class="mt-4 w-full max-w-xl rounded-2xl border border-amber-300/20 bg-slate-900 p-6 shadow-2xl sm:mt-8">
+                                        <p class="text-sm font-semibold uppercase tracking-[0.22em] text-amber-200">Confirmar troca</p>
+                                        <h5 class="mt-3 text-xl font-semibold text-white">A edição vai reorganizar aulas ligadas a este dia.</h5>
+                                        <p class="mt-2 text-sm leading-6 text-slate-300">
+                                            Quando você coloca uma aula no lugar de outra, a aula substituída ocupa o lugar original da aula escolhida, com a duração correta.
+                                        </p>
+
+                                        <div class="mt-4 space-y-2">
+                                            @forelse ($manualDayConfirmation['swaps'] ?? [] as $swap)
+                                                <div class="rounded-xl border border-white/10 bg-slate-950/70 px-4 py-3">
+                                                    <p class="text-sm text-slate-200">
+                                                        <span class="font-semibold text-white">{{ $swap['from'] }}</span>
+                                                        será movida para o lugar de
+                                                        <span class="font-semibold text-white">{{ $swap['to'] }}</span>.
+                                                    </p>
+                                                    <p class="mt-1 text-xs text-slate-400">
+                                                        @if ($swap['missing_target'] ?? false)
+                                                            Essa aula escolhida ainda não tinha um bloco pendente no restante do plano, então só este dia será alterado.
+                                                        @else
+                                                            Destino original: {{ $swap['target_date'] }}.
+                                                        @endif
+                                                    </p>
+                                                </div>
+                                            @empty
+                                                <div class="rounded-xl border border-white/10 bg-slate-950/70 px-4 py-3">
+                                                    <p class="text-sm text-slate-200">{{ $manualDayConfirmation['changes_count'] ?? 0 }} bloco(s) serão atualizados neste dia.</p>
+                                                </div>
+                                            @endforelse
+                                        </div>
+
+                                        <div class="mt-6 flex justify-end gap-3">
+                                            <button wire:click="cancelManualDayConfirmation" type="button" class="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100">
+                                                Voltar
+                                            </button>
+                                            <button wire:click="confirmManualDay" type="button" class="rounded-xl border border-amber-300/20 bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950">
+                                                Confirmar edição
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            @endif
+                        @endif
 
                         <div class="mt-4 grid gap-3 xl:grid-cols-2">
                             @foreach ($items as $item)

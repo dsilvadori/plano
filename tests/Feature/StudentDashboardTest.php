@@ -8,6 +8,7 @@ use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
 use App\Models\User;
+use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -433,11 +434,12 @@ class StudentDashboardTest extends TestCase
             'id' => $completedItem->id,
             'study_plan_id' => $plan->id,
         ]);
-        $this->assertDatabaseMissing('study_plan_items', [
+        $this->assertDatabaseHas('study_plan_items', [
             'id' => $pendingItem->id,
+            'study_plan_id' => $plan->id,
         ]);
         $this->assertTrue($plan->fresh()->items()->whereNotNull('completed_at')->exists());
-        $this->assertTrue($plan->fresh()->items()->whereDate('scheduled_date', '>=', now()->toDateString())->exists());
+        $this->assertTrue($plan->fresh()->items()->whereDate('scheduled_date', '>=', now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString())->exists());
     }
 
     public function test_student_can_rebalance_plan_automatically(): void

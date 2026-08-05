@@ -6,6 +6,10 @@
         timer: null,
         finalizing: false,
         canSubmitForm: false,
+        selectedCourseId: @js((string) $course_id),
+        courseExamDates: @js($courseExamDates),
+        examDate: @js($exam_date),
+        examDateLocked: @js($exam_date_locked),
         steps: [
             'Lendo sua disponibilidade semanal',
             'Organizando matéria básica e conhecimento específico',
@@ -13,6 +17,23 @@
             'Validando a viabilidade até a prova',
             'Finalizando seu plano personalizado'
         ],
+        init() {
+            this.syncCourseExamDate();
+        },
+        syncCourseExamDate(clearUnlocked = false) {
+            const courseExamDate = this.courseExamDates[String(this.selectedCourseId || '')] || '';
+
+            this.examDateLocked = courseExamDate !== '';
+
+            if (this.examDateLocked) {
+                this.examDate = courseExamDate;
+                return;
+            }
+
+            if (clearUnlocked) {
+                this.examDate = '';
+            }
+        },
         queueSubmit() {
             if (this.canSubmitForm) {
                 return true;
@@ -182,7 +203,16 @@
 
         <div class="card-subtle lg:col-span-2">
             <label class="stat-label">Curso</label>
-            <select name="course_id" wire:model.live="course_id" required data-plan-validation class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100">
+            <select
+                name="course_id"
+                x-model="selectedCourseId"
+                x-on:change="syncCourseExamDate(true)"
+                wire:model.change="course_id"
+                wire:change="selectCourse($event.target.value)"
+                required
+                data-plan-validation
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100"
+            >
                 <option value="">Selecione</option>
                 @foreach ($courses as $course)
                     <option value="{{ $course->id }}" @selected((string) $course_id === (string) $course->id)>{{ $course->name }}</option>
@@ -193,23 +223,80 @@
 
         <div class="card-subtle">
             <label class="stat-label">Data de início</label>
-            <input name="start_date" wire:model="start_date" type="date" min="{{ now()->toDateString() }}" required data-plan-validation x-on:click="$el.showPicker && $el.showPicker()" x-on:focus="$el.showPicker && $el.showPicker()" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 color-scheme-dark">
+            <input name="start_date" wire:model.live="start_date" type="date" min="{{ now()->toDateString() }}" required data-plan-validation x-on:click="$el.showPicker && $el.showPicker()" x-on:focus="$el.showPicker && $el.showPicker()" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 color-scheme-dark">
             <p class="mt-2 text-xs text-slate-500">Escolha quando você realmente começa. Não permitimos datas passadas para o plano ficar fiel à sua rotina atual.</p>
             @error('start_date') <p class="mt-2 text-sm text-rose-300">{{ $message }}</p> @enderror
         </div>
 
         <div class="card-subtle">
-            <label class="stat-label">Data da prova <span class="text-slate-500 normal-case tracking-normal">{{ $exam_date_locked ? '(definida no curso)' : '(opcional)' }}</span></label>
-            @if ($exam_date_locked)
-                <input type="hidden" name="exam_date" value="{{ $exam_date }}">
-                <input value="{{ $exam_date }}" type="date" disabled class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-slate-300 opacity-80 color-scheme-dark">
-                <p class="mt-2 text-xs text-slate-500">Este curso já tem data de prova cadastrada. O aluno usa essa data como padrão e não pode alterá-la aqui.</p>
-            @else
-                <input name="exam_date" wire:model.live="exam_date" type="date" min="{{ $start_date ?: now()->toDateString() }}" x-on:click="$el.showPicker && $el.showPicker()" x-on:focus="$el.showPicker && $el.showPicker()" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 color-scheme-dark">
-                <p class="mt-2 text-xs text-slate-500">Se o edital ainda não saiu, deixe em branco. O sistema cria um ciclo contínuo e você pode ajustar depois.</p>
-            @endif
+            <label class="stat-label">Data da prova <span class="text-slate-500 normal-case tracking-normal" x-text="examDateLocked ? '(definida no curso)' : '(opcional)'">{{ $exam_date_locked ? '(definida no curso)' : '(opcional)' }}</span></label>
+            <input type="hidden" x-bind:name="examDateLocked ? 'exam_date' : null" x-model="examDate">
+            <input
+                x-show="examDateLocked"
+                x-bind:value="examDate"
+                type="date"
+                disabled
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-slate-300 opacity-80 color-scheme-dark"
+            >
+            <input
+                x-show="! examDateLocked"
+                x-bind:name="examDateLocked ? null : 'exam_date'"
+                x-model="examDate"
+                wire:model.live="exam_date"
+                type="date"
+                min="{{ $start_date ?: now()->toDateString() }}"
+                x-on:click="$el.showPicker && $el.showPicker()"
+                x-on:focus="$el.showPicker && $el.showPicker()"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 color-scheme-dark"
+            >
+            <p x-show="examDateLocked" class="mt-2 text-xs text-slate-500">Este curso já tem data de prova cadastrada. O aluno usa essa data como padrão e não pode alterá-la aqui.</p>
+            <p x-show="! examDateLocked" class="mt-2 text-xs text-slate-500">Se o edital ainda não saiu, deixe em branco. O sistema cria um ciclo contínuo e você pode ajustar depois.</p>
             @error('exam_date') <p class="mt-2 text-sm text-rose-300">{{ $message }}</p> @enderror
         </div>
+
+        @if ($minimumWeeklySuggestion)
+            <div class="card-subtle lg:col-span-2">
+                <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                        <p class="stat-label">Carga mínima sugerida</p>
+                        <h3 class="mt-2 text-2xl font-semibold text-white">{{ $minimumWeeklySuggestion['minimum_weekly_label'] }} por semana</h3>
+                        <p class="mt-2 text-sm text-slate-300">
+                            Inclui {{ \App\Support\StudyTime::formatMinutes($minimumWeeklySuggestion['theory_minutes']) }} de aulas e {{ \App\Support\StudyTime::formatMinutes($minimumWeeklySuggestion['practice_minutes']) }} reservados para revisão e questões até a prova.
+                        </p>
+                    </div>
+                    <div class="rounded-2xl border {{ $minimumWeeklySuggestion['status'] === 'good' ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100' : 'border-amber-400/20 bg-amber-400/10 text-amber-100' }} px-4 py-3 text-sm font-semibold">
+                        Atual: {{ $minimumWeeklySuggestion['current_weekly_label'] }} / semana
+                    </div>
+                </div>
+
+                <div class="mt-4 grid gap-3 md:grid-cols-3">
+                    <div class="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Prazo</p>
+                        <p class="mt-2 text-lg font-semibold text-white">{{ $minimumWeeklySuggestion['weeks'] }} semana(s)</p>
+                    </div>
+                    <div class="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Meta total</p>
+                        <p class="mt-2 text-lg font-semibold text-white">{{ \App\Support\StudyTime::formatMinutes($minimumWeeklySuggestion['required_minutes']) }}</p>
+                    </div>
+                    <div class="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Média por dia</p>
+                        <p class="mt-2 text-lg font-semibold text-white">
+                            {{ $minimumWeeklySuggestion['minimum_daily_average_label'] ?? 'Selecione dias' }}
+                        </p>
+                    </div>
+                </div>
+
+                @if ($minimumWeeklySuggestion['status'] === 'warning')
+                    <p class="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                        Para dar conta do curso com revisão e questões, aumente pelo menos {{ $minimumWeeklySuggestion['deficit_label'] }} por semana ou selecione mais dias disponíveis.
+                    </p>
+                @else
+                    <p class="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
+                        A disponibilidade informada cobre a carga mínima sugerida até a prova.
+                    </p>
+                @endif
+            </div>
+        @endif
 
         <div class="card-subtle lg:col-span-2">
             <label class="stat-label">Dias disponíveis</label>
@@ -224,6 +311,7 @@
                                     wire:model.live="available_days"
                                     value="{{ $day }}"
                                     type="checkbox"
+                                    @checked(in_array($day, $available_days, true))
                                     data-plan-validation
                                     x-on:change="
                                         const input = $refs['minutes_{{ $day }}'];
@@ -256,7 +344,7 @@
                             <input
                                 x-ref="minutes_{{ $day }}"
                                 name="available_minutes_by_day[{{ $day }}]"
-                                wire:model="available_minutes_by_day.{{ $day }}"
+                                wire:model.live="available_minutes_by_day.{{ $day }}"
                                 type="text"
                                 inputmode="numeric"
                                 data-plan-validation
@@ -342,7 +430,7 @@
             <div class="mt-4 grid gap-4 md:grid-cols-3">
                 @foreach (['light' => 'Leve', 'balanced' => 'Equilibrado', 'intense' => 'Intenso'] as $value => $label)
                     <label class="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
-                        <input name="intensity" wire:model="intensity" type="radio" value="{{ $value }}" required data-plan-validation class="mr-2 text-amber-300">
+                        <input name="intensity" wire:model.live="intensity" type="radio" value="{{ $value }}" required data-plan-validation class="mr-2 text-amber-300">
                         <span class="font-medium text-slate-100">{{ $label }}</span>
                         <p class="mt-2 text-sm text-slate-400">
                             @if ($value === 'light')

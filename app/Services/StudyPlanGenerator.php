@@ -119,27 +119,37 @@ class StudyPlanGenerator
         array $availableMinutesByDay,
         string $intensity,
         string $regenerateFromDate,
-        bool $preserveCompletedFutureItems = true,
+        bool $reloadItems = true,
+        ?string $replaceRemovedModulesFromDate = null,
     ): StudyPlan {
-        return DB::transaction(function () use ($studyPlan, $course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity, $regenerateFromDate, $preserveCompletedFutureItems) {
-            $studyPlan->loadMissing(['course', 'studyTrack', 'user', 'items.courseModule']);
+        return DB::transaction(function () use ($studyPlan, $course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity, $regenerateFromDate, $reloadItems, $replaceRemovedModulesFromDate) {
+            $studyPlan->loadMissing(['course', 'studyTrack', 'user']);
 
             $payload = $this->buildPlanPayload($course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity);
             $modules = $payload['modules'];
-            $cutoff = Carbon::parse($regenerateFromDate)->startOfDay();
             $moduleIds = $modules->pluck('id')->all();
+            $cutoff = Carbon::parse($regenerateFromDate)->startOfDay();
 
-            $preservedItems = $studyPlan->items
-                ->filter(function (StudyPlanItem $item) use ($cutoff, $preserveCompletedFutureItems): bool {
-                    $isBeforeCutoff = $item->scheduled_date?->copy()->startOfDay()->lt($cutoff) ?? false;
-                    $isCompleted = filled($item->completed_at);
+            if (filled($replaceRemovedModulesFromDate)) {
+                $replaceCutoff = Carbon::parse($replaceRemovedModulesFromDate)->startOfDay();
 
-                    return $isBeforeCutoff || ($preserveCompletedFutureItems && $isCompleted);
+                if ($replaceCutoff->lt($cutoff)) {
+                    $this->replaceRemovedModuleItemsBeforeCutoff($studyPlan, $modules, $replaceCutoff, $cutoff);
+                }
+            }
+
+            $preservedItems = $studyPlan->items()
+                ->where(function ($query) use ($cutoff) {
+                    $query
+                        ->whereDate('scheduled_date', '<', $cutoff->toDateString())
+                        ->orWhereNotNull('completed_at');
                 })
+                ->with('courseModule')
+                ->get()
                 ->values();
 
             $preservedMinutesByModule = $preservedItems
-                ->filter(fn (StudyPlanItem $item): bool => filled($item->course_module_id))
+                ->filter(fn (StudyPlanItem $item): bool => filled($item->course_module_id) && in_array($item->course_module_id, $moduleIds, true))
                 ->groupBy('course_module_id')
                 ->map(fn (Collection $items): int => (int) $items->sum('estimated_minutes'))
                 ->all();
@@ -159,7 +169,7 @@ class StudyPlanGenerator
 
             $studyPlan->items()
                 ->whereDate('scheduled_date', '>=', $cutoff->toDateString())
-                ->when($preserveCompletedFutureItems, fn ($query) => $query->whereNull('completed_at'))
+                ->whereNull('completed_at')
                 ->delete();
 
             $studyPlan->fill($payload['attributes']);
@@ -173,7 +183,7 @@ class StudyPlanGenerator
                 ->values()
                 ->all();
 
-            if (array_sum($remainingByModule) > 0 && $cutoff->lte($payload['exam'])) {
+            if ($cutoff->lte($payload['exam'])) {
                 $this->generateItems(
                     $studyPlan,
                     $modules,
@@ -191,7 +201,9 @@ class StudyPlanGenerator
 
             $this->syncPublishedLessonsForPlan($studyPlan);
 
-            return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
+            return $reloadItems
+                ? $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user'])
+                : $studyPlan->fresh(['course', 'studyTrack', 'user']);
         });
     }
 
@@ -258,6 +270,146 @@ class StudyPlanGenerator
         }
 
         return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
+    }
+
+    protected function replaceRemovedModuleItemsBeforeCutoff(StudyPlan $studyPlan, Collection $modules, Carbon $from, Carbon $until): void
+    {
+        $moduleIds = $modules->pluck('id')->all();
+
+        if ($moduleIds === []) {
+            $this->convertRemovedModuleItemsToReserve($studyPlan, $from, $until);
+
+            return;
+        }
+
+        $removedItems = $studyPlan->items()
+            ->whereDate('scheduled_date', '>=', $from->toDateString())
+            ->whereDate('scheduled_date', '<', $until->toDateString())
+            ->whereNull('completed_at')
+            ->where(function ($query) use ($moduleIds): void {
+                $query
+                    ->where(function ($query) use ($moduleIds): void {
+                        $query
+                            ->whereNotNull('course_module_id')
+                            ->whereNotIn('course_module_id', $moduleIds);
+                    })
+                    ->orWhere(function ($query): void {
+                        $query
+                            ->whereNull('course_module_id')
+                            ->whereIn('type', ['basic', 'specific', 'complementary']);
+                    });
+            })
+            ->orderBy('scheduled_date')
+            ->orderBy('sort_order')
+            ->get();
+
+        if ($removedItems->isEmpty()) {
+            return;
+        }
+
+        $scheduledMinutesByModule = $studyPlan->items()
+            ->whereDate('scheduled_date', '<', $until->toDateString())
+            ->whereIn('course_module_id', $moduleIds)
+            ->selectRaw('course_module_id, sum(estimated_minutes) as minutes')
+            ->groupBy('course_module_id')
+            ->pluck('minutes', 'course_module_id')
+            ->map(fn ($minutes): int => (int) $minutes)
+            ->all();
+        $remainingByModule = $modules
+            ->mapWithKeys(fn (CourseModule $module): array => [
+                $module->id => max(0, (int) $module->workload_minutes - (int) ($scheduledMinutesByModule[$module->id] ?? 0)),
+            ])
+            ->all();
+        $orderedModules = $this->sortModulesForPlanning($modules);
+        $reserveIndex = 0;
+
+        foreach ($removedItems as $item) {
+            $plannedMinutes = max(15, (int) $item->estimated_minutes);
+            $blockNumber = $this->blockNumberFromItem($item);
+            $replacementModule = $orderedModules->first(fn (CourseModule $module): bool => ($remainingByModule[$module->id] ?? 0) > 0);
+
+            if ($replacementModule) {
+                $type = $this->normalizeModuleType($replacementModule->type);
+                $lessonNames = collect($replacementModule->planning_lessons)
+                    ->pluck('name')
+                    ->filter()
+                    ->take(2)
+                    ->values()
+                    ->all();
+
+                $item->forceFill([
+                    'course_module_id' => $replacementModule->id,
+                    'title' => $this->makeItemTitle($type, $replacementModule->name, $blockNumber),
+                    'description' => $this->makeItemDescription($type, $replacementModule->name, (string) $item->day_of_week, $plannedMinutes, $lessonNames),
+                    'type' => $type,
+                    'estimated_minutes' => $plannedMinutes,
+                ])->save();
+
+                $remainingByModule[$replacementModule->id] = max(0, (int) ($remainingByModule[$replacementModule->id] ?? 0) - $plannedMinutes);
+
+                continue;
+            }
+
+            $type = $reserveIndex % 2 === 0 ? 'questions' : 'review';
+            $reserveIndex++;
+
+            $item->forceFill([
+                'course_module_id' => null,
+                'title' => $type === 'questions'
+                    ? 'Bloco '.$blockNumber.' · Questões'
+                    : 'Bloco '.$blockNumber.' · Revisão',
+                'description' => $type === 'questions'
+                    ? 'Reserva de até '.$plannedMinutes.' minutos para resolver questões e manter a prática sem alterar o progresso já feito.'
+                    : 'Reserva de até '.$plannedMinutes.' minutos para revisar pontos importantes sem alterar o progresso já feito.',
+                'type' => $type,
+                'estimated_minutes' => $plannedMinutes,
+            ])->save();
+        }
+    }
+
+    protected function convertRemovedModuleItemsToReserve(StudyPlan $studyPlan, Carbon $from, Carbon $until): void
+    {
+        $items = $studyPlan->items()
+            ->whereDate('scheduled_date', '>=', $from->toDateString())
+            ->whereDate('scheduled_date', '<', $until->toDateString())
+            ->whereNull('completed_at')
+            ->where(function ($query): void {
+                $query
+                    ->whereNotNull('course_module_id')
+                    ->orWhereIn('type', ['basic', 'specific', 'complementary']);
+            })
+            ->orderBy('scheduled_date')
+            ->orderBy('sort_order')
+            ->get();
+        $reserveIndex = 0;
+
+        foreach ($items as $item) {
+            $plannedMinutes = max(15, (int) $item->estimated_minutes);
+            $blockNumber = $this->blockNumberFromItem($item);
+            $type = $reserveIndex % 2 === 0 ? 'questions' : 'review';
+            $reserveIndex++;
+
+            $item->forceFill([
+                'course_module_id' => null,
+                'title' => $type === 'questions'
+                    ? 'Bloco '.$blockNumber.' · Questões'
+                    : 'Bloco '.$blockNumber.' · Revisão',
+                'description' => $type === 'questions'
+                    ? 'Reserva de até '.$plannedMinutes.' minutos para resolver questões e manter a prática sem alterar o progresso já feito.'
+                    : 'Reserva de até '.$plannedMinutes.' minutos para revisar pontos importantes sem alterar o progresso já feito.',
+                'type' => $type,
+                'estimated_minutes' => $plannedMinutes,
+            ])->save();
+        }
+    }
+
+    protected function blockNumberFromItem(StudyPlanItem $item): int
+    {
+        if (preg_match('/Bloco\s+(\d+)/i', (string) $item->title, $matches)) {
+            return max(1, (int) $matches[1]);
+        }
+
+        return max(1, (int) $item->sort_order);
     }
 
     public function smartRebalance(StudyPlan $studyPlan): StudyPlan
@@ -445,7 +597,7 @@ class StudyPlanGenerator
                 ->where('course_modules.is_active', true)
                 ->get()
                 ->reject(fn (CourseModule $module) => $this->shouldSkipModule($module))
-                ->sortBy('sort_order')
+                ->sortBy(fn (CourseModule $module) => $this->modulePlanningOrder($module))
                 ->values();
         }
 
@@ -462,8 +614,20 @@ class StudyPlanGenerator
             ->concat($legacyModules)
             ->unique('id')
             ->reject(fn (CourseModule $module) => $this->shouldSkipModule($module))
-            ->sortBy('sort_order')
+            ->sortBy(fn (CourseModule $module) => $this->modulePlanningOrder($module))
             ->values();
+    }
+
+    protected function sortModulesForPlanning(Collection $modules): Collection
+    {
+        return $modules
+            ->sortBy(fn (CourseModule $module) => $this->modulePlanningOrder($module))
+            ->values();
+    }
+
+    protected function modulePlanningOrder(CourseModule $module): int
+    {
+        return (int) ($module->pivot?->sort_order ?? $module->sort_order);
     }
 
     protected function shouldSkipModule(CourseModule $module): bool
@@ -603,9 +767,7 @@ class StudyPlanGenerator
         array $completedModules = [],
         int $initialSortOrder = 1,
     ): void {
-        $orderedModules = $modules
-            ->sortBy('sort_order')
-            ->values();
+        $orderedModules = $this->sortModulesForPlanning($modules);
         $theoryModules = $orderedModules
             ->filter(fn (CourseModule $module) => in_array($this->normalizeModuleType($module->type), ['basic', 'specific', 'complementary'], true))
             ->values();

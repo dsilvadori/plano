@@ -40,10 +40,20 @@ class CourseLessonMediaImporter
                 'missing' => 0,
             ];
 
-            $course->modules()
+            $pivotModules = $course->modules()
                 ->where('course_modules.is_active', true)
                 ->orderBy('course_modules.sort_order')
-                ->get()
+                ->get();
+            $legacyModules = CourseModule::query()
+                ->where('course_id', $course->id)
+                ->where('is_active', true)
+                ->orderBy('sort_order')
+                ->get();
+
+            $pivotModules
+                ->concat($legacyModules)
+                ->unique('id')
+                ->values()
                 ->each(function (CourseModule $module) use ($mediaFiles, $minimumConfidence, &$summary): void {
                     $lessons = $module->lessons ?? [];
 

@@ -1078,7 +1078,7 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertSame(99, $plan->fresh()->progress_percentage);
     }
 
-    public function test_active_course_updates_refresh_student_plans_from_the_following_week(): void
+    public function test_active_course_updates_refresh_student_plans_from_the_third_week(): void
     {
         Carbon::setTestNow('2026-07-21 09:00:00');
 
@@ -1106,7 +1106,7 @@ class StudyPlanGeneratorTest extends TestCase
                 'balanced',
             );
 
-            $cutoff = Carbon::parse('2026-07-27')->startOfDay();
+            $cutoff = Carbon::parse('2026-08-10')->startOfDay();
             $currentWeekItemIds = $plan->items()
                 ->whereDate('scheduled_date', '<', $cutoff->toDateString())
                 ->pluck('id')
