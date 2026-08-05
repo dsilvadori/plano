@@ -203,8 +203,9 @@ Artisan::command('study-plans:refresh-active {--course-id=* : Limita a correçã
                     $plan->available_days ?? [],
                     $plan->available_minutes_by_day ?? [],
                     $plan->intensity ?: 'balanced',
-                    now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
+                    now()->addWeeks(3)->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
                     false,
+                    now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
                 );
 
                 $afterRequired = (int) $refreshedPlan->total_required_minutes;

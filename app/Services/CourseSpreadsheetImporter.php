@@ -129,8 +129,9 @@ class CourseSpreadsheetImporter
                     $studyPlan->available_days ?? [],
                     $studyPlan->available_minutes_by_day ?? [],
                     $studyPlan->intensity ?: 'balanced',
-                    now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
+                    now()->addWeeks(3)->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
                     false,
+                    now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
                 );
             });
     }

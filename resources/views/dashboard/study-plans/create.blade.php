@@ -7,6 +7,6 @@
     </x-slot>
 
     <div class="card-panel">
-        <livewire:study-plan-builder :study-plan="$studyPlan" :key="$builderKey" />
+        <livewire:study-plan-builder :study-plan="$studyPlan" :old-input="session()->getOldInput()" :key="$builderKey" />
     </div>
 </x-app-layout>

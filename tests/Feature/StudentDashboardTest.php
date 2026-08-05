@@ -8,7 +8,11 @@ use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
 use App\Models\User;
+use App\Livewire\StudyPlanBuilder;
+use App\Livewire\StudyPlanViewer;
+use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Livewire\Livewire;
 use Tests\TestCase;
 
 class StudentDashboardTest extends TestCase
@@ -50,7 +54,7 @@ class StudentDashboardTest extends TestCase
         $response = $this->actingAs($student)->post('/dashboard/plano', [
             'course_id' => $course->id,
             'study_track_id' => $track->id,
-            'exam_date' => now()->addWeeks(8)->toDateString(),
+            'exam_date' => now()->addWeeks(52)->toDateString(),
             'start_date' => now()->toDateString(),
             'available_days' => ['monday', 'wednesday', 'friday'],
             'available_minutes_by_day' => [
@@ -62,10 +66,169 @@ class StudentDashboardTest extends TestCase
         ]);
 
         $plan = StudyPlan::first();
+        $response->assertSessionHasNoErrors();
 
         $response->assertRedirect(route('study-plans.show', $plan));
         $this->assertNotNull($plan);
         $this->assertGreaterThan(0, $plan->items()->count());
+    }
+
+    public function test_builder_suggests_minimum_weekly_load_when_course_has_exam_date(): void
+    {
+        $course = Course::factory()->create([
+            'exam_date' => now()->addDays(13)->toDateString(),
+        ]);
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'type' => 'basic',
+            'workload_minutes' => 600,
+            'sort_order' => 1,
+        ]);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        Livewire::actingAs($student)
+            ->test(StudyPlanBuilder::class)
+            ->set('course_id', $course->id)
+            ->set('available_days', ['monday', 'wednesday', 'friday'])
+            ->set('available_minutes_by_day.monday', '01:00')
+            ->set('available_minutes_by_day.wednesday', '01:00')
+            ->set('available_minutes_by_day.friday', '01:00')
+            ->assertSee('Carga mínima sugerida')
+            ->assertSee('6:30 por semana')
+            ->assertSee('Atual: 3:00 / semana')
+            ->assertSee('aumente pelo menos 3:30 por semana');
+    }
+
+    public function test_builder_fills_admin_exam_date_when_course_is_selected(): void
+    {
+        $adminExamDate = now()->addMonth()->toDateString();
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Administrador',
+            'exam_date' => $adminExamDate,
+        ]);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        Livewire::actingAs($student)
+            ->test(StudyPlanBuilder::class)
+            ->call('selectCourse', $course->id)
+            ->assertSet('exam_date_locked', true)
+            ->assertSet('exam_date', $adminExamDate)
+            ->assertSee('(definida no curso)')
+            ->assertSee($adminExamDate);
+    }
+
+    public function test_student_cannot_generate_plan_below_minimum_weekly_load_when_exam_date_exists(): void
+    {
+        $course = Course::factory()->create([
+            'exam_date' => now()->addDays(13)->toDateString(),
+        ]);
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'type' => 'basic',
+            'workload_minutes' => 600,
+            'sort_order' => 1,
+        ]);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)->post('/dashboard/plano', [
+            'course_id' => $course->id,
+            'exam_date' => now()->addDays(13)->toDateString(),
+            'start_date' => now()->toDateString(),
+            'available_days' => ['monday', 'wednesday', 'friday'],
+            'available_minutes_by_day' => [
+                'monday' => '1:00',
+                'wednesday' => '1:00',
+                'friday' => '1:00',
+            ],
+            'intensity' => 'balanced',
+        ])->assertSessionHasErrors([
+            'available_days' => 'Para gerar este plano até a prova, informe pelo menos 6:30 por semana. Hoje você informou 3:00.',
+        ]);
+
+        $this->assertSame(0, StudyPlan::query()->count());
+    }
+
+    public function test_builder_keeps_submitted_course_and_exam_date_after_minimum_weekly_load_error(): void
+    {
+        $course = Course::factory()->create();
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'type' => 'basic',
+            'workload_minutes' => 600,
+            'sort_order' => 1,
+        ]);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $examDate = now()->addDays(13)->toDateString();
+
+        $this->withSession(['_old_input' => [
+            'course_id' => (string) $course->id,
+            'exam_date' => $examDate,
+            'start_date' => now()->toDateString(),
+            'available_days' => ['monday', 'wednesday', 'friday'],
+            'available_minutes_by_day' => [
+                'monday' => '1:00',
+                'wednesday' => '1:00',
+                'friday' => '1:00',
+            ],
+            'intensity' => 'balanced',
+        ]]);
+
+        $response = $this->actingAs($student)
+            ->get('/dashboard/plano/novo')
+            ->assertOk()
+            ->assertSee('Carga mínima sugerida')
+            ->assertSee('6:30 por semana')
+            ->assertSee('Atual: 3:00 / semana')
+            ->assertSee($examDate);
+
+        $content = $response->getContent();
+
+        foreach (['monday', 'wednesday', 'friday'] as $day) {
+            $this->assertMatchesRegularExpression(
+                '/name="available_days\[\]"\s+wire:model\.live="available_days"\s+value="'.$day.'"\s+type="checkbox"\s+checked/s',
+                $content,
+            );
+        }
+    }
+
+    public function test_builder_shows_admin_exam_date_when_returning_after_validation_error(): void
+    {
+        $adminExamDate = now()->addMonth()->toDateString();
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Administrador',
+            'exam_date' => $adminExamDate,
+        ]);
+        CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'type' => 'basic',
+            'workload_minutes' => 600,
+            'sort_order' => 1,
+        ]);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->withSession(['_old_input' => [
+            'course_id' => (string) $course->id,
+            'start_date' => now()->toDateString(),
+            'available_days' => ['monday', 'wednesday', 'friday'],
+            'available_minutes_by_day' => [
+                'monday' => '2:00',
+                'wednesday' => '2:00',
+                'friday' => '2:00',
+            ],
+            'intensity' => 'balanced',
+        ]]);
+
+        $this->actingAs($student)
+            ->get('/dashboard/plano/novo')
+            ->assertOk()
+            ->assertSee('Gabaritando Santos - Administrador')
+            ->assertSee('(definida no curso)')
+            ->assertSee($adminExamDate);
     }
 
     public function test_study_plan_creation_validation_messages_are_translated(): void
@@ -104,7 +267,7 @@ class StudentDashboardTest extends TestCase
 
         $response = $this->actingAs($student)->post('/dashboard/plano', [
             'course_id' => $course->id,
-            'exam_date' => now()->addWeeks(8)->toDateString(),
+            'exam_date' => now()->addWeeks(52)->toDateString(),
             'start_date' => now()->toDateString(),
             'available_days' => ['monday', 'wednesday', 'friday'],
             'available_minutes_by_day' => [
@@ -137,7 +300,7 @@ class StudentDashboardTest extends TestCase
 
         $response = $this->actingAs($student)->post('/dashboard/plano', [
             'course_id' => $secondCourse->id,
-            'exam_date' => now()->addWeeks(8)->toDateString(),
+            'exam_date' => now()->addWeeks(52)->toDateString(),
             'start_date' => now()->toDateString(),
             'available_days' => ['monday', 'wednesday', 'friday'],
             'available_minutes_by_day' => [
@@ -213,6 +376,134 @@ class StudentDashboardTest extends TestCase
         $this->assertNotNull($item->fresh()->completed_at);
     }
 
+    public function test_student_can_manually_adjust_a_plan_day_without_losing_completed_items(): void
+    {
+        ['student' => $student, 'course' => $course, 'track' => $track] = $this->makeStudentWithCourse();
+
+        $firstModule = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Pontuação',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Pontuação - Parte 01', 'minutes' => 30],
+                ['name' => 'Pontuação - Parte 02', 'minutes' => 30],
+                ['name' => 'Pontuação - Parte 03', 'minutes' => 30],
+            ],
+            'workload_minutes' => 90,
+            'sort_order' => 1,
+        ]);
+        $secondModule = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Classes de Palavras',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Classes de palavras', 'minutes' => 45],
+            ],
+            'workload_minutes' => 45,
+            'sort_order' => 2,
+        ]);
+        $track->modules()->sync([
+            $firstModule->id => ['weight' => 1, 'sort_order' => 1],
+            $secondModule->id => ['weight' => 1, 'sort_order' => 2],
+        ]);
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'study_track_id' => $track->id,
+            'status' => 'active',
+        ]);
+        $date = now()->next('monday')->toDateString();
+        $completedItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $firstModule->id,
+            'scheduled_date' => $date,
+            'week_number' => 1,
+            'day_of_week' => 'monday',
+            'type' => 'basic',
+            'estimated_minutes' => 30,
+            'completed_at' => now(),
+            'sort_order' => 1,
+        ]);
+        $pendingItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $firstModule->id,
+            'scheduled_date' => $date,
+            'week_number' => 1,
+            'day_of_week' => 'monday',
+            'title' => 'Bloco 2 · Matéria Básica: Português - Pontuação',
+            'type' => 'basic',
+            'estimated_minutes' => 30,
+            'completed_at' => null,
+            'sort_order' => 2,
+        ]);
+        $unchangedPendingItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $firstModule->id,
+            'scheduled_date' => $date,
+            'week_number' => 1,
+            'day_of_week' => 'monday',
+            'title' => 'Bloco 3 · Matéria Básica: Português - Pontuação',
+            'description' => 'Descrição original que deve ficar intacta.',
+            'type' => 'basic',
+            'estimated_minutes' => 30,
+            'completed_at' => null,
+            'sort_order' => 3,
+        ]);
+        $targetOriginalItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $secondModule->id,
+            'scheduled_date' => now()->next('monday')->addWeek()->toDateString(),
+            'week_number' => 2,
+            'day_of_week' => 'monday',
+            'title' => 'Bloco 1 · Matéria Básica: Português - Classes de Palavras',
+            'description' => 'Destino original da aula escolhida.',
+            'type' => 'basic',
+            'estimated_minutes' => 45,
+            'completed_at' => null,
+            'sort_order' => 4,
+        ]);
+
+        Livewire::actingAs($student)
+            ->test(StudyPlanViewer::class, ['studyPlan' => $plan])
+            ->call('editDay', $date)
+            ->assertSet('manualDayRows.0.block_number', 2)
+            ->assertSet('manualDayRows.0.lesson_index', '1')
+            ->set('manualDayRows.0.module_id', (string) $secondModule->id)
+            ->assertSet('manualDayRows.0.lesson_index', '0')
+            ->assertSet('manualDayRows.0.minutes', '0:45')
+            ->call('saveManualDay')
+            ->assertSet('manualDayConfirmation.swaps.0.missing_target', false)
+            ->call('confirmManualDay')
+            ->assertHasNoErrors();
+
+        $this->assertNotNull($completedItem->fresh()->completed_at);
+        $this->assertSame($firstModule->id, $completedItem->fresh()->course_module_id);
+        $this->assertDatabaseHas('study_plan_items', [
+            'id' => $pendingItem->id,
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $secondModule->id,
+            'title' => 'Bloco 2 · Matéria Básica: Português - Classes de Palavras',
+            'estimated_minutes' => 45,
+        ]);
+        $this->assertDatabaseHas('study_plan_items', [
+            'id' => $unchangedPendingItem->id,
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $firstModule->id,
+            'title' => 'Bloco 3 · Matéria Básica: Português - Pontuação',
+            'description' => 'Descrição original que deve ficar intacta.',
+            'estimated_minutes' => 30,
+        ]);
+        $this->assertSame('Ajuste manual do aluno. Aulas do bloco: Classes de palavras.', $pendingItem->fresh()->description);
+        $this->assertDatabaseHas('study_plan_items', [
+            'id' => $targetOriginalItem->id,
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $firstModule->id,
+            'title' => 'Bloco 1 · Matéria Básica: Português - Pontuação',
+            'estimated_minutes' => 30,
+        ]);
+        $this->assertSame('Ajuste manual do aluno. Aulas do bloco: Pontuação - Parte 02.', $targetOriginalItem->fresh()->description);
+    }
+
     public function test_study_plan_viewer_shows_each_lesson_with_its_own_duration(): void
     {
         ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
@@ -257,6 +548,47 @@ class StudentDashboardTest extends TestCase
             ->assertSee('Advérbio e Conjunção')
             ->assertSee('35 min')
             ->assertDontSee('Descrição antiga com aulas em texto corrido.');
+    }
+
+    public function test_student_can_open_manual_day_editor_from_viewer(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Classes de Palavras',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Substantivo', 'minutes' => 45],
+            ],
+            'workload_minutes' => 45,
+        ]);
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'start_date' => now()->toDateString(),
+        ]);
+        $date = now()->toDateString();
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => $date,
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Português - Classes de Palavras',
+            'type' => 'basic',
+            'estimated_minutes' => 45,
+            'completed_at' => null,
+            'sort_order' => 1,
+        ]);
+
+        Livewire::actingAs($student)
+            ->test(StudyPlanViewer::class, ['studyPlan' => $plan])
+            ->assertSee('Editar dia')
+            ->call('editDay', $date)
+            ->assertSet('editingDate', $date)
+            ->assertSet('manualDayRows.0.item_id', (string) $item->id)
+            ->assertSee('Ajuste manual do dia')
+            ->assertSee('Português - Classes de Palavras');
     }
 
     public function test_student_can_delete_own_plan(): void
@@ -413,7 +745,7 @@ class StudentDashboardTest extends TestCase
             'sort_order' => 2,
         ]);
 
-        $pendingItem = StudyPlanItem::factory()->create([
+        $currentWeekPendingItem = StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $module->id,
             'scheduled_date' => now()->addDay()->toDateString(),
@@ -423,6 +755,17 @@ class StudentDashboardTest extends TestCase
             'estimated_minutes' => 60,
             'completed_at' => null,
             'sort_order' => 3,
+        ]);
+        $nextWeekPendingItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
+            'week_number' => 2,
+            'day_of_week' => 'monday',
+            'type' => 'basic',
+            'estimated_minutes' => 60,
+            'completed_at' => null,
+            'sort_order' => 4,
         ]);
 
         $response = $this->actingAs($student)->put(route('study-plans.update', $plan), [
@@ -448,11 +791,15 @@ class StudentDashboardTest extends TestCase
             'id' => $pastPendingItem->id,
             'study_plan_id' => $plan->id,
         ]);
+        $this->assertDatabaseHas('study_plan_items', [
+            'id' => $currentWeekPendingItem->id,
+            'study_plan_id' => $plan->id,
+        ]);
         $this->assertDatabaseMissing('study_plan_items', [
-            'id' => $pendingItem->id,
+            'id' => $nextWeekPendingItem->id,
         ]);
         $this->assertTrue($plan->fresh()->items()->whereNotNull('completed_at')->exists());
-        $this->assertTrue($plan->fresh()->items()->whereDate('scheduled_date', '>=', now()->toDateString())->exists());
+        $this->assertTrue($plan->fresh()->items()->whereDate('scheduled_date', '>=', now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString())->exists());
     }
 
     public function test_student_can_rebalance_plan_automatically(): void

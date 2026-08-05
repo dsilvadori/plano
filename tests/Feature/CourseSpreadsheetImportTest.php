@@ -282,7 +282,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($plan->items()->where('estimated_minutes', 35)->where('description', 'like', '%Lei Orgânica - Santos%')->exists());
     }
 
-    public function test_importing_structure_rebuilds_active_plans_only_from_next_week(): void
+    public function test_importing_structure_rebuilds_active_plans_only_from_third_week(): void
     {
         Carbon::setTestNow('2026-07-29 09:00:00');
 
@@ -312,7 +312,7 @@ class CourseSpreadsheetImportTest extends TestCase
                 'course_id' => $course->id,
                 'study_track_id' => $track->id,
                 'name' => 'Plano vigente',
-                'exam_date' => now()->addWeeks(2),
+                'exam_date' => now()->addWeeks(6),
                 'exam_date_confirmed' => true,
                 'start_date' => now(),
                 'available_days' => ['monday', 'wednesday', 'thursday', 'friday'],
@@ -363,6 +363,28 @@ class CourseSpreadsheetImportTest extends TestCase
                 'estimated_minutes' => 30,
                 'sort_order' => 3,
             ]);
+            $thirdWeekItem = $plan->items()->create([
+                'course_module_id' => $module->id,
+                'scheduled_date' => now()->addWeeks(2)->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
+                'week_number' => 3,
+                'day_of_week' => 'monday',
+                'title' => 'Bloco terceira semana antigo',
+                'description' => 'Bloco terceira semana antigo.',
+                'type' => 'basic',
+                'estimated_minutes' => 30,
+                'sort_order' => 4,
+            ]);
+            $fourthWeekItem = $plan->items()->create([
+                'course_module_id' => $module->id,
+                'scheduled_date' => now()->addWeeks(3)->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
+                'week_number' => 4,
+                'day_of_week' => 'monday',
+                'title' => 'Bloco quarta semana antigo',
+                'description' => 'Bloco quarta semana antigo.',
+                'type' => 'basic',
+                'estimated_minutes' => 30,
+                'sort_order' => 5,
+            ]);
 
             app(CourseSpreadsheetImporter::class)->importInto($course, $this->makeWorkbook([
                 'Nome do Curso' => [
@@ -391,13 +413,21 @@ class CourseSpreadsheetImportTest extends TestCase
                 'id' => $currentWeekItem->id,
                 'title' => 'Bloco da semana atual',
             ]);
-            $this->assertDatabaseMissing('study_plan_items', [
+            $this->assertDatabaseHas('study_plan_items', [
                 'id' => $nextWeekItem->id,
+                'title' => 'Bloco futuro antigo',
+            ]);
+            $this->assertDatabaseHas('study_plan_items', [
+                'id' => $thirdWeekItem->id,
+                'title' => 'Bloco terceira semana antigo',
+            ]);
+            $this->assertDatabaseMissing('study_plan_items', [
+                'id' => $fourthWeekItem->id,
             ]);
             $this->assertSame(60, $plan->total_required_minutes);
             $this->assertTrue(
                 $plan->items()
-                    ->whereDate('scheduled_date', '>=', now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString())
+                    ->whereDate('scheduled_date', '>=', now()->addWeeks(3)->startOfWeek(CarbonInterface::MONDAY)->toDateString())
                     ->where('description', 'like', '%Aula nova B%')
                     ->exists()
             );

@@ -6,9 +6,11 @@ use App\Models\CourseModule;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Support\StudyTime;
+use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\View\View;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+use Illuminate\Support\Collection;
 use Livewire\Component;
 
 class StudyPlanViewer extends Component
@@ -17,6 +19,9 @@ class StudyPlanViewer extends Component
 
     public StudyPlan $studyPlan;
     public int $selectedWeek = 1;
+    public ?string $editingDate = null;
+    public array $manualDayRows = [];
+    public ?array $manualDayConfirmation = null;
 
     protected $listeners = ['study-plan-item-toggled' => '$refresh'];
 
@@ -30,6 +35,259 @@ class StudyPlanViewer extends Component
     public function selectWeek(int $week): void
     {
         $this->selectedWeek = $week;
+    }
+
+    public function editDay(string $date): void
+    {
+        $this->editingDate = Carbon::parse($date)->toDateString();
+        $this->manualDayConfirmation = null;
+        $this->resetErrorBag();
+
+        $lessonSelections = $this->buildItemLessonSelections();
+        $rows = $this->orderedPlanItems()
+            ->filter(fn (StudyPlanItem $item): bool => $item->scheduled_date?->toDateString() === $this->editingDate)
+            ->values()
+            ->map(fn (StudyPlanItem $item, int $index): ?array => filled($item->completed_at) ? null : [
+                'item_id' => (string) $item->id,
+                'block_number' => $this->blockNumberFromItem($item, $index + 1),
+                'module_id' => $item->course_module_id ? (string) $item->course_module_id : '',
+                'lesson_index' => (string) ($lessonSelections[$item->id]['lesson_index'] ?? ''),
+                'minutes' => StudyTime::formatMinutes((int) $item->estimated_minutes),
+                'sort_order' => (int) $item->sort_order,
+                'original_module_id' => $item->course_module_id ? (string) $item->course_module_id : '',
+                'original_lesson_index' => (string) ($lessonSelections[$item->id]['lesson_index'] ?? ''),
+                'original_minutes' => StudyTime::formatMinutes((int) $item->estimated_minutes),
+            ])
+            ->filter()
+            ->values()
+            ->all();
+
+        $this->manualDayRows = $rows !== [] ? $rows : [$this->blankManualDayRow()];
+    }
+
+    public function updatedManualDayRows(mixed $value, string $key): void
+    {
+        [$rowIndex, $field] = array_pad(explode('.', $key, 2), 2, null);
+        $rowIndex = is_numeric($rowIndex) ? (int) $rowIndex : null;
+
+        if ($rowIndex === null || ! isset($this->manualDayRows[$rowIndex])) {
+            return;
+        }
+
+        if ($field === 'module_id') {
+            $module = $this->editableModules()->firstWhere('id', (int) $value);
+            $firstLesson = $module?->planning_lessons[0] ?? null;
+
+            $this->manualDayRows[$rowIndex]['lesson_index'] = $firstLesson ? '0' : '';
+            $this->manualDayRows[$rowIndex]['minutes'] = $firstLesson
+                ? StudyTime::formatMinutes((int) ($firstLesson['minutes'] ?? 0))
+                : '0:30';
+        }
+
+        if ($field === 'lesson_index') {
+            $module = $this->editableModules()->firstWhere('id', (int) ($this->manualDayRows[$rowIndex]['module_id'] ?? 0));
+            $lesson = ($value !== '' && $module) ? ($module->planning_lessons[(int) $value] ?? null) : null;
+
+            if ($lesson) {
+                $this->manualDayRows[$rowIndex]['minutes'] = StudyTime::formatMinutes((int) ($lesson['minutes'] ?? 0));
+            }
+        }
+    }
+
+    public function cancelDayEdit(): void
+    {
+        $this->editingDate = null;
+        $this->manualDayRows = [];
+        $this->manualDayConfirmation = null;
+        $this->resetErrorBag();
+    }
+
+    public function addManualDayRow(): void
+    {
+        $this->manualDayRows[] = $this->blankManualDayRow();
+    }
+
+    public function removeManualDayRow(int $index): void
+    {
+        unset($this->manualDayRows[$index]);
+        $this->manualDayRows = array_values($this->manualDayRows);
+
+        if ($this->manualDayRows === []) {
+            $this->manualDayRows[] = $this->blankManualDayRow();
+        }
+    }
+
+    public function saveManualDay(): void
+    {
+        $this->persistManualDay(false);
+    }
+
+    public function confirmManualDay(): void
+    {
+        $this->persistManualDay(true);
+    }
+
+    public function cancelManualDayConfirmation(): void
+    {
+        $this->manualDayConfirmation = null;
+    }
+
+    protected function persistManualDay(bool $confirmed): void
+    {
+        $this->authorize('update', $this->studyPlan);
+
+        if (! $this->editingDate) {
+            return;
+        }
+
+        $date = Carbon::parse($this->editingDate)->startOfDay();
+        $modules = $this->editableModules()->keyBy('id');
+        $this->studyPlan->load(['items.courseModule']);
+        $pendingItemsById = $this->studyPlan->items()
+            ->whereDate('scheduled_date', $date->toDateString())
+            ->whereNull('completed_at')
+            ->get()
+            ->keyBy('id');
+        $rows = collect($this->manualDayRows)
+            ->map(function (array $row) use ($modules, $pendingItemsById): ?array {
+                $itemId = (int) ($row['item_id'] ?? 0);
+                $hasExistingItem = $itemId > 0 && $pendingItemsById->has($itemId);
+
+                if ($hasExistingItem && $this->manualDayRowIsUnchanged($row)) {
+                    return [
+                        'item_id' => $itemId,
+                        'preserve' => true,
+                    ];
+                }
+
+                $module = $modules->get((int) ($row['module_id'] ?? 0));
+
+                if (! $module) {
+                    return $hasExistingItem
+                        ? [
+                            'item_id' => $itemId,
+                            'preserve' => true,
+                        ]
+                        : null;
+                }
+
+                $lessons = $module->planning_lessons;
+                $lessonIndex = ($row['lesson_index'] ?? '') !== '' ? (int) $row['lesson_index'] : null;
+                $lesson = $lessonIndex !== null ? ($lessons[$lessonIndex] ?? null) : null;
+                $minutes = StudyTime::parseToMinutes($row['minutes'] ?? null);
+
+                if ($lesson && $minutes <= 0) {
+                    $minutes = (int) ($lesson['minutes'] ?? 0);
+                }
+
+                if ($minutes <= 0) {
+                    return null;
+                }
+
+                return [
+                    'item_id' => $itemId,
+                    'preserve' => false,
+                    'module_id' => (int) $module->id,
+                    'lesson_index' => $lessonIndex,
+                    'original_module_id' => filled($row['original_module_id'] ?? null) ? (int) $row['original_module_id'] : null,
+                    'original_lesson_index' => filled($row['original_lesson_index'] ?? null) ? (int) $row['original_lesson_index'] : null,
+                    'original_minutes' => StudyTime::parseToMinutes($row['original_minutes'] ?? null),
+                    'module' => $module,
+                    'lesson' => $lesson,
+                    'minutes' => $minutes,
+                    'block_number' => (int) ($row['block_number'] ?? 0),
+                    'sort_order' => (int) ($row['sort_order'] ?? 0),
+                ];
+            })
+            ->filter()
+            ->values();
+
+        if ($rows->isEmpty()) {
+            $this->addError('manualDayRows', 'Escolha pelo menos uma aula ou módulo para este dia.');
+
+            return;
+        }
+
+        $swaps = $this->buildManualDaySwaps($rows, $modules);
+        $changesCount = $rows->filter(fn (array $row): bool => ! ($row['preserve'] ?? false))->count();
+
+        if (! $confirmed && $changesCount > 0) {
+            $this->manualDayConfirmation = [
+                'swaps' => $swaps['summaries'],
+                'changes_count' => $changesCount,
+            ];
+
+            return;
+        }
+
+        $this->manualDayConfirmation = null;
+        $rowItemIds = $rows
+            ->pluck('item_id')
+            ->map(fn ($id) => (int) $id)
+            ->filter()
+            ->values()
+            ->all();
+        $swapItemIds = collect($swaps['updates'])
+            ->map(fn (array $swap) => (int) $swap['item']->id)
+            ->filter()
+            ->values()
+            ->all();
+        $preservedItemIds = array_values(array_unique([...$rowItemIds, ...$swapItemIds]));
+        $sortOrder = ((int) $this->studyPlan->items()
+            ->whereDate('scheduled_date', $date->toDateString())
+            ->max('sort_order')) + 1;
+        $nextBlockNumber = ((int) $this->studyPlan->items()
+            ->whereDate('scheduled_date', $date->toDateString())
+            ->count()) + 1;
+
+        $this->studyPlan->items()
+            ->whereDate('scheduled_date', $date->toDateString())
+            ->whereNull('completed_at')
+            ->when($preservedItemIds !== [], fn ($query) => $query->whereNotIn('id', $preservedItemIds))
+            ->delete();
+
+        foreach ($rows as $row) {
+            if ($row['preserve'] ?? false) {
+                continue;
+            }
+
+            $module = $row['module'];
+            $lesson = $row['lesson'];
+            $type = $this->normalizeModuleType((string) $module->type);
+            $lessonName = $lesson ? (string) ($lesson['name'] ?? '') : '';
+            $blockNumber = max(1, (int) ($row['block_number'] ?? $nextBlockNumber++));
+
+            $attributes = [
+                'course_module_id' => $module->id,
+                'scheduled_date' => $date->toDateString(),
+                'week_number' => $this->weekNumberForDate($date),
+                'day_of_week' => strtolower($date->englishDayOfWeek),
+                'title' => $this->manualItemTitle($type, $module->name, $blockNumber),
+                'description' => $lessonName !== ''
+                    ? 'Ajuste manual do aluno. Aulas do bloco: '.$lessonName.'.'
+                    : 'Ajuste manual do aluno para estudar '.$module->name.'.',
+                'type' => $type,
+                'estimated_minutes' => (int) $row['minutes'],
+                'sort_order' => (int) ($row['sort_order'] ?? 0) ?: $sortOrder++,
+            ];
+            $existingItem = ((int) ($row['item_id'] ?? 0)) > 0
+                ? $pendingItemsById->get((int) $row['item_id'])
+                : null;
+
+            if ($existingItem) {
+                $existingItem->forceFill($attributes)->save();
+            } else {
+                $this->studyPlan->items()->create($attributes);
+            }
+        }
+
+        foreach ($swaps['updates'] as $swap) {
+            $swap['item']->forceFill($swap['attributes'])->save();
+        }
+
+        $this->studyPlan = $this->studyPlan->fresh(['items.courseModule', 'course', 'studyTrack']);
+        $this->editingDate = null;
+        $this->manualDayRows = [];
     }
 
     public function render(): View
@@ -133,10 +391,19 @@ class StudyPlanViewer extends Component
             'weeklyBreakdownMessage' => $weeklyBreakdownMessage,
             'selectedWeekRange' => $selectedWeekRange,
             'itemLessons' => $itemLessons,
+            'editableModules' => $this->editableModules(),
         ]);
     }
 
     protected function buildItemLessons(): array
+    {
+        return collect($this->buildItemLessonSelections())
+            ->map(fn (array $selection): array => $selection['lessons'])
+            ->filter()
+            ->all();
+    }
+
+    protected function buildItemLessonSelections(): array
     {
         $lessonIndexes = [];
         $lessonsByItem = [];
@@ -161,6 +428,7 @@ class StudyPlanViewer extends Component
                 $moduleId = $module->id;
                 $lessons = $module->planning_lessons;
                 $index = $lessonIndexes[$moduleId] ?? 0;
+                $firstLessonIndex = $index;
                 $minutes = 0;
                 $itemLessons = [];
 
@@ -188,7 +456,10 @@ class StudyPlanViewer extends Component
                 $lessonIndexes[$moduleId] = $index;
 
                 if ($itemLessons !== []) {
-                    $lessonsByItem[$item->id] = $itemLessons;
+                    $lessonsByItem[$item->id] = [
+                        'lesson_index' => $firstLessonIndex,
+                        'lessons' => $itemLessons,
+                    ];
                 }
             });
 
@@ -216,6 +487,212 @@ class StudyPlanViewer extends Component
                 ]);
             })
             ->values();
+    }
+
+    protected function editableModules(): Collection
+    {
+        if ($this->studyPlan->studyTrack) {
+            return $this->studyPlan->studyTrack
+                ->modules()
+                ->where('course_modules.is_active', true)
+                ->get()
+                ->values();
+        }
+
+        return $this->studyPlan->course
+            ->modules()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+    }
+
+    protected function blankManualDayRow(): array
+    {
+        return [
+            'item_id' => '',
+            'block_number' => $this->nextManualBlockNumber(),
+            'module_id' => '',
+            'lesson_index' => '',
+            'minutes' => '0:30',
+            'sort_order' => 0,
+            'original_module_id' => null,
+            'original_lesson_index' => null,
+            'original_minutes' => null,
+        ];
+    }
+
+    protected function manualDayRowIsUnchanged(array $row): bool
+    {
+        return array_key_exists('original_module_id', $row)
+            && (string) ($row['module_id'] ?? '') === (string) ($row['original_module_id'] ?? '')
+            && (string) ($row['lesson_index'] ?? '') === (string) ($row['original_lesson_index'] ?? '')
+            && StudyTime::formatMinutes(StudyTime::parseToMinutes($row['minutes'] ?? null))
+                === StudyTime::formatMinutes(StudyTime::parseToMinutes($row['original_minutes'] ?? null));
+    }
+
+    protected function buildManualDaySwaps(Collection $rows, Collection $modules): array
+    {
+        $lessonSelections = $this->buildItemLessonSelections();
+        $pendingItems = $this->studyPlan->items
+            ->whereNull('completed_at')
+            ->sortBy([
+                ['scheduled_date', 'asc'],
+                ['sort_order', 'asc'],
+                ['id', 'asc'],
+            ])
+            ->values();
+        $rowsByItemId = $rows
+            ->filter(fn (array $row): bool => (int) ($row['item_id'] ?? 0) > 0)
+            ->keyBy(fn (array $row): int => (int) $row['item_id']);
+        $usedItemIds = [];
+        $updates = [];
+        $summaries = [];
+
+        foreach ($rows as $row) {
+            if (($row['preserve'] ?? false)
+                || ! filled($row['item_id'] ?? null)
+                || ! filled($row['original_module_id'] ?? null)
+                || $row['original_lesson_index'] === null
+                || $row['lesson_index'] === null
+            ) {
+                continue;
+            }
+
+            $originalModule = $modules->get((int) $row['original_module_id']);
+            $targetModule = $modules->get((int) $row['module_id']);
+            $originalLesson = $originalModule?->planning_lessons[(int) $row['original_lesson_index']] ?? null;
+            $targetLesson = $targetModule?->planning_lessons[(int) $row['lesson_index']] ?? null;
+
+            if (! $originalModule || ! $targetModule || ! $originalLesson || ! $targetLesson) {
+                continue;
+            }
+
+            $targetItem = $pendingItems->first(function (StudyPlanItem $item) use ($row, $lessonSelections, $rowsByItemId, $usedItemIds): bool {
+                if ((int) $item->id === (int) $row['item_id']
+                    || in_array((int) $item->id, $usedItemIds, true)
+                    || (int) $item->course_module_id !== (int) $row['module_id']
+                    || (string) ($lessonSelections[$item->id]['lesson_index'] ?? '') !== (string) $row['lesson_index']
+                ) {
+                    return false;
+                }
+
+                $editingRow = $rowsByItemId->get((int) $item->id);
+
+                return ! $editingRow || ($editingRow['preserve'] ?? false);
+            });
+
+            $summaries[] = [
+                'from' => $this->lessonSwapLabel($originalModule, $originalLesson),
+                'to' => $this->lessonSwapLabel($targetModule, $targetLesson),
+                'target_date' => $targetItem?->scheduled_date?->format('d/m/Y'),
+                'missing_target' => ! $targetItem,
+            ];
+
+            if (! $targetItem) {
+                continue;
+            }
+
+            $usedItemIds[] = (int) $targetItem->id;
+            $targetDate = $targetItem->scheduled_date?->copy()->startOfDay() ?? Carbon::parse($this->editingDate)->startOfDay();
+            $blockNumber = $this->blockNumberFromItem($targetItem, (int) $targetItem->sort_order);
+            $minutes = (int) ($originalLesson['minutes'] ?? 0) ?: (int) ($row['original_minutes'] ?? 0);
+
+            $updates[] = [
+                'item' => $targetItem,
+                'attributes' => $this->manualItemAttributes(
+                    $originalModule,
+                    $originalLesson,
+                    $minutes,
+                    $targetDate,
+                    $blockNumber,
+                    (int) $targetItem->sort_order,
+                ),
+            ];
+        }
+
+        return [
+            'updates' => $updates,
+            'summaries' => $summaries,
+        ];
+    }
+
+    protected function manualItemAttributes(CourseModule $module, ?array $lesson, int $minutes, Carbon $date, int $blockNumber, int $sortOrder): array
+    {
+        $type = $this->normalizeModuleType((string) $module->type);
+        $lessonName = $lesson ? (string) ($lesson['name'] ?? '') : '';
+
+        return [
+            'course_module_id' => $module->id,
+            'scheduled_date' => $date->toDateString(),
+            'week_number' => $this->weekNumberForDate($date),
+            'day_of_week' => strtolower($date->englishDayOfWeek),
+            'title' => $this->manualItemTitle($type, $module->name, $blockNumber),
+            'description' => $lessonName !== ''
+                ? 'Ajuste manual do aluno. Aulas do bloco: '.$lessonName.'.'
+                : 'Ajuste manual do aluno para estudar '.$module->name.'.',
+            'type' => $type,
+            'estimated_minutes' => $minutes,
+            'sort_order' => $sortOrder,
+        ];
+    }
+
+    protected function lessonSwapLabel(CourseModule $module, array $lesson): string
+    {
+        return $module->name.' - '.((string) ($lesson['name'] ?? 'Aula'));
+    }
+
+    protected function nextManualBlockNumber(): int
+    {
+        if (! $this->editingDate) {
+            return count($this->manualDayRows) + 1;
+        }
+
+        $currentRows = collect($this->manualDayRows)
+            ->pluck('block_number')
+            ->map(fn ($value) => (int) $value)
+            ->filter()
+            ->all();
+        $existingBlocks = $this->orderedPlanItems()
+            ->filter(fn (StudyPlanItem $item): bool => $item->scheduled_date?->toDateString() === $this->editingDate)
+            ->values()
+            ->keys()
+            ->map(fn (int $index) => $index + 1)
+            ->all();
+
+        return max([0, ...$currentRows, ...$existingBlocks]) + 1;
+    }
+
+    protected function blockNumberFromItem(StudyPlanItem $item, int $fallback): int
+    {
+        if (preg_match('/Bloco\s+(\d+)/i', (string) $item->title, $matches)) {
+            return max(1, (int) $matches[1]);
+        }
+
+        return max(1, $fallback);
+    }
+
+    protected function weekNumberForDate(Carbon $date): int
+    {
+        $reference = $this->studyPlan->start_date?->copy()->startOfWeek(CarbonInterface::MONDAY)
+            ?? $date->copy()->startOfWeek(CarbonInterface::MONDAY);
+
+        return $reference->diffInWeeks($date->copy()->startOfWeek(CarbonInterface::MONDAY)) + 1;
+    }
+
+    protected function normalizeModuleType(string $type): string
+    {
+        return in_array($type, ['basic', 'specific', 'complementary'], true) ? $type : 'other';
+    }
+
+    protected function manualItemTitle(string $type, string $moduleName, int $blockNumber): string
+    {
+        return match ($type) {
+            'basic' => 'Bloco '.$blockNumber.' · Matéria Básica: '.$moduleName,
+            'specific' => 'Bloco '.$blockNumber.' · Conhecimentos Específicos: '.$moduleName,
+            'complementary' => 'Bloco '.$blockNumber.' · Conhecimentos Complementares: '.$moduleName,
+            default => 'Bloco '.$blockNumber.' · '.$moduleName,
+        };
     }
 
     protected function formatLessonMinutes(int $minutes): string

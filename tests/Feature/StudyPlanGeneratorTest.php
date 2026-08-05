@@ -57,6 +57,57 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertTrue(in_array($saturdayItems->last()->type, ['questions', 'review'], true));
     }
 
+    public function test_generator_respects_study_track_module_order_before_course_module_order(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $track = StudyTrack::factory()->create(['course_id' => $course->id]);
+        $punctuation = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Pontuação',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Pontuação - Parte 01', 'minutes' => 30],
+            ],
+            'workload_minutes' => 30,
+            'sort_order' => 1,
+        ]);
+        $wordClasses = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português - Classe de palavras',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Classes de palavras', 'minutes' => 30],
+            ],
+            'workload_minutes' => 30,
+            'sort_order' => 2,
+        ]);
+        $track->modules()->sync([
+            $wordClasses->id => ['weight' => 1, 'sort_order' => 1],
+            $punctuation->id => ['weight' => 1, 'sort_order' => 2],
+        ]);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            $track,
+            now()->addWeek()->toDateString(),
+            now()->toDateString(),
+            ['monday'],
+            ['monday' => 120],
+            'balanced',
+        );
+
+        $firstTheoryItem = $plan->items()
+            ->where('type', 'basic')
+            ->orderBy('sort_order')
+            ->first();
+
+        $this->assertSame($wordClasses->id, $firstTheoryItem?->course_module_id);
+        $this->assertStringContainsString('Classe de palavras', $firstTheoryItem?->title ?? '');
+    }
+
     public function test_generator_uses_calendar_weeks_from_monday_to_sunday(): void
     {
         $course = Course::factory()->create();
