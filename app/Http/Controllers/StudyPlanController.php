@@ -129,7 +129,7 @@ class StudyPlanController extends Controller
         $this->authorize('view', $studyPlan);
 
         return view('dashboard.study-plans.show', [
-            'studyPlan' => $studyPlan,
+            'studyPlan' => $studyPlan->load(['items.courseModule', 'items.lessons', 'course', 'studyTrack']),
         ]);
     }
 

@@ -2,11 +2,9 @@
 
 namespace App\Livewire;
 
-use App\Models\CourseModule;
 use App\Models\QuestionBank;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
-use App\Services\StudyPlanGenerator;
 use App\Support\LessonTitleNormalizer;
 use App\Support\StudyTime;
 use Carbon\CarbonInterface;
@@ -28,14 +26,16 @@ class StudyPlanViewer extends Component
     public function mount(StudyPlan $studyPlan): void
     {
         $this->authorize('view', $studyPlan);
-        $this->studyPlan = app(StudyPlanGenerator::class)
-            ->syncPublishedLessonsForPlan($studyPlan)
-            ->load(['items.courseModule', 'items.lessons', 'course', 'studyTrack']);
+        $this->studyPlan = $studyPlan->loadMissing(['items.courseModule', 'items.lessons', 'course', 'studyTrack']);
         $this->selectedWeek = (int) $this->studyPlan->items->min('week_number') ?: 1;
     }
 
     public function selectWeek(int $week): void
     {
+        if ($week === $this->selectedWeek) {
+            return;
+        }
+
         $this->selectedWeek = $week;
     }
 
@@ -44,11 +44,9 @@ class StudyPlanViewer extends Component
         $this->studyPlan->load(['items.courseModule', 'items.lessons', 'course']);
         $orderedItems = $this->orderedPlanItems();
 
-        $grouped = $orderedItems
-            ->groupBy('week_number')
-            ->map(fn ($items) => $items->groupBy(fn ($item) => $item->scheduled_date->format('d/m/Y')));
-
         $selectedWeekItems = $orderedItems->where('week_number', $this->selectedWeek);
+        $selectedWeekGroupedItems = $selectedWeekItems
+            ->groupBy(fn ($item) => $item->scheduled_date->format('d/m/Y'));
         $weeklySummary = [
             'total_minutes' => (int) $selectedWeekItems->sum('estimated_minutes'),
             'review_minutes' => (int) $selectedWeekItems->where('type', 'review')->sum('estimated_minutes'),
@@ -117,8 +115,8 @@ class StudyPlanViewer extends Component
             : 'Assim que o plano tiver blocos nesta semana, mostramos a distribuição aqui.';
 
         $selectedWeekRange = null;
-        $itemLessons = $this->buildItemLessons();
-        $itemQuestionLinks = $this->buildItemQuestionLinks();
+        $itemLessons = $this->buildItemLessons($orderedItems, $this->selectedWeek);
+        $itemQuestionLinks = $this->buildItemQuestionLinks($selectedWeekItems->where('type', 'questions')->values());
 
         if ($selectedWeekItems->isNotEmpty()) {
             $firstItem = $selectedWeekItems->first();
@@ -128,9 +126,8 @@ class StudyPlanViewer extends Component
         }
 
         return view('livewire.study-plan-viewer', [
-            'groupedItems' => $grouped,
-            'availableWeeks' => $grouped->keys(),
-            'selectedWeekItems' => $grouped->get($this->selectedWeek, collect()),
+            'availableWeeks' => $orderedItems->pluck('week_number')->unique()->values(),
+            'selectedWeekItems' => $selectedWeekGroupedItems,
             'weeklySummary' => $weeklySummary,
             'overviewSummary' => $overviewSummary,
             'typeOverview' => $typeOverview,
@@ -142,45 +139,58 @@ class StudyPlanViewer extends Component
         ]);
     }
 
-    protected function buildItemQuestionLinks(): array
+    protected function buildItemQuestionLinks(Collection $questionItems): array
     {
         $links = [];
+        $referencesByItem = [];
+        $allLessonIds = collect();
+        $allLessonKeys = collect();
 
-        $this->studyPlan->items->each(function (StudyPlanItem $item) use (&$links): void {
-            if ($item->type !== 'questions') {
-                return;
-            }
-
+        $questionItems->each(function (StudyPlanItem $item) use (&$referencesByItem, &$allLessonIds, &$allLessonKeys): void {
             $lessonReferences = $this->questionLessonReferencesForDate($item);
 
             if ($lessonReferences->isEmpty()) {
                 return;
             }
 
+            $referencesByItem[$item->id] = $lessonReferences;
+            $allLessonIds = $allLessonIds->merge($lessonReferences->pluck('id')->filter());
+            $allLessonKeys = $allLessonKeys->merge($lessonReferences->pluck('key')->filter());
+        });
+
+        if ($referencesByItem === []) {
+            return [];
+        }
+
+        $lessonIds = $allLessonIds->unique()->values();
+        $lessonKeys = $allLessonKeys->unique()->values();
+        $candidateBanks = QuestionBank::query()
+            ->where('status', 'published')
+            ->with('lessons')
+            ->whereHas('lessons', function ($query) use ($lessonIds, $lessonKeys): void {
+                $query->where(function ($query) use ($lessonIds, $lessonKeys): void {
+                    if ($lessonIds->isNotEmpty()) {
+                        $query->whereIn('lessons.id', $lessonIds);
+                    }
+
+                    if ($lessonKeys->isNotEmpty()) {
+                        $query->{$lessonIds->isNotEmpty() ? 'orWhere' : 'where'}(function ($query): void {
+                            $query->whereNotNull('lessons.title');
+                        });
+                    }
+                });
+            })
+            ->whereHas('questions', fn ($query) => $query->where('status', 'published'))
+            ->withCount(['questions as related_questions_count' => fn ($query) => $query->where('status', 'published')])
+            ->orderByDesc('related_questions_count')
+            ->orderBy('title')
+            ->get();
+
+        foreach ($referencesByItem as $itemId => $lessonReferences) {
             $itemLinks = [];
-            $lessonIds = $lessonReferences->pluck('id')->filter()->unique()->values();
-            $lessonKeys = $lessonReferences->pluck('key')->filter()->unique()->values();
 
             foreach ($lessonReferences as $lessonReference) {
-                $banks = QuestionBank::query()
-                    ->where('status', 'published')
-                    ->with('lessons')
-                    ->whereHas('lessons', function ($query) use ($lessonIds, $lessonKeys): void {
-                        if ($lessonIds->isNotEmpty()) {
-                            $query->whereIn('lessons.id', $lessonIds);
-                        }
-
-                        if ($lessonKeys->isNotEmpty()) {
-                            $query->orWhere(function ($query): void {
-                                $query->whereNotNull('lessons.title');
-                            });
-                        }
-                    })
-                    ->whereHas('questions', fn ($query) => $query->where('status', 'published'))
-                    ->withCount(['questions as related_questions_count' => fn ($query) => $query->where('status', 'published')])
-                    ->orderByDesc('related_questions_count')
-                    ->orderBy('title')
-                    ->get()
+                $banks = $candidateBanks
                     ->filter(fn (QuestionBank $bank): bool => $bank->lessons->contains(function ($lesson) use ($lessonReference): bool {
                         if (($lessonReference['id'] ?? null) && (int) $lesson->id === (int) $lessonReference['id']) {
                             return true;
@@ -213,11 +223,11 @@ class StudyPlanViewer extends Component
                 ->all();
 
             if ($itemLinks === []) {
-                return;
+                continue;
             }
 
-            $links[$item->id] = $itemLinks;
-        });
+            $links[$itemId] = $itemLinks;
+        }
 
         return $links;
     }
@@ -264,33 +274,34 @@ class StudyPlanViewer extends Component
             ->all();
     }
 
-    protected function buildItemLessons(): array
+    protected function buildItemLessons(Collection $orderedItems, int $selectedWeek): array
     {
         $lessonIndexes = [];
         $lessonsByItem = [];
-        $modulesById = CourseModule::query()
-            ->whereIn('id', $this->studyPlan->items->pluck('course_module_id')->filter()->unique())
-            ->get()
+        $modulesById = $orderedItems
+            ->pluck('courseModule')
+            ->filter()
+            ->unique('id')
             ->keyBy('id');
 
-        $this->studyPlan->items
-            ->sortBy([
-                ['scheduled_date', 'asc'],
-                ['sort_order', 'asc'],
-                ['id', 'asc'],
-            ])
+        $orderedItems
+            ->takeUntil(fn (StudyPlanItem $item): bool => (int) $item->week_number > $selectedWeek)
             ->each(function (StudyPlanItem $item) use (&$lessonIndexes, &$lessonsByItem, $modulesById) {
+                $shouldBuildOutput = (int) $item->week_number === $this->selectedWeek;
+
                 if ($item->lessons->isNotEmpty()) {
-                    $lessonsByItem[$item->id] = $item->orderedLessonsForDisplay()
-                        ->map(fn ($lesson) => [
-                            'name' => $lesson->title,
-                            'minutes' => $lesson->duration_minutes,
-                            'minutes_label' => $this->formatLessonMinutes($lesson->duration_minutes),
-                            'url' => route('courses.lessons.show', [$this->studyPlan->course->slug, $lesson]),
-                            'is_online' => true,
-                        ])
-                        ->values()
-                        ->all();
+                    if ($shouldBuildOutput) {
+                        $lessonsByItem[$item->id] = $item->orderedLessonsForDisplay()
+                            ->map(fn ($lesson) => [
+                                'name' => $lesson->title,
+                                'minutes' => $lesson->duration_minutes,
+                                'minutes_label' => $this->formatLessonMinutes($lesson->duration_minutes),
+                                'url' => route('courses.lessons.show', [$this->studyPlan->course->slug, $lesson]),
+                                'is_online' => true,
+                            ])
+                            ->values()
+                            ->all();
+                    }
 
                     return;
                 }
@@ -320,13 +331,16 @@ class StudyPlanViewer extends Component
                         break;
                     }
 
-                    $itemLessons[] = [
-                        'name' => (string) ($lessons[$index]['name'] ?? $module->name),
-                        'minutes' => $lessonMinutes,
-                        'minutes_label' => $this->formatLessonMinutes($lessonMinutes),
-                        'url' => null,
-                        'is_online' => false,
-                    ];
+                    if ($shouldBuildOutput) {
+                        $itemLessons[] = [
+                            'name' => (string) ($lessons[$index]['name'] ?? $module->name),
+                            'minutes' => $lessonMinutes,
+                            'minutes_label' => $this->formatLessonMinutes($lessonMinutes),
+                            'url' => null,
+                            'is_online' => false,
+                        ];
+                    }
+
                     $minutes += $lessonMinutes;
                     $index++;
                 }
