@@ -155,7 +155,7 @@ class CourseCatalogController extends Controller
 
         abort_unless($user->canAccessStudentArea(), 403);
         abort_unless($course->is_active && $course->status === 'published', 404);
-        abort_unless($lesson->status === 'published' && $this->lessonBelongsToCourse($lesson, $course), 404);
+        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
         abort_unless($this->userCanAccessCourse($user, $course), 403);
 
         $lesson->load(['course', 'module']);
@@ -206,7 +206,7 @@ class CourseCatalogController extends Controller
 
         abort_unless($user->canAccessStudentArea(), 403);
         abort_unless($course->is_active && $course->status === 'published', 404);
-        abort_unless($lesson->status === 'published' && $this->lessonBelongsToCourse($lesson, $course), 404);
+        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
         abort_unless($this->userCanAccessCourse($user, $course), 403);
 
         LessonProgress::query()->updateOrCreate([
@@ -230,7 +230,7 @@ class CourseCatalogController extends Controller
 
         abort_unless($user->canAccessStudentArea(), 403);
         abort_unless($course->is_active && $course->status === 'published', 404);
-        abort_unless($lesson->status === 'published' && $this->lessonBelongsToCourse($lesson, $course), 404);
+        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
         abort_unless($this->userCanAccessCourse($user, $course), 403);
 
         $summary = $this->lessonSummaryText($lesson);
@@ -256,7 +256,7 @@ class CourseCatalogController extends Controller
 
         abort_unless($user->isAdmin(), 403);
         abort_unless($course->is_active && $course->status === 'published', 404);
-        abort_unless($lesson->status === 'published' && $this->lessonBelongsToCourse($lesson, $course), 404);
+        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
 
         $pandaVideoId = $lesson->panda_video_id ?: (string) data_get($lesson->metadata, 'payload.id');
 
@@ -386,7 +386,7 @@ class CourseCatalogController extends Controller
         $orderedLessonsByTrack = DB::table('course_module_track_lessons')
             ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
             ->whereIn('course_module_track_lessons.course_module_track_id', $trackIds)
-            ->where('lessons.status', 'published')
+            ->where('lessons.status', '!=', 'archived')
             ->select([
                 'course_module_track_lessons.course_module_track_id',
                 'lessons.id as lesson_id',
@@ -474,7 +474,7 @@ class CourseCatalogController extends Controller
                     ->orWhere('course_module_track_course.course_id', $course->id);
             })
             ->where('course_module_tracks.status', 'published')
-            ->where('lessons.status', 'published')
+            ->where('lessons.status', '!=', 'archived')
             ->distinct()
             ->orderBy('course_module_course.sort_order')
             ->orderBy('course_modules.sort_order')
@@ -512,7 +512,7 @@ class CourseCatalogController extends Controller
             ->with(['tracks' => fn ($trackQuery) => $trackQuery
                 ->where('status', 'published')
                 ->with(['lessons' => fn ($lessonQuery) => $lessonQuery
-                    ->where('status', 'published')
+                    ->where('status', '!=', 'archived')
                     ->orderBy('sort_order')
                     ->orderBy('title'),
                 ])

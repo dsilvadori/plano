@@ -91,6 +91,8 @@ class LessonCourseLinker
                     }
                 });
 
+            $this->linkReadyLessonsToPlanningLessons($course, $readyLessons, $stats, $affectedCourseIds);
+
             if ($course instanceof Course) {
                 $affectedCourseIds[] = $course->id;
             }
@@ -157,7 +159,122 @@ class LessonCourseLinker
             ->first()['lesson'] ?? null;
     }
 
-    protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, CourseModuleTrack $track, ?int $sortOrder = null): float
+    protected function linkReadyLessonsToPlanningLessons(?Course $course, Collection $readyLessons, array &$stats, array &$affectedCourseIds): void
+    {
+        $this->planningModulesQuery($course)
+            ->with(['courses', 'onlineLessons', 'tracks.courses'])
+            ->chunkById(50, function ($modules) use ($course, $readyLessons, &$stats, &$affectedCourseIds): void {
+                foreach ($modules as $module) {
+                    $planningLessons = $module->planning_lessons;
+
+                    if ($planningLessons === []) {
+                        continue;
+                    }
+
+                    $courseIds = $module->courses
+                        ->pluck('id')
+                        ->when($course instanceof Course, fn (Collection $ids) => $ids->push($course->id))
+                        ->unique()
+                        ->values()
+                        ->all();
+                    $attachedLessonIds = $module->onlineLessons->pluck('id')->all();
+
+                    foreach ($planningLessons as $index => $planningLesson) {
+                        $sortOrder = $index + 1;
+                        $title = (string) ($planningLesson['name'] ?? '');
+
+                        if ($title === '') {
+                            continue;
+                        }
+
+                        $alreadyLinked = $module->onlineLessons->first(function (Lesson $lesson) use ($title, $module, $sortOrder): bool {
+                            return $this->lessonMatchScore($lesson, $title, $module) >= 92;
+                        });
+
+                        if ($alreadyLinked instanceof Lesson) {
+                            continue;
+                        }
+
+                        $candidate = $this->findReadyCandidateForPlanningLesson($readyLessons, $title, $module, $sortOrder, $attachedLessonIds);
+
+                        if (! $candidate instanceof Lesson) {
+                            continue;
+                        }
+
+                        if ($this->publishLesson($candidate)) {
+                            $stats['published']++;
+                        }
+
+                        $module->onlineLessons()->syncWithoutDetaching([
+                            $candidate->id => ['sort_order' => $sortOrder],
+                        ]);
+
+                        $matchingTrack = $this->bestTrackForPlanningCandidate($candidate, $title, $module);
+
+                        if ($matchingTrack instanceof CourseModuleTrack) {
+                            $matchingTrack->lessons()->syncWithoutDetaching([
+                                $candidate->id => ['sort_order' => $sortOrder],
+                            ]);
+                        }
+
+                        $attachedLessonIds[] = $candidate->id;
+                        $stats['linked']++;
+                        $affectedCourseIds = array_values(array_unique([...$affectedCourseIds, ...$courseIds]));
+                    }
+                }
+            });
+    }
+
+    protected function planningModulesQuery(?Course $course): Builder
+    {
+        $query = CourseModule::query()
+            ->where('is_active', true)
+            ->where(function (Builder $query): void {
+                $query
+                    ->whereNotNull('lessons')
+                    ->orWhereHas('onlineLessons');
+            });
+
+        if (! $course instanceof Course) {
+            return $query;
+        }
+
+        return $query->where(function (Builder $query) use ($course): void {
+            $query
+                ->where('course_id', $course->id)
+                ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id));
+        });
+    }
+
+    protected function findReadyCandidateForPlanningLesson(Collection $readyLessons, string $title, CourseModule $module, int $sortOrder, array $attachedLessonIds): ?Lesson
+    {
+        return $readyLessons
+            ->whereNotIn('id', $attachedLessonIds)
+            ->map(fn (Lesson $lesson): array => [
+                'lesson' => $lesson,
+                'score' => $this->lessonMatchScore($lesson, $title, $module),
+                'priority' => $this->lessonMediaPriority($lesson),
+            ])
+            ->filter(fn (array $candidate): bool => $candidate['score'] >= 72)
+            ->sortByDesc(fn (array $candidate): float => ($candidate['score'] * 10) + $candidate['priority'])
+            ->first()['lesson'] ?? null;
+    }
+
+    protected function bestTrackForPlanningCandidate(Lesson $lesson, string $title, CourseModule $module): ?CourseModuleTrack
+    {
+        $tracks = $module->relationLoaded('tracks') ? $module->tracks : $module->tracks()->with('courses')->get();
+
+        return $tracks
+            ->map(fn (CourseModuleTrack $track): array => [
+                'track' => $track,
+                'score' => $this->lessonMatchScore($lesson, $title, $module, $track),
+            ])
+            ->filter(fn (array $candidate): bool => $candidate['score'] >= 72)
+            ->sortByDesc('score')
+            ->first()['track'] ?? null;
+    }
+
+    protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null, ?int $sortOrder = null): float
     {
         $score = LessonTitleNormalizer::matchScore($lesson->title, $title);
 
@@ -184,9 +301,9 @@ class LessonCourseLinker
 
         $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
         $path = LessonTitleNormalizer::matchKey((string) ($metadata['drive_source_folder_path'] ?? ''));
-        $trackKey = LessonTitleNormalizer::matchKey($track->name);
+        $trackKey = $track ? LessonTitleNormalizer::matchKey($track->name) : '';
         $moduleKey = LessonTitleNormalizer::matchKey($module->name);
-        $pathMatchesTrack = $this->pathMatchesContext($path, $trackKey);
+        $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
         $lessonProduct = $this->contentProduct($path) ?? $this->contentProduct($lessonKey);
         $trackProduct = $this->contentProduct($trackKey);
 

@@ -4,6 +4,8 @@ namespace App\Jobs;
 
 use App\Models\GoogleDriveImportRun;
 use App\Models\Lesson;
+use App\Services\ActiveStudyPlanRefresher;
+use App\Services\LessonCourseLinker;
 use App\Services\PandaVideoClient;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -34,7 +36,7 @@ class SyncPandaVideoStatus implements ShouldQueue
         ];
     }
 
-    public function handle(PandaVideoClient $panda): void
+    public function handle(PandaVideoClient $panda, ?LessonCourseLinker $linker = null, ?ActiveStudyPlanRefresher $refresher = null): void
     {
         $lesson = Lesson::query()->findOrFail($this->lessonId);
 
@@ -74,6 +76,8 @@ class SyncPandaVideoStatus implements ShouldQueue
 
         if ($panda->videoIsReady($video)) {
             $this->markRunReady($lesson);
+            ($linker ?? app(LessonCourseLinker::class))->sync();
+            ($refresher ?? app(ActiveStudyPlanRefresher::class))->refreshCoursesForLesson($lesson->fresh());
 
             return;
         }

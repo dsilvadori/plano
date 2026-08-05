@@ -1015,6 +1015,7 @@ class PandaImportTest extends TestCase
         $module = CourseModule::factory()->create([
             'course_id' => $course->id,
             'name' => 'Módulo reutilizável',
+            'is_active' => true,
         ]);
         $course->modules()->attach($module->id, ['sort_order' => (int) $module->sort_order]);
 
@@ -1241,6 +1242,58 @@ class PandaImportTest extends TestCase
         $this->assertSame('published', $lesson->status);
         $this->assertSame('media_ready', $lesson->source_status);
         $this->assertSame('panda-folder-standalone', $lesson->metadata['folder_id']);
+    }
+
+    public function test_panda_import_from_lessons_area_links_ready_lesson_to_course_by_approximate_planning_name(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'standalone-classes-palavras',
+                        'title' => 'Aula 03 - Classes de Palavras Conjuncao Subordinativa Adverbial.mp4',
+                        'duration_seconds' => 1180,
+                        'status' => 'CONVERTED',
+                        'embed_url' => 'https://player.test/standalone-classes-palavras',
+                        'folder_id' => 'panda-folder-standalone',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $course = Course::factory()->create(['name' => 'Gabaritando Santos']);
+        $module = CourseModule::factory()->for($course)->create([
+            'name' => 'Português',
+            'is_active' => true,
+            'lessons' => [
+                ['name' => 'Classes de Palavras - Conjunção Subordinativa Adverbial', 'minutes' => 45],
+                ['name' => 'Pontuação - Parte 01', 'minutes' => 45],
+            ],
+        ]);
+
+        $run = app(PandaCourseImporter::class)->importLessons(
+            $course,
+            null,
+            null,
+            'panda-folder-standalone',
+            'draft',
+        );
+
+        $lesson = Lesson::query()->where('panda_video_id', 'standalone-classes-palavras')->firstOrFail();
+
+        $this->assertSame('finished', $run->status);
+        $this->assertSame('published', $lesson->fresh()->status);
+        $this->assertDatabaseHas('course_module_lessons', [
+            'course_module_id' => $module->id,
+            'lesson_id' => $lesson->id,
+            'sort_order' => 1,
+        ]);
     }
 
     public function test_panda_import_from_lessons_area_can_link_lessons_to_module_and_track(): void

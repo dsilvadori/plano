@@ -117,6 +117,7 @@ class GoogleDriveTrackImportTest extends TestCase
             $module = CourseModule::factory()->create([
                 'course_id' => $course->id,
                 'name' => 'Informática',
+                'is_active' => true,
             ]);
 
             $summary = app(GoogleDriveTrackImporter::class)->importFolderSubfoldersAsTracks(
@@ -146,7 +147,7 @@ class GoogleDriveTrackImportTest extends TestCase
         $windowsTrack = CourseModuleTrack::query()->where('slug', 'windows-10')->firstOrFail();
 
         $this->assertTrue($windowsTrack->courses()->whereKey($course->id)->exists());
-        $this->assertSame(2, $windowsTrack->lessons()->count());
+        $this->assertSame(1, $windowsTrack->lessons()->count());
         $this->assertDatabaseHas('lessons', [
             'course_module_id' => null,
             'course_module_track_id' => null,
@@ -157,13 +158,16 @@ class GoogleDriveTrackImportTest extends TestCase
             'google_doc_url' => 'https://drive.test/docs/windows-01',
         ]);
         $windowsLesson = Lesson::query()->where('title', '01 - Windows 10')->firstOrFail();
-        $this->assertTrue($module->onlineLessons()->whereKey($windowsLesson->id)->exists());
-        $this->assertTrue($windowsTrack->lessons()->whereKey($windowsLesson->id)->exists());
+        $this->assertFalse($module->onlineLessons()->whereKey($windowsLesson->id)->exists());
+        $this->assertFalse($windowsTrack->lessons()->whereKey($windowsLesson->id)->exists());
         $this->assertDatabaseHas('lessons', [
             'title' => '02 - Explorador de Arquivos',
             'type' => 'pdf',
             'source_status' => 'media_ready',
         ]);
+        $pdfLesson = Lesson::query()->where('title', '02 - Explorador de Arquivos')->firstOrFail();
+        $this->assertTrue($module->onlineLessons()->whereKey($pdfLesson->id)->exists());
+        $this->assertTrue($windowsTrack->lessons()->whereKey($pdfLesson->id)->exists());
         $this->assertSame(3, Lesson::query()->count());
     }
 
@@ -872,6 +876,94 @@ class GoogleDriveTrackImportTest extends TestCase
         ]);
         $this->assertSame(2, $run->fresh()->processed_lessons);
         $this->assertSame(100, $run->fresh()->progress_percent);
+    }
+
+    public function test_drive_standalone_import_links_ready_lesson_to_course_by_approximate_planning_name(): void
+    {
+        config(['services.panda.queue_drive_uploads' => false]);
+
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $drive->shouldReceive('folderIdFromUrl')
+            ->once()
+            ->with('standalone-folder')
+            ->andReturn('standalone-folder');
+        $drive->shouldReceive('listFiles')
+            ->once()
+            ->with('standalone-folder')
+            ->andReturn([[
+                'id' => 'video-classes-palavras',
+                'name' => 'Aula 03 - Classes de Palavras Conjuncao Subordinativa Adverbial.mp4',
+                'mimeType' => 'video/mp4',
+                'webViewLink' => 'https://drive.test/file/video-classes-palavras',
+            ]]);
+        $drive->shouldReceive('listFolders')
+            ->once()
+            ->with('standalone-folder')
+            ->andReturn([]);
+        $drive->shouldReceive('downloadFileToPath')
+            ->once()
+            ->with('video-classes-palavras', Mockery::type('string'))
+            ->andReturnUsing(function (string $fileId, string $path): void {
+                file_put_contents($path, 'video-content');
+            });
+
+        $panda->shouldReceive('findOrCreateFolder')
+            ->once()
+            ->with('Aulas avulsas', null)
+            ->andReturn([
+                'panda_folder_id' => 'panda-standalone-folder',
+                'name' => 'Aulas avulsas',
+                'was_created' => true,
+            ]);
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('03 - Classes de Palavras Conjunção Subordinativa Adverbial', 'panda-standalone-folder')
+            ->andReturn(null);
+        $panda->shouldReceive('uploadVideo')
+            ->once()
+            ->with(Mockery::type('string'), '03 - Classes de Palavras Conjunção Subordinativa Adverbial', 'panda-standalone-folder')
+            ->andReturn([
+                'panda_video_id' => 'panda-video-classes-palavras',
+                'title' => '03 - Classes de Palavras Conjunção Subordinativa Adverbial',
+                'description' => null,
+                'duration_seconds' => 1180,
+                'thumbnail_url' => null,
+                'panda_status' => 'CONVERTED',
+                'panda_embed_url' => 'https://player.test/embed/panda-video-classes-palavras',
+                'panda_player_url' => 'https://player.test/panda-video-classes-palavras',
+                'folder_id' => 'panda-standalone-folder',
+                'payload' => ['id' => 'panda-video-classes-palavras'],
+            ]);
+
+        $course = Course::factory()->create(['name' => 'Gabaritando Santos']);
+        $module = CourseModule::factory()->for($course)->create([
+            'name' => 'Português',
+            'is_active' => true,
+            'lessons' => [
+                ['name' => 'Classes de Palavras - Conjunção Subordinativa Adverbial', 'minutes' => 45],
+                ['name' => 'Pontuação - Parte 01', 'minutes' => 45],
+            ],
+        ]);
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->importFolderFilesAsLessons(
+            $course,
+            null,
+            null,
+            'standalone-folder',
+            pandaFolderName: 'Aulas avulsas',
+        );
+
+        $lesson = Lesson::query()->where('panda_video_id', 'panda-video-classes-palavras')->firstOrFail();
+
+        $this->assertSame(1, $summary['created_lessons']);
+        $this->assertSame('published', $lesson->fresh()->status);
+        $this->assertDatabaseHas('course_module_lessons', [
+            'course_module_id' => $module->id,
+            'lesson_id' => $lesson->id,
+            'sort_order' => 1,
+        ]);
     }
 
     public function test_imports_standalone_lessons_from_drive_subfolders_without_creating_tracks(): void

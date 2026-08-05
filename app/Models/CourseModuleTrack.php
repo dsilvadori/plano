@@ -75,4 +75,27 @@ class CourseModuleTrack extends Model
     {
         return ThumbnailUrl::fromPathOrUrl($this->thumbnail_path, $this->thumbnail_url);
     }
+
+    public function getThumbnailAspectRatioAttribute(): string
+    {
+        $metadata = is_array($this->metadata) ? $this->metadata : [];
+        $ratio = (string) ($metadata['thumbnail_aspect_ratio'] ?? '300/580');
+
+        return in_array($ratio, array_keys(self::thumbnailAspectRatioOptions()), true)
+            ? $ratio
+            : '300/580';
+    }
+
+    public static function thumbnailAspectRatioOptions(): array
+    {
+        return [
+            '300/580' => 'Vertical padrão (300x580)',
+            '2/3' => 'Vertical 2:3',
+            '3/4' => 'Vertical 3:4',
+            '9/16' => 'Stories/Reels 9:16',
+            '1/1' => 'Quadrada 1:1',
+            '4/3' => 'Paisagem 4:3',
+            '16/9' => 'Paisagem 16:9',
+        ];
+    }
 }

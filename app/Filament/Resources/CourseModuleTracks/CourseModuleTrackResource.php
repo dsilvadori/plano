@@ -71,14 +71,20 @@ class CourseModuleTrackResource extends Resource
                 ->url()
                 ->maxLength(2048)
                 ->helperText('Usada como fallback quando nenhum arquivo for enviado.'),
+            Select::make('metadata.thumbnail_aspect_ratio')
+                ->label('Proporção da thumbnail')
+                ->options(CourseModuleTrack::thumbnailAspectRatioOptions())
+                ->default('300/580')
+                ->helperText('Padrão atual: 300x580px. Use outra proporção se a arte da trilha tiver formato diferente.'),
             Hidden::make('thumbnail_path'),
             Placeholder::make('thumbnail_preview')
                 ->label('Thumbnail atual')
                 ->content(function (Get $get, ?CourseModuleTrack $record): HtmlString {
                     $path = (string) ($get('thumbnail_path') ?: $record?->thumbnail_path ?: '');
                     $url = ThumbnailUrl::fromPathOrUrl($path, (string) ($get('thumbnail_url') ?: $record?->thumbnail_url ?: ''));
+                    $ratio = (string) ($get('metadata.thumbnail_aspect_ratio') ?: $record?->thumbnail_aspect_ratio ?: '300/580');
 
-                    return new HtmlString('<img src="'.e($url).'" alt="" style="height: 120px; max-width: 240px; object-fit: cover; border-radius: 8px;">');
+                    return new HtmlString('<img src="'.e($url).'" alt="" style="height: 180px; max-width: 240px; aspect-ratio: '.e($ratio).'; object-fit: cover; border-radius: 8px;">');
                 })
                 ->columnSpanFull(),
             FileUpload::make('thumbnail_upload')

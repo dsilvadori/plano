@@ -173,4 +173,51 @@ class LessonCourseLinkerTest extends TestCase
             'lesson_id' => $secondPlaceholder->id,
         ]);
     }
+
+    public function test_it_links_ready_standalone_lesson_to_module_planning_lesson_by_approximate_name_without_placeholder(): void
+    {
+        $course = Course::factory()->create(['name' => 'Gabaritando Santos']);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Classes de Palavras - Conjunção Subordinativa Adverbial', 'minutes' => 16],
+                ['name' => 'Pontuação - Parte 01', 'minutes' => 31],
+            ],
+            'workload_minutes' => 47,
+            'sort_order' => 1,
+            'is_active' => true,
+        ]);
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+        $readyLesson = Lesson::query()->create([
+            'title' => 'Aula 03 - Classes de Palavras Conjuncao Subordinativa Adverbial.mp4',
+            'slug' => 'aula-03-classes-de-palavras-conjuncao-subordinativa-adverbial',
+            'type' => 'video',
+            'duration_seconds' => 960,
+            'sort_order' => 99,
+            'status' => 'draft',
+            'panda_video_id' => 'panda-classes-palavras-03',
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'drive_source_folder_path' => 'Aulas avulsas / Português',
+            ],
+        ]);
+
+        $stats = app(LessonCourseLinker::class)->sync($course);
+
+        $this->assertSame(1, $stats['linked']);
+        $this->assertSame(1, $stats['published']);
+        $this->assertDatabaseHas('course_module_lessons', [
+            'course_module_id' => $module->id,
+            'lesson_id' => $readyLesson->id,
+            'sort_order' => 1,
+        ]);
+        $this->assertDatabaseHas('lessons', [
+            'id' => $readyLesson->id,
+            'status' => 'published',
+        ]);
+    }
 }

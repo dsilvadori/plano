@@ -17,6 +17,7 @@ class PandaCourseImporter
 {
     public function __construct(
         protected PandaVideoClient $client,
+        protected LessonCourseLinker $lessonCourseLinker,
     ) {}
 
     public function importFolder(Course $course, string $folderId, ?string $moduleName = null, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun
@@ -87,17 +88,15 @@ class PandaCourseImporter
                         'metadata' => [
                             'source' => 'panda',
                             'folder_id' => $folderId,
+                            'library_folder_name' => $track->name,
+                            'library_folder_path' => collect([$module->name, $track->name])->filter()->join(' / '),
+                            'import_context_module_id' => $module->id,
+                            'import_context_track_id' => $track->id,
                             'payload' => $video['payload'],
                             'last_imported_at' => now()->toIso8601String(),
                         ],
                     ]);
                     $lesson->save();
-                    $lesson->modules()->syncWithoutDetaching([
-                        $module->id => ['sort_order' => $index + 1],
-                    ]);
-                    $lesson->tracks()->syncWithoutDetaching([
-                        $track->id => ['sort_order' => $index + 1],
-                    ]);
                     $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
                     $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
 
@@ -135,6 +134,8 @@ class PandaCourseImporter
 
             throw $exception;
         }
+
+        $this->lessonCourseLinker->sync($course);
 
         return $run->fresh(['items']);
     }
@@ -192,17 +193,15 @@ class PandaCourseImporter
                         'metadata' => [
                             'source' => 'panda',
                             'folder_id' => $folderId,
+                            'library_folder_name' => $track->name,
+                            'library_folder_path' => collect([$module->name, $track->name])->filter()->join(' / '),
+                            'import_context_module_id' => $module->id,
+                            'import_context_track_id' => $track->id,
                             'payload' => $video['payload'],
                             'last_imported_at' => now()->toIso8601String(),
                         ],
                     ]);
                     $lesson->save();
-                    $lesson->modules()->syncWithoutDetaching([
-                        $module->id => ['sort_order' => $index + 1],
-                    ]);
-                    $lesson->tracks()->syncWithoutDetaching([
-                        $track->id => ['sort_order' => $index + 1],
-                    ]);
                     $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
                     $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
 
@@ -240,6 +239,8 @@ class PandaCourseImporter
 
             throw $exception;
         }
+
+        $this->lessonCourseLinker->sync($course ?? $module->courses()->first());
 
         return $run->fresh(['items']);
     }
@@ -303,6 +304,10 @@ class PandaCourseImporter
                         'metadata' => [
                             'source' => 'panda',
                             'folder_id' => $folderId,
+                            'library_folder_name' => $track?->name ?? $module?->name,
+                            'library_folder_path' => collect([$module?->name, $track?->name])->filter()->join(' / '),
+                            'import_context_module_id' => $module?->id,
+                            'import_context_track_id' => $track?->id,
                             'payload' => $video['payload'],
                             'last_imported_at' => now()->toIso8601String(),
                         ],
@@ -310,16 +315,7 @@ class PandaCourseImporter
                     $lesson->save();
 
                     if ($module) {
-                        $lesson->modules()->syncWithoutDetaching([
-                            $module->id => ['sort_order' => $sortOrder],
-                        ]);
                         $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
-                    }
-
-                    if ($track) {
-                        $lesson->tracks()->syncWithoutDetaching([
-                            $track->id => ['sort_order' => $sortOrder],
-                        ]);
                     }
 
                     $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
@@ -367,6 +363,8 @@ class PandaCourseImporter
 
             throw $exception;
         }
+
+        $this->lessonCourseLinker->sync($course);
 
         return $run->fresh(['items']);
     }
@@ -426,9 +424,8 @@ class PandaCourseImporter
             $lesson = Lesson::query()
                 ->orderBy('id')
                 ->get()
-                ->first(function (Lesson $lesson) use ($titleKey, $course, $module, $track): bool {
+                ->first(function (Lesson $lesson) use ($titleKey): bool {
                     return $this->lessonCanReceiveImportedVideo($lesson)
-                        && $this->lessonMatchesImportScope($lesson, $course, $module, $track)
                         && LessonTitleNormalizer::matchKey($lesson->title) === $titleKey;
                 });
 
@@ -449,23 +446,6 @@ class PandaCourseImporter
         }
 
         return in_array((string) $lesson->source_status, ['', 'awaiting_media', 'upload_queued', 'upload_failed'], true);
-    }
-
-    protected function lessonMatchesImportScope(Lesson $lesson, ?Course $course, ?CourseModule $module, ?CourseModuleTrack $track): bool
-    {
-        if ($track && (int) $lesson->course_module_track_id !== (int) $track->id && ! $lesson->tracks()->whereKey($track->id)->exists()) {
-            return false;
-        }
-
-        if ($module && (int) $lesson->course_module_id !== (int) $module->id && ! $lesson->modules()->whereKey($module->id)->exists()) {
-            return false;
-        }
-
-        if (! $module && ! $track && $course && ! $lesson->modules()->whereHas('courses', fn ($query) => $query->whereKey($course->id))->exists()) {
-            return false;
-        }
-
-        return true;
     }
 
     protected function normalizeLessonStatus(string $status): string

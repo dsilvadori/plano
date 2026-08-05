@@ -187,15 +187,20 @@ class CourseSpreadsheetImportTest extends TestCase
         $updatedModule = $course->modules()->where('name', 'Português')->first();
         $officialTrack->refresh();
 
-        $this->assertSame($existingImportedModule->id, $updatedModule->id);
+        $this->assertNotSame($existingImportedModule->id, $updatedModule->id);
         $this->assertSame('basic', $updatedModule->type);
         $this->assertSame(730, $updatedModule->workload_minutes);
         $this->assertNotSame('Conteúdo antigo', $updatedModule->lessons[0]['name']);
         $this->assertTrue($updatedModule->tracks()->where('name', 'Classe de palavras')->exists());
+        $this->assertDatabaseMissing('course_modules', [
+            'id' => $existingImportedModule->id,
+        ]);
+        $this->assertDatabaseMissing('course_modules', [
+            'id' => $staleModule->id,
+        ]);
         $this->assertDatabaseCount('study_tracks', 1);
         $this->assertSame('Trilha Oficial - Nome Antigo', $officialTrack->name);
         $this->assertTrue($officialTrack->modules()->whereKey($updatedModule->id)->exists());
-        $this->assertFalse($officialTrack->modules()->whereKey($staleModule->id)->exists());
         $this->assertSame(8, $officialTrack->modules()->count());
     }
 
@@ -367,6 +372,52 @@ class CourseSpreadsheetImportTest extends TestCase
             'title' => 'Substantivo',
             'duration_seconds' => 1500,
         ]);
+    }
+
+    public function test_xlsx_sheet_module_keeps_tracks_inside_sheet_module_even_when_compound_module_exists(): void
+    {
+        $course = Course::factory()->create(['name' => 'Administrador']);
+        $compoundModule = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Conhecimentos Específicos - Teorias da Administração',
+            'type' => 'specific',
+            'workload_minutes' => 1,
+            'is_active' => true,
+        ]);
+        $payload = [
+            'modules' => [[
+                'sheet_name' => 'Conhecimentos Especificos',
+                'group_name' => 'Conhecimentos Específicos - Administrador - Santos',
+                'name' => 'Conhecimentos Específicos - Administrador - Santos',
+                'type' => 'specific',
+                'workload_minutes' => 41,
+                'sort_order' => 1,
+                'tracks' => [[
+                    'name' => 'Teorias da Administração',
+                    'sort_order' => 1,
+                    'workload_minutes' => 41,
+                    'lessons' => [
+                        ['name' => '01 - Teorias da Administração - Teoria Científica', 'minutes' => 23],
+                        ['name' => '02 - Teorias da Administração - Teoria Clássica', 'minutes' => 18],
+                    ],
+                ]],
+                'lessons' => [
+                    ['name' => '01 - Teorias da Administração - Teoria Científica', 'minutes' => 23],
+                    ['name' => '02 - Teorias da Administração - Teoria Clássica', 'minutes' => 18],
+                ],
+            ]],
+        ];
+
+        $method = new \ReflectionMethod(CourseSpreadsheetImporter::class, 'importStructure');
+        $method->setAccessible(true);
+        $method->invoke(app(CourseSpreadsheetImporter::class), $course, $payload, 'Trilha Oficial - Administrador');
+
+        $module = $course->modules()->where('name', 'Conhecimentos Específicos - Administrador - Santos')->firstOrFail();
+
+        $this->assertFalse($course->modules()->whereKey($compoundModule->id)->exists());
+        $this->assertTrue($module->tracks()->where('name', 'Teorias da Administração')->exists());
+        $this->assertSame(1, $course->modules()->count());
+        $this->assertSame(1, $module->tracks()->count());
     }
 
     public function test_spreadsheet_import_links_standalone_lessons_by_name_without_overwriting_media(): void

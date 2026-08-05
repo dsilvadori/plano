@@ -20,6 +20,8 @@ class CourseSpreadsheetImporter
 
     protected array $leadingNumberCache = [];
 
+    protected array $removedStructureModuleIds = [];
+
     public function __construct(
         protected CourseSpreadsheetParser $parser,
         protected ActiveStudyPlanRefresher $activeStudyPlanRefresher,
@@ -107,8 +109,14 @@ class CourseSpreadsheetImporter
     {
         $moduleIds = [];
 
+        if ($replaceTrackModules) {
+            $this->replaceExistingOfficialStructure($course, $studyTrackName);
+        }
+
         foreach ($payload['modules'] as $moduleData) {
-            $moduleData = $this->attachCompoundTrackModules($course, $moduleData, $moduleIds);
+            if ($this->shouldAttachCompoundTrackModules($moduleData)) {
+                $moduleData = $this->attachCompoundTrackModules($course, $moduleData, $moduleIds);
+            }
 
             if (empty($moduleData['tracks']) && empty($moduleData['lessons'])) {
                 continue;
@@ -161,6 +169,41 @@ class CourseSpreadsheetImporter
         }
 
         $studyTrack->modules()->syncWithoutDetaching($moduleIds);
+    }
+
+    protected function shouldAttachCompoundTrackModules(array $moduleData): bool
+    {
+        return ($moduleData['sheet_name'] ?? null) === 'CSV';
+    }
+
+    protected function replaceExistingOfficialStructure(Course $course, string $studyTrackName): void
+    {
+        $studyTrack = $course->studyTracks()
+            ->where('name', $studyTrackName)
+            ->first()
+            ?? $course->studyTracks()
+                ->where('name', 'like', 'Trilha Oficial -%')
+                ->orderBy('id')
+                ->first();
+
+        if (! $studyTrack instanceof StudyTrack) {
+            return;
+        }
+
+        $modules = $studyTrack->modules()->withCount('courses')->get();
+
+        $studyTrack->modules()->detach();
+
+        foreach ($modules as $module) {
+            $this->removedStructureModuleIds[] = (int) $module->id;
+            $module->courses()->detach($course->id);
+
+            if ((int) $module->courses_count <= 1) {
+                $module->delete();
+            }
+        }
+
+        $this->removedStructureModuleIds = array_values(array_unique($this->removedStructureModuleIds));
     }
 
     protected function attachCompoundTrackModules(Course $course, array $moduleData, array &$moduleIds): array
@@ -409,6 +452,7 @@ class CourseSpreadsheetImporter
             ->where('course_modules.name', $moduleName)
             ->first()
             ?? CourseModule::query()
+                ->when($this->removedStructureModuleIds !== [], fn ($query) => $query->whereNotIn('id', $this->removedStructureModuleIds))
                 ->where('name', $moduleName)
                 ->get()
                 ->first(fn (CourseModule $module): bool => $this->normalizeName($module->name) === $this->normalizeName($moduleName));
@@ -419,6 +463,7 @@ class CourseSpreadsheetImporter
         $normalizedName = $this->normalizeName($moduleName);
 
         return CourseModule::query()
+            ->when($this->removedStructureModuleIds !== [], fn ($query) => $query->whereNotIn('id', $this->removedStructureModuleIds))
             ->orderBy('id')
             ->get()
             ->first(fn (CourseModule $module) => $this->normalizeName($module->name) === $normalizedName);
@@ -432,6 +477,7 @@ class CourseSpreadsheetImporter
             ->get()
             ->first(fn (CourseModule $module): bool => $this->normalizeName($module->name) === $normalizedName)
             ?? CourseModule::query()
+                ->when($this->removedStructureModuleIds !== [], fn ($query) => $query->whereNotIn('id', $this->removedStructureModuleIds))
                 ->orderBy('id')
                 ->get()
                 ->first(fn (CourseModule $module): bool => $this->normalizeName($module->name) === $normalizedName);
@@ -678,6 +724,7 @@ class CourseSpreadsheetImporter
         $this->reusableLessonCandidates = null;
         $this->matchKeyCache = [];
         $this->leadingNumberCache = [];
+        $this->removedStructureModuleIds = [];
     }
 
     protected function matchKey(string $value, ?string $cacheKey = null): string

@@ -4,7 +4,9 @@ namespace App\Jobs;
 
 use App\Models\GoogleDriveImportRun;
 use App\Models\Lesson;
+use App\Services\ActiveStudyPlanRefresher;
 use App\Services\GoogleDriveTrackImporter;
+use App\Services\LessonCourseLinker;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -33,7 +35,7 @@ class UploadLessonToPanda implements ShouldQueue
         ];
     }
 
-    public function handle(GoogleDriveTrackImporter $importer): void
+    public function handle(GoogleDriveTrackImporter $importer, ?LessonCourseLinker $linker = null, ?ActiveStudyPlanRefresher $refresher = null): void
     {
         $lesson = Lesson::query()->findOrFail($this->lessonId);
         $run = $this->runId ? GoogleDriveImportRun::query()->find($this->runId) : null;
@@ -45,6 +47,9 @@ class UploadLessonToPanda implements ShouldQueue
                 SyncPandaVideoStatus::dispatch($lesson->id, $run?->id)
                     ->delay(now()->addSeconds(max(0, (int) config('services.panda.video_status_sync_delay_seconds', 300))))
                     ->afterResponse();
+            } elseif (($lesson->fresh()?->source_status) === 'media_ready') {
+                ($linker ?? app(LessonCourseLinker::class))->sync();
+                ($refresher ?? app(ActiveStudyPlanRefresher::class))->refreshCoursesForLesson($lesson->fresh());
             }
 
             $this->pauseAfterUpload();

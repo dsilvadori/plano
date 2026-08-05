@@ -411,8 +411,8 @@
                 @else
                     <div class="flex aspect-video flex-col items-center justify-center p-8 text-center">
                         <p class="text-sm uppercase tracking-[0.25em] text-amber-300">{{ ucfirst($lesson->type) }}</p>
-                        <h2 class="mt-3 text-2xl font-semibold text-white">Conteúdo em preparação</h2>
-                        <p class="mt-3 max-w-lg text-sm text-slate-400">O vídeo, PDF ou material digital será exibido aqui assim que estiver cadastrado para esta aula.</p>
+                        <h2 class="mt-3 text-2xl font-semibold text-white">Entrará em breve</h2>
+                        <p class="mt-3 max-w-lg text-sm text-slate-400">A mídia desta aula entrará em breve. Você já pode navegar pela trilha e acompanhar o planejamento do curso.</p>
                     </div>
                 @endif
             </div>

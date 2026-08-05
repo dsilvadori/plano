@@ -35,10 +35,10 @@ class ListLessons extends ListRecords
                 ->label('Importar Panda')
                 ->icon('heroicon-o-video-camera')
                 ->modalHeading('Importar aulas do Panda')
-                ->modalDescription('Informe uma pasta do Panda. Os vídeos serão criados ou atualizados como aulas reutilizáveis, com módulo e trilha opcionais.')
+                ->modalDescription('Informe uma pasta do Panda. Os vídeos serão criados ou atualizados como aulas reutilizáveis da biblioteca, com pasta e subpasta opcionais para organização interna.')
                 ->form([
                     Select::make('course_module_id')
-                        ->label('Módulo')
+                        ->label('Pasta')
                         ->options(fn (): array => $this->moduleOptions(null))
                         ->getSearchResultsUsing(fn (?string $search): array => $this->moduleSearchResults(null, $search))
                         ->getOptionLabelUsing(fn ($value): ?string => $this->moduleOptionLabel($value))
@@ -46,17 +46,17 @@ class ListLessons extends ListRecords
                         ->preload()
                         ->live()
                         ->nullable()
-                        ->helperText('Opcional. Digite um nome e pressione Enter para criar um módulo novo.')
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma pasta nova.')
                         ->afterStateUpdated(fn (Set $set) => $set('course_module_track_id', null)),
                     Select::make('course_module_track_id')
-                        ->label('Trilha')
+                        ->label('Subpasta')
                         ->options(fn (Get $get): array => $this->trackOptions($get('course_module_id')))
                         ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->trackSearchResults($get('course_module_id'), $search))
                         ->getOptionLabelUsing(fn ($value): ?string => $this->trackOptionLabel($value))
                         ->searchable()
                         ->preload()
                         ->nullable()
-                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma trilha no módulo selecionado.')
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma subpasta na pasta selecionada.')
                         ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
                     TextInput::make('panda_folder_id')
                         ->label('ID da pasta no Panda')
@@ -100,10 +100,10 @@ class ListLessons extends ListRecords
                 ->label('Importar Drive')
                 ->icon('heroicon-o-folder')
                 ->modalHeading('Importar aulas do Google Drive')
-                ->modalDescription('Informe uma pasta do Drive. Os arquivos dentro dela serão criados ou atualizados como aulas reutilizáveis, com módulo e trilha opcionais.')
+                ->modalDescription('Informe uma pasta do Drive. Os arquivos dentro dela serão criados ou atualizados como aulas reutilizáveis da biblioteca, com pasta e subpasta opcionais para organização interna.')
                 ->form([
                     Select::make('course_module_id')
-                        ->label('Módulo')
+                        ->label('Pasta')
                         ->options(fn (): array => $this->moduleOptions(null))
                         ->getSearchResultsUsing(fn (?string $search): array => $this->moduleSearchResults(null, $search))
                         ->getOptionLabelUsing(fn ($value): ?string => $this->moduleOptionLabel($value))
@@ -111,17 +111,17 @@ class ListLessons extends ListRecords
                         ->preload()
                         ->live()
                         ->nullable()
-                        ->helperText('Opcional. Digite um nome e pressione Enter para criar um módulo novo.')
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma pasta nova.')
                         ->afterStateUpdated(fn (Set $set) => $set('course_module_track_id', null)),
                     Select::make('course_module_track_id')
-                        ->label('Trilha')
+                        ->label('Subpasta')
                         ->options(fn (Get $get): array => $this->trackOptions($get('course_module_id')))
                         ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->trackSearchResults($get('course_module_id'), $search))
                         ->getOptionLabelUsing(fn ($value): ?string => $this->trackOptionLabel($value))
                         ->searchable()
                         ->preload()
                         ->nullable()
-                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma trilha no módulo selecionado.')
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma subpasta na pasta selecionada.')
                         ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
                     TextInput::make('folder_url')
                         ->label('URL ou ID da pasta do Google Drive')
@@ -130,7 +130,7 @@ class ListLessons extends ListRecords
                     TextInput::make('panda_folder_name')
                         ->label('Pasta Panda para aulas avulsas')
                         ->placeholder('Aulas avulsas')
-                        ->helperText('Opcional. Usada quando nenhum módulo ou trilha foi escolhido. Se ficar vazia, o upload vai para a biblioteca raiz do Panda.'),
+                        ->helperText('Opcional. Usada quando nenhuma pasta ou subpasta foi escolhida. Se ficar vazia, o upload vai para a biblioteca raiz do Panda.'),
                     Select::make('lesson_status')
                         ->label('Status inicial das aulas')
                         ->options([
@@ -141,7 +141,7 @@ class ListLessons extends ListRecords
                         ->required(),
                     Toggle::make('create_panda_folder')
                         ->label('Criar ou reutilizar pasta no Panda')
-                        ->helperText('Usa a pasta da trilha, do módulo ou o nome informado para aulas avulsas.')
+                        ->helperText('Usa a subpasta, a pasta ou o nome informado para aulas avulsas.')
                         ->default(true),
                     Toggle::make('upload_panda_videos')
                         ->label('Enviar vídeos ao Panda')
@@ -217,7 +217,7 @@ class ListLessons extends ListRecords
 
         if ($search !== '' && ! $this->hasExactLabel($results, $search)) {
             return [
-                self::NEW_MODULE_PREFIX.$search => 'Criar módulo: '.$search,
+                self::NEW_MODULE_PREFIX.$search => 'Criar pasta: '.$search,
                 ...$results,
             ];
         }
@@ -228,7 +228,7 @@ class ListLessons extends ListRecords
     protected function moduleOptionLabel(mixed $value): ?string
     {
         if ($this->isNewModuleValue($value)) {
-            return 'Criar módulo: '.$this->newModuleName($value);
+            return 'Criar pasta: '.$this->newModuleName($value);
         }
 
         return CourseModule::query()->whereKey($value)->value('name');
@@ -272,7 +272,7 @@ class ListLessons extends ListRecords
 
         if ($search !== '' && ! $this->hasExactLabel($results, $search) && filled($moduleId)) {
             return [
-                self::NEW_TRACK_PREFIX.$search => 'Criar trilha: '.$search,
+                self::NEW_TRACK_PREFIX.$search => 'Criar subpasta: '.$search,
                 ...$results,
             ];
         }
@@ -283,7 +283,7 @@ class ListLessons extends ListRecords
     protected function trackOptionLabel(mixed $value): ?string
     {
         if ($this->isNewTrackValue($value)) {
-            return 'Criar trilha: '.$this->newTrackName($value);
+            return 'Criar subpasta: '.$this->newTrackName($value);
         }
 
         return CourseModuleTrack::query()->whereKey($value)->value('name');
@@ -317,7 +317,7 @@ class ListLessons extends ListRecords
 
         if ($this->isNewTrackValue($trackValue)) {
             if (! $module) {
-                throw new \InvalidArgumentException('Selecione ou crie um módulo antes de criar uma trilha.');
+                throw new \InvalidArgumentException('Selecione ou crie uma pasta antes de criar uma subpasta.');
             }
 
             $trackName = $this->newTrackName($trackValue);

@@ -20,6 +20,7 @@ class GoogleDriveTrackImporter
     public function __construct(
         protected GoogleDriveClient $drive,
         protected PandaVideoClient $panda,
+        protected ?LessonCourseLinker $lessonCourseLinker = null,
     ) {}
 
     public function importFolderSubfoldersAsTracks(?Course $course, CourseModule $module, string $folderUrlOrId, string $lessonStatus = 'draft', bool $createPandaFolders = true, bool $uploadPandaVideos = true, ?GoogleDriveImportRun $run = null): array
@@ -40,6 +41,7 @@ class GoogleDriveTrackImporter
         $pandaVideosUploaded = 0;
         $pandaVideosSkipped = 0;
         $pandaVideosFailed = 0;
+        $planningLessons = [];
 
         if ($course) {
             $module->courses()->syncWithoutDetaching([
@@ -108,10 +110,7 @@ class GoogleDriveTrackImporter
             foreach ($files as $lessonIndex => $file) {
                 $title = $this->lessonTitleFromFile((string) ($file['name'] ?? ''), $lessonIndex + 1);
                 $slug = Str::slug($title) ?: 'aula-'.($lessonIndex + 1);
-                $lesson = $track->lessons()
-                    ->where('lessons.slug', $slug)
-                    ->first()
-                    ?? $this->resolveReusableDriveLesson($course, $module, $track, $title, $slug, $file)
+                $lesson = $this->resolveReusableDriveLesson($course, $module, $track, $title, $slug, $file)
                     ?? new Lesson([
                         'course_id' => null,
                         'course_module_id' => null,
@@ -191,10 +190,17 @@ class GoogleDriveTrackImporter
                     'metadata' => [
                         'source' => 'google_drive',
                         'drive_file_id' => $file['id'] ?? null,
+                        'drive_parent_folder_id' => $folderId,
+                        'drive_source_folder_id' => $folder['id'] ?? null,
+                        'drive_source_folder_path' => $trackName,
                         'drive_mime_type' => $file['mimeType'] ?? null,
                         'drive_modified_time' => $file['modifiedTime'] ?? null,
                         'drive_web_content_link' => $file['webContentLink'] ?? null,
                         'panda_folder_id' => $trackPandaFolderId,
+                        'library_folder_name' => $trackName,
+                        'library_folder_path' => collect([$module->name, $trackName])->filter()->join(' / '),
+                        'import_context_module_id' => $module->id,
+                        'import_context_track_id' => $track->id,
                         'panda_upload' => $pandaVideo['payload'] ?? null,
                         'panda_upload_error' => $pandaUploadError,
                         'panda_processing_error' => $pandaVideo['panda_processing_message'] ?? null,
@@ -205,13 +211,7 @@ class GoogleDriveTrackImporter
                 if ($pandaVideo && ! $this->pandaVideoIsReady($pandaVideo)) {
                     $this->dispatchPandaStatusSync($lesson, $run);
                 }
-                $lesson->modules()->syncWithoutDetaching([
-                    $module->id => ['sort_order' => $lessonIndex + 1],
-                ]);
-                $lesson->tracks()->syncWithoutDetaching([
-                    $track->id => ['sort_order' => $lessonIndex + 1],
-                ]);
-
+                $planningLessons[] = $this->planningLessonFromImportedLesson($lesson, $title);
                 $lessonWasCreated ? $createdLessons++ : $updatedLessons++;
                 $this->updateRun($run, [
                     'processed_lessons' => (int) ($run?->processed_lessons ?? 0) + 1,
@@ -234,6 +234,12 @@ class GoogleDriveTrackImporter
                 'latest_message' => 'Trilha processada: '.$trackName,
             ]);
         }
+
+        if ($course) {
+            $this->syncModulePlanningLessons($module, $planningLessons);
+        }
+
+        $this->lessonCourseLinker()->sync($course);
 
         return [
             'folder_id' => $folderId,
@@ -414,6 +420,10 @@ class GoogleDriveTrackImporter
                     'drive_modified_time' => $file['modifiedTime'] ?? null,
                     'drive_web_content_link' => $file['webContentLink'] ?? null,
                     'panda_folder_id' => $lessonPandaFolderId,
+                    'library_folder_name' => $this->sourceFolderNameForPath((string) ($file['_source_folder_path'] ?? '')) ?: ($track?->name ?? $module?->name ?? $pandaFolderName),
+                    'library_folder_path' => collect([$module?->name, $track?->name, $file['_source_folder_path'] ?? null])->filter()->join(' / '),
+                    'import_context_module_id' => $module?->id,
+                    'import_context_track_id' => $track?->id,
                     'panda_upload' => $pandaVideo['payload'] ?? null,
                     'panda_upload_error' => $pandaUploadError,
                     'panda_processing_error' => $pandaVideo['panda_processing_message'] ?? null,
@@ -430,18 +440,6 @@ class GoogleDriveTrackImporter
                 $this->dispatchPandaStatusSync($lesson, $run);
             }
 
-            if ($module) {
-                $lesson->modules()->syncWithoutDetaching([
-                    $module->id => ['sort_order' => $lessonIndex + 1],
-                ]);
-            }
-
-            if ($track) {
-                $lesson->tracks()->syncWithoutDetaching([
-                    $track->id => ['sort_order' => $lessonIndex + 1],
-                ]);
-            }
-
             $lessonWasCreated ? $createdLessons++ : $updatedLessons++;
             $this->updateRun($run, [
                 'processed_lessons' => (int) ($run?->processed_lessons ?? 0) + 1,
@@ -454,6 +452,8 @@ class GoogleDriveTrackImporter
                     : 'Aula processada: '.$title,
             ]);
         }
+
+        $this->lessonCourseLinker()->sync($course);
 
         return [
             'folder_id' => $folderId,
@@ -591,16 +591,29 @@ class GoogleDriveTrackImporter
         return trim((string) end($parts));
     }
 
+    protected function planningLessonFromImportedLesson(Lesson $lesson, string $title): array
+    {
+        return [
+            'name' => $title,
+            'minutes' => max(1, (int) $lesson->duration_minutes),
+        ];
+    }
+
+    protected function syncModulePlanningLessons(CourseModule $module, array $planningLessons): void
+    {
+        if ($planningLessons === []) {
+            return;
+        }
+
+        $module->forceFill([
+            'lessons' => array_values($planningLessons),
+            'workload_minutes' => array_sum(array_column($planningLessons, 'minutes')),
+        ])->save();
+    }
+
     protected function lessonQueryForScope(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track): Builder
     {
-        return Lesson::query()
-            ->when($module, fn ($query) => $query->where(fn ($query) => $query
-                ->where('course_module_id', $module->id)
-                ->orWhereHas('modules', fn ($query) => $query->whereKey($module->id))))
-            ->when($track, fn ($query) => $query->where(fn ($query) => $query
-                ->where('course_module_track_id', $track->id)
-                ->orWhereHas('tracks', fn ($query) => $query->whereKey($track->id))))
-            ->when(! $module && ! $track, fn ($query) => $query->whereNull('course_module_id')->whereNull('course_module_track_id'));
+        return Lesson::query();
     }
 
     protected function resolveReusableDriveLesson(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $title, string $slug, array $file): ?Lesson
@@ -1153,5 +1166,10 @@ class GoogleDriveTrackImporter
         return rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR)
             .DIRECTORY_SEPARATOR
             .'drive-panda-'.Str::random(16).'-'.$baseName.$suffix;
+    }
+
+    protected function lessonCourseLinker(): LessonCourseLinker
+    {
+        return $this->lessonCourseLinker ??= app(LessonCourseLinker::class);
     }
 }

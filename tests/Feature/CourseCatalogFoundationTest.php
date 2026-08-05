@@ -426,6 +426,139 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertOk();
     }
 
+    public function test_course_track_without_published_lessons_shows_available_soon_placeholder(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com trilha futura',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Conhecimentos Específicos',
+            'is_active' => true,
+        ]);
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+        CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Teorias da Administração',
+            'slug' => 'teorias-da-administracao',
+            'status' => 'published',
+            'sort_order' => 1,
+            'metadata' => [
+                'thumbnail_aspect_ratio' => '300/580',
+            ],
+        ]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Teorias da Administração')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertSee('Aulas em breve')
+            ->assertSee('Arraste para o lado')
+            ->assertSee('h-40')
+            ->assertDontSee('Começar trilha');
+    }
+
+    public function test_course_track_with_lesson_without_media_is_available_and_lesson_page_shows_coming_soon(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com aulas futuras',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Conhecimentos Específicos',
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Teorias da Administração',
+            'slug' => 'teorias-da-administracao',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Teorias da Administração - Teoria Científica',
+            'status' => 'draft',
+            'source_status' => 'awaiting_media',
+            'panda_video_id' => null,
+            'panda_embed_url' => null,
+            'panda_player_url' => null,
+            'duration_seconds' => 23 * 60,
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Teorias da Administração')
+            ->assertSee('01 - Teorias da Administração - Teoria Científica')
+            ->assertSee('Aulas em breve')
+            ->assertSee('Começar trilha')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('01 - Teorias da Administração - Teoria Científica')
+            ->assertSee('Entrará em breve')
+            ->assertSee('A mídia desta aula entrará em breve')
+            ->assertSee('Marcar como concluída');
+    }
+
+    public function test_course_tracks_render_as_carousel_controls_when_module_has_multiple_tracks(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com carrossel',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'is_active' => true,
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        foreach (['Classes de palavras', 'Pontuação'] as $index => $trackName) {
+            CourseModuleTrack::query()->create([
+                'course_module_id' => $module->id,
+                'name' => $trackName,
+                'slug' => str($trackName)->slug()->toString(),
+                'status' => 'published',
+                'sort_order' => $index + 1,
+            ]);
+        }
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('snap-x')
+            ->assertSee('Arraste para o lado')
+            ->assertSee('Trilha anterior')
+            ->assertSee('Próxima trilha')
+            ->assertSee('Ir para a trilha 2');
+    }
+
     public function test_deleting_course_module_or_track_preserves_lessons(): void
     {
         $course = Course::factory()->create(['status' => 'published']);
