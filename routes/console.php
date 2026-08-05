@@ -8,6 +8,7 @@ use App\Models\QuestionBank;
 use App\Services\CourseAccessResolver;
 use App\Services\CourseLessonMediaImporter;
 use App\Services\LessonCourseLinker;
+use App\Services\PandaVideoClient;
 use App\Services\QuestionBankAutoLinker;
 use App\Services\QuestionPdfImporter;
 use App\Support\LessonTitleNormalizer;
@@ -377,6 +378,146 @@ Artisan::command('lessons:sync-course-links {courseId?} {--dry-run}', function (
 
     return 0;
 })->purpose('Substitui aulas sem mídia por aulas prontas correspondentes no curso');
+
+Artisan::command('lessons:sync-panda-durations {--lesson-id=* : ID de aula específica, pode repetir} {--course-id= : Limita às aulas vinculadas ao curso} {--only-wrong : Atualiza só aulas sem duração ou com até 1 minuto} {--dry-run}', function (PandaVideoClient $panda) {
+    $lessonIds = collect($this->option('lesson-id'))
+        ->map(fn ($id): int => (int) $id)
+        ->filter()
+        ->unique()
+        ->values();
+    $courseId = filled($this->option('course-id')) ? (int) $this->option('course-id') : null;
+    $dryRun = (bool) $this->option('dry-run');
+    $onlyWrong = (bool) $this->option('only-wrong');
+
+    $query = Lesson::query()
+        ->with(['module', 'modules'])
+        ->whereNotNull('panda_video_id')
+        ->when($lessonIds->isNotEmpty(), fn ($query) => $query->whereIn('id', $lessonIds))
+        ->when($onlyWrong, fn ($query) => $query->where('duration_seconds', '<=', 60))
+        ->when($courseId, function ($query) use ($courseId): void {
+            $query->where(function ($query) use ($courseId): void {
+                $query->where('course_id', $courseId)
+                    ->orWhereHas('modules', fn ($query) => $query->where('course_modules.course_id', $courseId))
+                    ->orWhereHas('modules.courses', fn ($query) => $query->whereKey($courseId));
+            });
+        })
+        ->orderBy('id');
+
+    $stats = [
+        'checked' => 0,
+        'updated' => 0,
+        'unchanged' => 0,
+        'skipped' => 0,
+        'failed' => 0,
+    ];
+    $affectedModuleIds = collect();
+
+    $sync = function () use ($query, $panda, $dryRun, &$stats, &$affectedModuleIds): void {
+        $query->chunkById(100, function ($lessons) use ($panda, $dryRun, &$stats, &$affectedModuleIds): void {
+            foreach ($lessons as $lesson) {
+                $stats['checked']++;
+
+                try {
+                    $video = $panda->video((string) $lesson->panda_video_id, data_get($lesson->metadata, 'folder_id'));
+                } catch (\Throwable $exception) {
+                    $stats['failed']++;
+                    $this->warn("Falha ao consultar aula {$lesson->id} ({$lesson->panda_video_id}): {$exception->getMessage()}");
+
+                    continue;
+                }
+
+                $durationSeconds = (int) ($video['duration_seconds'] ?? 0);
+
+                if ($durationSeconds <= 0) {
+                    $stats['skipped']++;
+                    $this->line("Sem duração válida no Panda: aula {$lesson->id} - {$lesson->title}");
+
+                    continue;
+                }
+
+                if ((int) $lesson->duration_seconds === $durationSeconds) {
+                    $stats['unchanged']++;
+
+                    continue;
+                }
+
+                $oldMinutes = max(1, (int) ceil(((int) $lesson->duration_seconds) / 60));
+                $newMinutes = max(1, (int) ceil($durationSeconds / 60));
+                $this->line(($dryRun ? '[dry-run] ' : '')."Aula {$lesson->id}: {$lesson->title} {$oldMinutes} min -> {$newMinutes} min");
+                $stats['updated']++;
+
+                $moduleIds = $lesson->modules->pluck('id');
+
+                if ($lesson->module) {
+                    $moduleIds->push($lesson->module->id);
+                }
+
+                $affectedModuleIds = $affectedModuleIds->merge($moduleIds);
+
+                if ($dryRun) {
+                    continue;
+                }
+
+                $lesson->forceFill([
+                    'duration_seconds' => $durationSeconds,
+                    'metadata' => array_merge($lesson->metadata ?? [], [
+                        'panda_duration_synced_at' => now()->toIso8601String(),
+                    ]),
+                ])->save();
+
+                if ($lesson->module) {
+                    $lesson->modules()->syncWithoutDetaching([
+                        $lesson->module->id => ['sort_order' => (int) $lesson->sort_order],
+                    ]);
+                }
+            }
+        });
+
+        if ($dryRun) {
+            return;
+        }
+
+        CourseModule::query()
+            ->with('onlineLessons')
+            ->whereIn('id', $affectedModuleIds->filter()->unique()->values())
+            ->get()
+            ->each(function (CourseModule $module): void {
+                $planningLessons = $module->onlineLessons
+                    ->map(fn (Lesson $lesson): array => [
+                        'name' => $lesson->title,
+                        'minutes' => max(1, (int) ceil(((int) $lesson->duration_seconds) / 60)),
+                    ])
+                    ->values()
+                    ->all();
+
+                if ($planningLessons !== []) {
+                    $module->forceFill([
+                        'lessons' => $planningLessons,
+                        'workload_minutes' => array_sum(array_column($planningLessons, 'minutes')),
+                    ])->save();
+                }
+            });
+    };
+
+    if ($dryRun) {
+        DB::beginTransaction();
+        $sync();
+        DB::rollBack();
+        $this->info('Simulação concluída. Nada foi gravado.');
+    } else {
+        DB::transaction($sync);
+        $this->info('Sincronização concluída.');
+    }
+
+    $this->line("Aulas consultadas: {$stats['checked']}");
+    $this->line(($dryRun ? 'Aulas que seriam atualizadas' : 'Aulas atualizadas').": {$stats['updated']}");
+    $this->line("Sem alteração: {$stats['unchanged']}");
+    $this->line("Sem duração válida: {$stats['skipped']}");
+    $this->line("Falhas: {$stats['failed']}");
+    $this->line(($dryRun ? 'Módulos que seriam recalculados' : 'Módulos recalculados').': '.$affectedModuleIds->filter()->unique()->count());
+
+    return $stats['failed'] > 0 ? 1 : 0;
+})->purpose('Atualiza a duração de aulas já importadas consultando o Panda');
 
 Artisan::command('questions:import-pdf {path} {--title=} {--answer-key=}', function (QuestionPdfImporter $importer) {
     $path = (string) $this->argument('path');

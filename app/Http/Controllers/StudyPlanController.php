@@ -65,8 +65,6 @@ class StudyPlanController extends Controller
             $data['intensity'],
         );
 
-        sleep(2);
-
         return redirect()->route('study-plans.show', $plan);
     }
 
@@ -109,8 +107,6 @@ class StudyPlanController extends Controller
             $data['intensity'],
         );
 
-        sleep(2);
-
         return redirect()
             ->route('study-plans.show', $plan)
             ->with('status', 'Plano atualizado com sucesso. Reorganizamos o restante do ciclo sem perder o progresso já concluído.');
@@ -122,8 +118,6 @@ class StudyPlanController extends Controller
         abort_unless(request()->user()?->canAccessStudentArea(), 403);
 
         $plan = $generator->smartRebalance($studyPlan);
-
-        sleep(2);
 
         return redirect()
             ->route('study-plans.show', $plan)

@@ -752,6 +752,127 @@ class PandaImportTest extends TestCase
         ]);
     }
 
+    public function test_panda_folder_import_accepts_duration_in_minutes_and_seconds_format(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'panda-video-duration',
+                        'title' => 'Lei Orgânica - Santos',
+                        'duration' => '19:34',
+                        'video_player' => 'https://player.test/embed/panda-video-duration',
+                        'status' => 'ready',
+                        'folder' => ['id' => 'folder-duration', 'name' => 'Legislação'],
+                    ],
+                ],
+            ]),
+        ]);
+
+        $course = Course::factory()->create();
+
+        app(PandaCourseImporter::class)->importFolder($course, 'folder-duration', lessonStatus: 'published');
+
+        $module = $course->modules()->where('panda_folder_id', 'folder-duration')->firstOrFail();
+        $lesson = Lesson::query()->where('panda_video_id', 'panda-video-duration')->firstOrFail();
+
+        $this->assertSame(1174, $lesson->duration_seconds);
+        $this->assertSame([
+            [
+                'name' => '01 - Lei Orgânica - Santos',
+                'minutes' => 20,
+            ],
+        ], $module->planning_lessons);
+    }
+
+    public function test_sync_panda_durations_command_updates_existing_imported_lessons_and_module_planning(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos/panda-video-duration' => Http::response([
+                'id' => 'panda-video-duration',
+                'title' => 'Lei Orgânica - Santos',
+                'duration' => '19:34',
+                'status' => 'ready',
+            ]),
+        ]);
+
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Legislação',
+            'lessons' => [
+                ['name' => '01 - Lei Orgânica - Santos', 'minutes' => 1],
+            ],
+            'workload_minutes' => 1,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'title' => '01 - Lei Orgânica - Santos',
+            'duration_seconds' => 60,
+            'panda_video_id' => 'panda-video-duration',
+            'status' => 'published',
+        ]);
+        $module->onlineLessons()->sync([
+            $lesson->id => ['sort_order' => 1],
+        ]);
+
+        $this->artisan('lessons:sync-panda-durations', [
+            '--only-wrong' => true,
+        ])->assertExitCode(0);
+
+        $this->assertSame(1174, $lesson->fresh()->duration_seconds);
+        $this->assertSame(20, $module->fresh()->workload_minutes);
+        $this->assertSame([
+            [
+                'name' => '01 - Lei Orgânica - Santos',
+                'minutes' => 20,
+            ],
+        ], $module->fresh()->lessons);
+    }
+
+    public function test_sync_panda_durations_command_dry_run_does_not_update_lessons(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos/panda-video-duration' => Http::response([
+                'id' => 'panda-video-duration',
+                'title' => 'Lei Orgânica - Santos',
+                'duration' => '19:34',
+                'status' => 'ready',
+            ]),
+        ]);
+
+        $lesson = Lesson::factory()->create([
+            'title' => '01 - Lei Orgânica - Santos',
+            'duration_seconds' => 60,
+            'panda_video_id' => 'panda-video-duration',
+            'status' => 'published',
+        ]);
+
+        $this->artisan('lessons:sync-panda-durations', [
+            '--lesson-id' => [$lesson->id],
+            '--dry-run' => true,
+        ])->assertExitCode(0);
+
+        $this->assertSame(60, $lesson->fresh()->duration_seconds);
+    }
+
     public function test_panda_import_reuses_same_lesson_across_courses(): void
     {
         config([

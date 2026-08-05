@@ -56,7 +56,7 @@ class StudyPlanItem extends Model
         return $this->lessons
             ->values()
             ->sortBy(function (Lesson $lesson, int $index): string {
-                preg_match('/^\D*(\d+)/', $lesson->title, $matches);
+                preg_match('/^\s*(?:aula\s*)?(\d{1,3})(?:\s*[-–.)]|\s+)/iu', $lesson->title, $matches);
 
                 return implode('|', [
                     isset($matches[1]) ? '0' : '1',

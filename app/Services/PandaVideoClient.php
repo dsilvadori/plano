@@ -1062,7 +1062,7 @@ class PandaVideoClient
             'panda_video_id' => (string) $pandaId,
             'title' => (string) (Arr::get($video, 'title') ?? Arr::get($video, 'name') ?? ''),
             'description' => Arr::get($video, 'description'),
-            'duration_seconds' => (int) round((float) $duration),
+            'duration_seconds' => $this->parseDurationSeconds($duration),
             'thumbnail_url' => Arr::get($video, 'thumbnail_url') ?? Arr::get($video, 'thumbnail') ?? Arr::get($video, 'preview') ?? Arr::get($video, 'thumb'),
             'panda_status' => Arr::get($video, 'status'),
             'panda_embed_url' => $embedUrl,
@@ -1072,6 +1072,35 @@ class PandaVideoClient
             'folder_name' => Arr::get($video, 'folder_name') ?? Arr::get($video, 'folder.name'),
             'payload' => $video,
         ];
+    }
+
+    protected function parseDurationSeconds(mixed $duration): int
+    {
+        if (is_numeric($duration)) {
+            return max(0, (int) round((float) $duration));
+        }
+
+        if (! is_string($duration)) {
+            return 0;
+        }
+
+        $duration = trim($duration);
+
+        if ($duration === '') {
+            return 0;
+        }
+
+        if (preg_match('/^\d{1,2}:\d{2}(?::\d{2})?$/', $duration) === 1) {
+            $parts = array_map('intval', explode(':', $duration));
+
+            if (count($parts) === 2) {
+                return ($parts[0] * 60) + $parts[1];
+            }
+
+            return ($parts[0] * 3600) + ($parts[1] * 60) + $parts[2];
+        }
+
+        return max(0, (int) round((float) $duration));
     }
 
     protected function normalizeFolder(array $folder): array

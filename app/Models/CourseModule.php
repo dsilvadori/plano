@@ -293,7 +293,7 @@ class CourseModule extends Model
     {
         return $lessons
             ->sortBy(function (array $lesson): string {
-                preg_match('/^\D*(\d+)/', (string) ($lesson['name'] ?? ''), $matches);
+                preg_match('/^\s*(?:aula\s*)?(\d{1,3})(?:\s*[-–.)]|\s+)/iu', (string) ($lesson['name'] ?? ''), $matches);
 
                 return implode('|', [
                     isset($matches[1]) ? '0' : '1',

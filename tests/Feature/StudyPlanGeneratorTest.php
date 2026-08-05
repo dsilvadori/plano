@@ -109,6 +109,80 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertTrue($item->lessons()->whereKey($lesson->id)->exists());
     }
 
+    public function test_sync_replaces_stale_plan_lesson_links_with_the_planned_ready_lesson(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 30,
+            'sort_order' => 1,
+            'lessons' => [
+                ['name' => 'Classes de palavras', 'minutes' => 30],
+                ['name' => 'Pontuação - Parte 01', 'minutes' => 30],
+            ],
+        ]);
+
+        $classesLesson = Lesson::factory()->create([
+            'title' => '01 - Classes de palavras',
+            'duration_seconds' => 1800,
+            'sort_order' => 1,
+            'status' => 'draft',
+            'source_status' => 'media_ready',
+            'panda_video_id' => 'classes-ready',
+        ]);
+        $punctuationLesson = Lesson::factory()->create([
+            'title' => '02 - Pontuação - Parte 01',
+            'duration_seconds' => 1800,
+            'sort_order' => 2,
+            'status' => 'published',
+            'source_status' => 'media_ready',
+            'panda_video_id' => 'pontuacao-ready',
+        ]);
+
+        $module->onlineLessons()->sync([
+            $classesLesson->id => ['sort_order' => 1],
+            $punctuationLesson->id => ['sort_order' => 2],
+        ]);
+
+        $plan = $student->studyPlans()->create([
+            'course_id' => $course->id,
+            'name' => 'Plano Português',
+            'exam_date' => now()->addWeek(),
+            'exam_date_confirmed' => true,
+            'start_date' => now(),
+            'available_days' => ['monday'],
+            'available_minutes_by_day' => ['monday' => 30],
+            'total_available_minutes' => 30,
+            'total_required_minutes' => 30,
+            'intensity' => 'balanced',
+            'status' => 'active',
+            'viability_status' => 'good',
+            'viability_message' => 'ok',
+            'generated_at' => now(),
+        ]);
+        $item = $plan->items()->create([
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => 'monday',
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 30 minutos.',
+            'type' => 'basic',
+            'estimated_minutes' => 30,
+            'sort_order' => 1,
+        ]);
+        $item->lessons()->sync([$punctuationLesson->id => ['sort_order' => 1]]);
+
+        app(StudyPlanGenerator::class)->syncPublishedLessonsForPlan($plan);
+
+        $this->assertSame('published', $classesLesson->fresh()->status);
+        $this->assertSame([$classesLesson->id], $item->fresh()->lessons()->pluck('lessons.id')->all());
+    }
+
     public function test_generator_uses_calendar_weeks_from_monday_to_sunday(): void
     {
         $course = Course::factory()->create();

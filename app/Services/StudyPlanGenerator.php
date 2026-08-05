@@ -351,7 +351,7 @@ class StudyPlanGenerator
     public function syncPublishedLessonsForPlan(StudyPlan $studyPlan): StudyPlan
     {
         return DB::transaction(function () use ($studyPlan): StudyPlan {
-            $studyPlan->loadMissing(['course', 'items.courseModule']);
+            $studyPlan->loadMissing(['course', 'items.courseModule.onlineLessons']);
 
             if (! $studyPlan->course) {
                 return $studyPlan;
@@ -361,7 +361,7 @@ class StudyPlanGenerator
 
             $lessonIndexes = [];
             $studyPlan->items()
-                ->with('courseModule')
+                ->with('courseModule.onlineLessons')
                 ->orderBy('scheduled_date')
                 ->orderBy('sort_order')
                 ->orderBy('id')
@@ -445,13 +445,24 @@ class StudyPlanGenerator
                 ->where('course_modules.is_active', true)
                 ->get()
                 ->reject(fn (CourseModule $module) => $this->shouldSkipModule($module))
+                ->sortBy('sort_order')
                 ->values();
         }
 
-        return $course->modules()
+        $pivotModules = $course->modules()
             ->where('course_modules.is_active', true)
-            ->get()
+            ->get();
+
+        $legacyModules = CourseModule::query()
+            ->where('course_id', $course->id)
+            ->where('is_active', true)
+            ->get();
+
+        return $pivotModules
+            ->concat($legacyModules)
+            ->unique('id')
             ->reject(fn (CourseModule $module) => $this->shouldSkipModule($module))
+            ->sortBy('sort_order')
             ->values();
     }
 
@@ -1107,9 +1118,11 @@ class StudyPlanGenerator
             return;
         }
 
-        $onlineLessons = $module->onlineLessons()
-            ->where('status', 'published')
-            ->get();
+        $onlineLessons = ($module->relationLoaded('onlineLessons')
+            ? $module->onlineLessons
+            : $module->onlineLessons()->get())
+            ->filter(fn (Lesson $lesson): bool => $lesson->status === 'published')
+            ->values();
 
         if ($onlineLessons->isEmpty()) {
             return;
@@ -1144,7 +1157,7 @@ class StudyPlanGenerator
             ->mapWithKeys(fn (Lesson $lesson, int $index) => [$lesson->id => ['sort_order' => $index + 1]])
             ->all();
 
-        $item->lessons()->syncWithoutDetaching($syncPayload);
+        $item->lessons()->sync($syncPayload);
     }
 
     protected function lessonNamesForPlanItem(CourseModule $module, StudyPlanItem $item, array &$lessonIndexes): array
@@ -1196,8 +1209,17 @@ class StudyPlanGenerator
             ->distinct()
             ->pluck('lessons.id');
 
+        $legacyModuleLessonIds = DB::table('course_modules')
+            ->join('course_module_lessons', 'course_module_lessons.course_module_id', '=', 'course_modules.id')
+            ->join('lessons', 'lessons.id', '=', 'course_module_lessons.lesson_id')
+            ->where('course_modules.course_id', $course->id)
+            ->where($this->readyLessonFilter())
+            ->distinct()
+            ->pluck('lessons.id');
+
         $lessonIds = $trackLessonIds
             ->merge($moduleLessonIds)
+            ->merge($legacyModuleLessonIds)
             ->unique()
             ->values();
 
