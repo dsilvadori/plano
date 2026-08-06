@@ -13,7 +13,7 @@ class ReprocessGoogleDrivePendingLessons implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 1;
+    public int $tries = 10;
 
     public int $timeout = 7200;
 
@@ -27,8 +27,14 @@ class ReprocessGoogleDrivePendingLessons implements ShouldQueue
         return [
             (new WithoutOverlapping('google-drive-panda-import'))
                 ->shared()
-                ->expireAfter($this->timeout),
+                ->expireAfter($this->timeout)
+                ->releaseAfter(60),
         ];
+    }
+
+    public function backoff(): array
+    {
+        return [120, 300, 900];
     }
 
     public function handle(GoogleDriveTrackImporter $importer): void

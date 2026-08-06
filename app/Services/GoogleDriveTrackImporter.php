@@ -17,6 +17,8 @@ use Illuminate\Support\Str;
 
 class GoogleDriveTrackImporter
 {
+    protected array $importWarnings = [];
+
     public function __construct(
         protected GoogleDriveClient $drive,
         protected PandaVideoClient $panda,
@@ -25,8 +27,13 @@ class GoogleDriveTrackImporter
 
     public function importFolderSubfoldersAsTracks(?Course $course, CourseModule $module, string $folderUrlOrId, string $lessonStatus = 'draft', bool $createPandaFolders = true, bool $uploadPandaVideos = true, ?GoogleDriveImportRun $run = null): array
     {
+        $this->importWarnings = [];
+
         $folderId = $this->drive->folderIdFromUrl($folderUrlOrId);
-        $folders = $this->sortNaturally($this->drive->listFolders($folderId));
+        $folders = $this->sortNaturally($this->guardedDriveList(
+            fn (): array => $this->drive->listFolders($folderId),
+            'subpastas da pasta raiz',
+        ));
         $this->updateRun($run, [
             'folder_id' => $folderId,
             'total_tracks' => count($folders),
@@ -101,7 +108,10 @@ class GoogleDriveTrackImporter
 
             $trackWasCreated ? $createdTracks++ : $updatedTracks++;
 
-            $files = $this->sortNaturally($this->drive->listFiles((string) $folder['id']));
+            $files = $this->sortNaturally($this->guardedDriveList(
+                fn (): array => $this->drive->listFiles((string) $folder['id']),
+                'trilha '.$trackName,
+            ));
             $this->updateRun($run, [
                 'total_lessons' => (int) ($run?->total_lessons ?? 0) + count($files),
                 'latest_message' => 'Trilha '.$trackName.' encontrada com '.count($files).' aulas.',
@@ -252,11 +262,14 @@ class GoogleDriveTrackImporter
             'panda_videos_failed' => $pandaVideosFailed,
             'created_lessons' => $createdLessons,
             'updated_lessons' => $updatedLessons,
+            'warnings' => $this->importWarnings,
         ];
     }
 
     public function importFolderFilesAsLessons(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $folderUrlOrId, string $lessonStatus = 'draft', ?string $pandaFolderName = null, bool $createPandaFolder = true, bool $uploadPandaVideos = true, ?GoogleDriveImportRun $run = null): array
     {
+        $this->importWarnings = [];
+
         if ($track && ! $module) {
             $module = $track->module()->first();
         }
@@ -461,6 +474,7 @@ class GoogleDriveTrackImporter
             'created_tracks' => 0,
             'updated_tracks' => 0,
             'total_lessons' => count($files),
+            'warnings' => $this->importWarnings,
             'panda_folders' => $pandaFolders,
             'panda_videos_uploaded' => $pandaVideosUploaded,
             'panda_videos_skipped' => $pandaVideosSkipped,
@@ -472,7 +486,10 @@ class GoogleDriveTrackImporter
 
     protected function listFilesRecursively(string $folderId, string $folderPath = ''): array
     {
-        $files = collect($this->sortNaturally($this->drive->listFiles($folderId)))
+        $files = collect($this->sortNaturally($this->guardedDriveList(
+            fn (): array => $this->drive->listFiles($folderId),
+            $folderPath === '' ? 'pasta raiz' : $folderPath,
+        )))
             ->map(function (array $file) use ($folderId, $folderPath): array {
                 return [
                     ...$file,
@@ -482,7 +499,10 @@ class GoogleDriveTrackImporter
             })
             ->all();
 
-        foreach ($this->sortNaturally($this->drive->listFolders($folderId)) as $folder) {
+        foreach ($this->sortNaturally($this->guardedDriveList(
+            fn (): array => $this->drive->listFolders($folderId),
+            $folderPath === '' ? 'subpastas da pasta raiz' : 'subpastas de '.$folderPath,
+        )) as $folder) {
             $childFolderId = (string) ($folder['id'] ?? '');
 
             if ($childFolderId === '') {
@@ -496,6 +516,17 @@ class GoogleDriveTrackImporter
         }
 
         return $this->sortNaturally($files);
+    }
+
+    protected function guardedDriveList(callable $callback, string $context): array
+    {
+        try {
+            return $callback();
+        } catch (\Throwable $exception) {
+            $this->importWarnings[] = 'Não foi possível ler '.$context.': '.$exception->getMessage();
+
+            return [];
+        }
     }
 
     protected function resolvePandaFolderIdForStandaloneDriveFile(array $file, ?string $defaultPandaFolderId, ?CourseModule $module, ?CourseModuleTrack $track, bool $requiresPandaFolder, bool $createMissingPandaFolder = true): array
@@ -789,7 +820,7 @@ class GoogleDriveTrackImporter
     protected function pendingLessonsForFolder(string $folderId): Collection
     {
         return Lesson::query()
-            ->whereIn('source_status', ['awaiting_media', 'upload_queued', 'upload_failed'])
+            ->whereIn('source_status', ['awaiting_media', 'upload_queued', 'uploading', 'upload_failed', 'panda_processing'])
             ->orderBy('sort_order')
             ->orderBy('id')
             ->get()

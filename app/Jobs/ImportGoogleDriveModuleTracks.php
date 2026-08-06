@@ -15,7 +15,7 @@ class ImportGoogleDriveModuleTracks implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 1;
+    public int $tries = 10;
 
     public int $timeout = 7200;
 
@@ -34,8 +34,14 @@ class ImportGoogleDriveModuleTracks implements ShouldQueue
         return [
             (new WithoutOverlapping('google-drive-panda-import'))
                 ->shared()
-                ->expireAfter($this->timeout),
+                ->expireAfter($this->timeout)
+                ->releaseAfter(60),
         ];
+    }
+
+    public function backoff(): array
+    {
+        return [120, 300, 900];
     }
 
     public function handle(GoogleDriveTrackImporter $importer): void
@@ -63,7 +69,9 @@ class ImportGoogleDriveModuleTracks implements ShouldQueue
         $run?->forceFill([
             'status' => 'finished',
             'summary' => $summary,
-            'latest_message' => 'Importação concluída.',
+            'latest_message' => empty($summary['warnings'] ?? [])
+                ? 'Importação concluída.'
+                : 'Importação concluída com avisos.',
             'finished_at' => now(),
         ])->save();
     }

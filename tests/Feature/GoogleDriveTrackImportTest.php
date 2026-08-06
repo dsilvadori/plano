@@ -1063,6 +1063,55 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame(1, $run->fresh()->processed_lessons);
     }
 
+    public function test_drive_import_continues_when_one_subfolder_cannot_be_read(): void
+    {
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $drive->shouldReceive('folderIdFromUrl')->once()->with('root-folder')->andReturn('root-folder');
+        $drive->shouldReceive('listFiles')->once()->with('root-folder')->andReturn([]);
+        $drive->shouldReceive('listFolders')->once()->with('root-folder')->andReturn([
+            [
+                'id' => 'folder-ok',
+                'name' => 'Excel 2016',
+                'mimeType' => GoogleDriveClient::FOLDER_MIME_TYPE,
+            ],
+            [
+                'id' => 'folder-error',
+                'name' => 'Pasta com erro',
+                'mimeType' => GoogleDriveClient::FOLDER_MIME_TYPE,
+            ],
+        ]);
+        $drive->shouldReceive('listFiles')->once()->with('folder-ok')->andReturn([[
+            'id' => 'pdf-excel-01',
+            'name' => '01 - Material.pdf',
+            'mimeType' => 'application/pdf',
+            'webViewLink' => 'https://drive.test/pdf-excel-01',
+        ]]);
+        $drive->shouldReceive('listFolders')->once()->with('folder-ok')->andReturn([]);
+        $drive->shouldReceive('listFiles')->once()->with('folder-error')->andThrow(new \RuntimeException('Permissão negada'));
+        $drive->shouldReceive('listFolders')->once()->with('folder-error')->andReturn([]);
+        $panda->shouldNotReceive('uploadVideo');
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->importFolderFilesAsLessons(
+            null,
+            null,
+            null,
+            'root-folder',
+            uploadPandaVideos: false,
+        );
+
+        $this->assertSame(1, $summary['created_lessons']);
+        $this->assertSame(1, $summary['total_lessons']);
+        $this->assertNotEmpty($summary['warnings']);
+        $this->assertStringContainsString('Pasta com erro', $summary['warnings'][0]);
+        $this->assertDatabaseHas('lessons', [
+            'title' => '01 - Material',
+            'type' => 'pdf',
+            'source_status' => 'media_ready',
+        ]);
+    }
+
     public function test_standalone_drive_import_blocks_upload_when_matching_panda_folder_is_missing(): void
     {
         $drive = Mockery::mock(GoogleDriveClient::class);
@@ -1785,6 +1834,63 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame('media_ready', $lesson->source_status);
         $this->assertNull($lesson->metadata['panda_upload_error']);
         $this->assertSame(1, $run->fresh()->processed_lessons);
+    }
+
+    public function test_reprocess_pending_lessons_includes_stuck_uploading_lessons(): void
+    {
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $drive->shouldNotReceive('downloadFileToPath');
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Upload Travado', 'panda-folder-travado')
+            ->andReturn([
+                'panda_video_id' => 'existing-panda-travado',
+                'title' => '01 - Upload Travado',
+                'duration_seconds' => 1200,
+                'panda_status' => 'CONVERTED',
+                'panda_embed_url' => 'https://player.test/embed/existing-panda-travado',
+                'panda_player_url' => 'https://player.test/existing-panda-travado',
+                'folder_id' => 'panda-folder-travado',
+                'payload' => ['id' => 'existing-panda-travado'],
+            ]);
+
+        $sourceRun = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'https://drive.test/root',
+            'folder_id' => 'root-folder',
+            'status' => 'finished',
+        ]);
+        $run = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'https://drive.test/root',
+            'folder_id' => 'root-folder',
+            'status' => 'running',
+        ]);
+        $lesson = Lesson::query()->create([
+            'title' => '01 - Upload Travado',
+            'slug' => '01-upload-travado',
+            'description' => 'Aula importada pelo Drive.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'uploading',
+            'metadata' => [
+                'source' => 'google_drive',
+                'drive_file_id' => 'drive-upload-travado',
+                'drive_parent_folder_id' => 'root-folder',
+                'drive_source_folder_path' => 'Travados',
+                'drive_mime_type' => 'video/mp4',
+                'panda_folder_id' => 'panda-folder-travado',
+            ],
+        ]);
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->reprocessPendingLessonsForRun($sourceRun, $run);
+
+        $this->assertSame(1, $summary['total_lessons']);
+        $this->assertSame(1, $summary['panda_videos_skipped']);
+        $this->assertSame('media_ready', $lesson->fresh()->source_status);
+        $this->assertSame('existing-panda-travado', $lesson->fresh()->panda_video_id);
     }
 
     public function test_background_job_runs_pending_lesson_reprocess(): void

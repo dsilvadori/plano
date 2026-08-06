@@ -100,6 +100,11 @@ class GoogleDriveClient
     protected function request(): PendingRequest
     {
         return Http::acceptJson()
+            ->timeout((int) config('services.google_drive.request_timeout', 120))
+            ->retry(
+                (int) config('services.google_drive.request_retry_attempts', 3),
+                max(0, (int) config('services.google_drive.request_retry_delay_seconds', 2)) * 1000,
+            )
             ->withToken($this->accessToken());
     }
 
