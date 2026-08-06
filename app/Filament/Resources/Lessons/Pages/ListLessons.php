@@ -59,7 +59,8 @@ class ListLessons extends ListRecords
                         ->helperText('Opcional. Digite um nome e pressione Enter para criar uma subpasta na pasta selecionada.')
                         ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
                     TextInput::make('panda_folder_id')
-                        ->label('ID da pasta no Panda')
+                        ->label('Pasta no Panda')
+                        ->helperText('Aceita URL completa, ID ou nome da pasta.')
                         ->required(),
                     Select::make('lesson_status')
                         ->label('Status inicial das aulas')

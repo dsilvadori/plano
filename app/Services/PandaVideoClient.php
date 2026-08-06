@@ -45,27 +45,50 @@ class PandaVideoClient
         return array_merge($this->createFolder($name, $parentFolderId), ['was_created' => true]);
     }
 
+    public function resolveFolderReference(string $reference, ?string $parentFolderId = null): string
+    {
+        $reference = trim($reference);
+
+        if ($reference === '') {
+            throw new RuntimeException('Informe o ID, URL ou nome da pasta no Panda.');
+        }
+
+        $folderId = $this->folderIdFromReference($reference);
+
+        if ($folderId !== null) {
+            return $folderId;
+        }
+
+        $folder = $this->findFolderByName($reference, $parentFolderId);
+
+        if ($folder && filled($folder['panda_folder_id'])) {
+            return (string) $folder['panda_folder_id'];
+        }
+
+        throw new RuntimeException("Não encontrei a pasta do Panda para: {$reference}. Informe a URL completa, o ID da pasta ou confira o nome cadastrado no Panda.");
+    }
+
     public function findFolderByName(string $name, ?string $parentFolderId = null): ?array
     {
-        $normalizedName = $this->normalizeName($name);
+        $normalizedCandidates = $this->folderNameCandidates($name);
 
-        if ($normalizedName === '') {
+        if ($normalizedCandidates === []) {
             return null;
         }
 
-        $folder = $this->folders($parentFolderId)
-            ->first(fn (array $folder) => $this->normalizeName((string) $folder['name']) === $normalizedName);
+        $folder = $this->bestFolderNameMatch($this->folders($parentFolderId), $normalizedCandidates);
 
         if ($folder || blank($parentFolderId)) {
             return $folder;
         }
 
-        return $this->folders()
-            ->first(fn (array $folder) => $this->normalizeName((string) $folder['name']) === $normalizedName);
+        return $this->bestFolderNameMatch($this->folders(), $normalizedCandidates);
     }
 
     public function activeFolder(string $folderId): ?array
     {
+        $folderId = $this->folderIdFromReference($folderId) ?? trim($folderId);
+
         try {
             $folder = $this->normalizeFolder($this->getWithAuthFallback($this->path('folders_path').'/'.rawurlencode($folderId)));
         } catch (\Throwable) {
@@ -114,6 +137,7 @@ class PandaVideoClient
     public function videos(?string $folderId = null): Collection
     {
         $folderQueryParam = (string) config('services.panda.folder_query_param', 'folder_id');
+        $folderId = filled($folderId) ? ($this->folderIdFromReference((string) $folderId) ?? (string) $folderId) : null;
         $response = $this->getWithAuthFallback($this->path('videos_path'), filled($folderId) ? [
             $folderQueryParam => $folderId,
         ] : []);
@@ -1131,6 +1155,111 @@ class PandaVideoClient
             ->replaceMatches('/[^a-z0-9]+/', ' ')
             ->squish()
             ->value();
+    }
+
+    protected function folderIdFromReference(string $reference): ?string
+    {
+        $reference = trim($reference);
+
+        if ($reference === '') {
+            return null;
+        }
+
+        if (filter_var($reference, FILTER_VALIDATE_URL)) {
+            $parts = parse_url($reference);
+            parse_str((string) ($parts['query'] ?? ''), $query);
+
+            foreach (['folder_id', 'folderId', 'folder', 'id'] as $key) {
+                $value = (string) ($query[$key] ?? '');
+
+                if ($this->looksLikePandaId($value)) {
+                    return $value;
+                }
+            }
+
+            foreach ([$parts['fragment'] ?? '', $parts['path'] ?? ''] as $segment) {
+                if (preg_match('~(?:^|/)(?:folders?|folder|library)/([^/?#]+)~i', (string) $segment, $matches)
+                    && $this->looksLikePandaId((string) $matches[1])) {
+                    return (string) $matches[1];
+                }
+
+                if (preg_match('~([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})~i', (string) $segment, $matches)) {
+                    return (string) $matches[1];
+                }
+            }
+
+            return null;
+        }
+
+        return $this->looksLikePandaId($reference) ? $reference : null;
+    }
+
+    protected function looksLikePandaId(string $value): bool
+    {
+        $value = trim($value);
+
+        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $value) === 1) {
+            return true;
+        }
+
+        return preg_match('/^[A-Za-z0-9_-]{8,}$/', $value) === 1
+            && preg_match('/[-_0-9]/', $value) === 1
+            && preg_match('/\s/', $value) !== 1;
+    }
+
+    protected function folderNameCandidates(string $name): array
+    {
+        $name = trim($name);
+
+        if ($name === '') {
+            return [];
+        }
+
+        $basename = $name;
+
+        if (filter_var($name, FILTER_VALIDATE_URL)) {
+            $parts = parse_url($name);
+            $path = trim((string) ($parts['fragment'] ?? $parts['path'] ?? ''), '/');
+            $basename = rawurldecode((string) Str::of($path)->afterLast('/'));
+        }
+
+        $withoutNumericPrefix = trim((string) preg_replace('/^\d+\s*[-_.]\s*/', '', $basename));
+
+        return collect([$name, $basename, $withoutNumericPrefix])
+            ->map(fn (string $candidate): string => $this->normalizeName($candidate))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    protected function bestFolderNameMatch(Collection $folders, array $normalizedCandidates): ?array
+    {
+        $folders = $folders->values();
+
+        foreach ($normalizedCandidates as $candidate) {
+            $exact = $folders->first(fn (array $folder): bool => $this->normalizeName((string) $folder['name']) === $candidate);
+
+            if ($exact) {
+                return $exact;
+            }
+        }
+
+        foreach ($normalizedCandidates as $candidate) {
+            $match = $folders->first(function (array $folder) use ($candidate): bool {
+                $folderName = $this->normalizeName((string) $folder['name']);
+
+                return $folderName !== ''
+                    && $candidate !== ''
+                    && (str_contains($folderName, $candidate) || str_contains($candidate, $folderName));
+            });
+
+            if ($match) {
+                return $match;
+            }
+        }
+
+        return null;
     }
 
     protected function normalizedTitleMatches(string $candidate, string $normalizedTitle): bool

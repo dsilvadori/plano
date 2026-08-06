@@ -81,9 +81,9 @@ class GoogleDriveTrackImportTest extends TestCase
                 return Http::response([
                     'files' => [
                         [
-                            'id' => 'doc-windows-01',
-                            'name' => '01 - Windows 10',
-                            'mimeType' => 'application/vnd.google-apps.document',
+                            'id' => 'video-windows-01',
+                            'name' => '01 - Windows 10.mp4',
+                            'mimeType' => 'video/mp4',
                             'webViewLink' => 'https://drive.test/docs/windows-01',
                         ],
                         [
@@ -125,13 +125,14 @@ class GoogleDriveTrackImportTest extends TestCase
                 $module,
                 'https://drive.google.com/drive/folders/root-folder',
                 createPandaFolders: false,
+                uploadPandaVideos: false,
             );
         } finally {
             @unlink($credentialsPath);
         }
 
         $this->assertSame(2, $summary['tracks']);
-        $this->assertSame(3, $summary['created_lessons']);
+        $this->assertSame(1, $summary['created_lessons']);
         $this->assertDatabaseHas('course_module_tracks', [
             'course_module_id' => $module->id,
             'name' => 'Windows 10',
@@ -147,12 +148,12 @@ class GoogleDriveTrackImportTest extends TestCase
         $windowsTrack = CourseModuleTrack::query()->where('slug', 'windows-10')->firstOrFail();
 
         $this->assertTrue($windowsTrack->courses()->whereKey($course->id)->exists());
-        $this->assertSame(1, $windowsTrack->lessons()->count());
+        $this->assertSame(0, $windowsTrack->lessons()->count());
         $this->assertDatabaseHas('lessons', [
             'course_module_id' => null,
             'course_module_track_id' => null,
             'title' => '01 - Windows 10',
-            'type' => 'text',
+            'type' => 'video',
             'status' => 'draft',
             'source_status' => 'awaiting_media',
             'google_doc_url' => 'https://drive.test/docs/windows-01',
@@ -160,15 +161,10 @@ class GoogleDriveTrackImportTest extends TestCase
         $windowsLesson = Lesson::query()->where('title', '01 - Windows 10')->firstOrFail();
         $this->assertFalse($module->onlineLessons()->whereKey($windowsLesson->id)->exists());
         $this->assertFalse($windowsTrack->lessons()->whereKey($windowsLesson->id)->exists());
-        $this->assertDatabaseHas('lessons', [
+        $this->assertDatabaseMissing('lessons', [
             'title' => '02 - Explorador de Arquivos',
-            'type' => 'pdf',
-            'source_status' => 'media_ready',
         ]);
-        $pdfLesson = Lesson::query()->where('title', '02 - Explorador de Arquivos')->firstOrFail();
-        $this->assertTrue($module->onlineLessons()->whereKey($pdfLesson->id)->exists());
-        $this->assertTrue($windowsTrack->lessons()->whereKey($pdfLesson->id)->exists());
-        $this->assertSame(3, Lesson::query()->count());
+        $this->assertSame(1, Lesson::query()->count());
     }
 
     public function test_import_can_create_panda_module_and_track_folders(): void
@@ -852,8 +848,8 @@ class GoogleDriveTrackImportTest extends TestCase
             run: $run,
         );
 
-        $this->assertSame(2, $summary['created_lessons']);
-        $this->assertSame(2, $summary['total_lessons']);
+        $this->assertSame(1, $summary['created_lessons']);
+        $this->assertSame(1, $summary['total_lessons']);
         $this->assertSame(1, $summary['panda_folders']);
         $this->assertSame(1, $summary['panda_videos_uploaded']);
         $this->assertSame(1, $summary['panda_videos_failed']);
@@ -866,15 +862,13 @@ class GoogleDriveTrackImportTest extends TestCase
             'source_status' => 'panda_processing',
             'panda_video_id' => 'panda-video-standalone-01',
         ]);
-        $this->assertDatabaseHas('lessons', [
+        $this->assertDatabaseMissing('lessons', [
             'course_id' => null,
             'course_module_id' => null,
             'course_module_track_id' => null,
             'title' => '02 - Material',
-            'type' => 'pdf',
-            'source_status' => 'media_ready',
         ]);
-        $this->assertSame(2, $run->fresh()->processed_lessons);
+        $this->assertSame(1, $run->fresh()->processed_lessons);
         $this->assertSame(100, $run->fresh()->progress_percent);
     }
 
@@ -1101,14 +1095,12 @@ class GoogleDriveTrackImportTest extends TestCase
             uploadPandaVideos: false,
         );
 
-        $this->assertSame(1, $summary['created_lessons']);
-        $this->assertSame(1, $summary['total_lessons']);
+        $this->assertSame(0, $summary['created_lessons']);
+        $this->assertSame(0, $summary['total_lessons']);
         $this->assertNotEmpty($summary['warnings']);
         $this->assertStringContainsString('Pasta com erro', $summary['warnings'][0]);
-        $this->assertDatabaseHas('lessons', [
+        $this->assertDatabaseMissing('lessons', [
             'title' => '01 - Material',
-            'type' => 'pdf',
-            'source_status' => 'media_ready',
         ]);
     }
 
@@ -1506,6 +1498,17 @@ class GoogleDriveTrackImportTest extends TestCase
         Queue::assertPushed(UploadLessonToPanda::class, fn (UploadLessonToPanda $job): bool => $job->lessonId === $lesson->id && $job->runId === $run->id);
     }
 
+    public function test_panda_upload_and_status_jobs_are_patient_for_large_drive_batches(): void
+    {
+        $uploadJob = new UploadLessonToPanda(1);
+        $statusJob = new SyncPandaVideoStatus(1);
+
+        $this->assertSame(1000, $uploadJob->tries);
+        $this->assertSame(100, $statusJob->tries);
+        $this->assertTrue($uploadJob->retryUntil()->greaterThan(now()->addDays(2)));
+        $this->assertTrue($statusJob->retryUntil()->greaterThan(now()->addDays(2)));
+    }
+
     public function test_panda_upload_job_uploads_queued_lesson_and_updates_run(): void
     {
         config(['services.panda.video_upload_job_delay_seconds' => 0]);
@@ -1572,6 +1575,77 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertNull($lesson->metadata['panda_upload_error']);
         $this->assertSame(1, $run->panda_videos_uploaded);
         $this->assertSame(0, $run->panda_videos_failed);
+    }
+
+    public function test_panda_upload_job_marks_permanent_panda_validation_failure_without_queueing_status_sync(): void
+    {
+        Queue::fake([SyncPandaVideoStatus::class]);
+        config(['services.panda.video_upload_job_delay_seconds' => 0]);
+
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $lesson = Lesson::query()->create([
+            'title' => '01 - Assistência Social na Cf',
+            'slug' => '01-assistencia-social-na-cf',
+            'description' => 'Aula importada pelo Drive.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'upload_queued',
+            'metadata' => [
+                'source' => 'google_drive',
+                'drive_file_id' => 'drive-video-assistencia-social-01',
+                'drive_mime_type' => 'video/mp4',
+                'panda_folder_id' => 'panda-folder-assistencia-social',
+            ],
+        ]);
+        $run = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'root-folder',
+            'folder_id' => 'root-folder',
+            'status' => 'finished',
+            'panda_videos_failed' => 1,
+        ]);
+
+        $drive->shouldReceive('downloadFileToPath')
+            ->once()
+            ->with('drive-video-assistencia-social-01', Mockery::type('string'))
+            ->andReturnUsing(function (string $fileId, string $path): void {
+                file_put_contents($path, 'video-content');
+            });
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Assistência Social na Cf', 'panda-folder-assistencia-social')
+            ->andReturn(null);
+        $panda->shouldReceive('uploadVideo')
+            ->once()
+            ->with(Mockery::type('string'), '01 - Assistência Social na Cf', 'panda-folder-assistencia-social')
+            ->andReturn([
+                'panda_video_id' => 'panda-video-assistencia-social-01',
+                'title' => '01 - Assistência Social na Cf',
+                'duration_seconds' => 0,
+                'panda_status' => 'FAILED',
+                'panda_embed_url' => null,
+                'panda_player_url' => null,
+                'folder_id' => 'panda-folder-assistencia-social',
+                'payload' => [
+                    'id' => 'panda-video-assistencia-social-01',
+                    'validation_error' => 'VIDEO_NO_STREAMS',
+                ],
+            ]);
+
+        (new UploadLessonToPanda($lesson->id, $run->id))->handle(new GoogleDriveTrackImporter($drive, $panda));
+
+        $lesson->refresh();
+        $run->refresh();
+
+        $this->assertSame('upload_failed', $lesson->source_status);
+        $this->assertSame('FAILED', $lesson->panda_status);
+        $this->assertSame('panda-video-assistencia-social-01', $lesson->panda_video_id);
+        $this->assertStringContainsString('VIDEO_NO_STREAMS', $lesson->metadata['panda_upload_error']);
+        $this->assertStringContainsString('VIDEO_NO_STREAMS', $run->error_message);
+        Queue::assertNotPushed(SyncPandaVideoStatus::class);
     }
 
     public function test_panda_status_job_marks_processing_lesson_ready_when_conversion_finishes(): void
@@ -1891,6 +1965,75 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame(1, $summary['panda_videos_skipped']);
         $this->assertSame('media_ready', $lesson->fresh()->source_status);
         $this->assertSame('existing-panda-travado', $lesson->fresh()->panda_video_id);
+    }
+
+    public function test_reprocess_pending_lessons_does_not_duplicate_permanently_failed_panda_video(): void
+    {
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $drive->shouldNotReceive('downloadFileToPath');
+        $panda->shouldReceive('reusableVideo')
+            ->once()
+            ->with('panda-video-failed-01', 'panda-folder-assistencia-social')
+            ->andReturn([
+                'panda_video_id' => 'panda-video-failed-01',
+                'title' => '01 - Assistência Social na Cf',
+                'duration_seconds' => 0,
+                'panda_status' => 'FAILED',
+                'panda_embed_url' => null,
+                'panda_player_url' => null,
+                'folder_id' => 'panda-folder-assistencia-social',
+                'payload' => [
+                    'id' => 'panda-video-failed-01',
+                    'validation_error' => 'VIDEO_NO_STREAMS',
+                ],
+            ]);
+        $panda->shouldNotReceive('findVideoByTitle');
+        $panda->shouldNotReceive('uploadVideo');
+
+        $sourceRun = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'https://drive.test/root',
+            'folder_id' => 'root-folder',
+            'status' => 'finished',
+        ]);
+        $run = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'https://drive.test/root',
+            'folder_id' => 'root-folder',
+            'status' => 'running',
+        ]);
+        $lesson = Lesson::query()->create([
+            'title' => '01 - Assistência Social na Cf',
+            'slug' => '01-assistencia-social-na-cf',
+            'description' => 'Aula importada pelo Drive.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-video-failed-01',
+            'panda_status' => 'FAILED',
+            'source_status' => 'upload_failed',
+            'metadata' => [
+                'source' => 'google_drive',
+                'drive_file_id' => 'drive-video-assistencia-social-01',
+                'drive_parent_folder_id' => 'root-folder',
+                'drive_source_folder_path' => 'Assistência Social',
+                'drive_mime_type' => 'video/mp4',
+                'panda_folder_id' => 'panda-folder-assistencia-social',
+            ],
+        ]);
+
+        $summary = (new GoogleDriveTrackImporter($drive, $panda))->reprocessPendingLessonsForRun($sourceRun, $run);
+
+        $lesson->refresh();
+
+        $this->assertSame(1, $summary['total_lessons']);
+        $this->assertSame(0, $summary['panda_videos_uploaded']);
+        $this->assertSame(1, $summary['panda_videos_skipped']);
+        $this->assertSame(1, $summary['panda_videos_failed']);
+        $this->assertSame('upload_failed', $lesson->source_status);
+        $this->assertSame('panda-video-failed-01', $lesson->panda_video_id);
+        $this->assertStringContainsString('VIDEO_NO_STREAMS', $lesson->metadata['panda_upload_error']);
     }
 
     public function test_background_job_runs_pending_lesson_reprocess(): void

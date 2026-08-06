@@ -22,6 +22,9 @@ class PandaCourseImporter
 
     public function importFolder(Course $course, string $folderId, ?string $moduleName = null, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun
     {
+        $folderReference = $folderId;
+        $folderId = $this->client->resolveFolderReference($folderId);
+
         $run = PandaImportRun::create([
             'course_id' => $course->id,
             'panda_folder_id' => $folderId,
@@ -32,7 +35,7 @@ class PandaCourseImporter
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
-            DB::transaction(function () use ($course, $folderId, $moduleName, $lessonStatus, $moduleType, $run, $videos): void {
+            DB::transaction(function () use ($course, $folderId, $folderReference, $moduleName, $lessonStatus, $moduleType, $run, $videos): void {
                 $resolvedModuleName = $moduleName
                     ?: (string) ($videos->first()['folder_name'] ?? null)
                     ?: 'Pasta de vídeos '.$folderId;
@@ -50,6 +53,7 @@ class PandaCourseImporter
                         'is_active' => true,
                         'metadata' => [
                             'source' => 'panda',
+                            'folder_reference' => $folderReference,
                             'last_imported_at' => now()->toIso8601String(),
                         ],
                     ],
@@ -142,6 +146,9 @@ class PandaCourseImporter
 
     public function importIntoModule(CourseModule $module, string $folderId, string $lessonStatus = 'draft', ?string $moduleType = null, ?Course $course = null): PandaImportRun
     {
+        $folderReference = $folderId;
+        $folderId = $this->client->resolveFolderReference($folderId);
+
         $run = PandaImportRun::create([
             'course_id' => $course?->id,
             'panda_folder_id' => $folderId,
@@ -152,13 +159,14 @@ class PandaCourseImporter
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
-            DB::transaction(function () use ($module, $course, $folderId, $lessonStatus, $moduleType, $run, $videos): void {
+            DB::transaction(function () use ($module, $course, $folderId, $folderReference, $lessonStatus, $moduleType, $run, $videos): void {
                 $module->forceFill([
                     'panda_folder_id' => $folderId,
                     'type' => $moduleType ? $this->normalizeModuleType($moduleType) : $module->type,
                     'workload_minutes' => (int) ceil($videos->sum('duration_seconds') / 60),
                     'metadata' => [
                         'source' => 'panda',
+                        'folder_reference' => $folderReference,
                         'last_imported_at' => now()->toIso8601String(),
                     ],
                 ])->save();
@@ -247,6 +255,9 @@ class PandaCourseImporter
 
     public function importLessons(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $folderId, string $lessonStatus = 'draft'): PandaImportRun
     {
+        $folderReference = $folderId;
+        $folderId = $this->client->resolveFolderReference($folderId);
+
         if ($track && ! $module) {
             $module = $track->module()->first();
         }
@@ -273,7 +284,7 @@ class PandaCourseImporter
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
-            DB::transaction(function () use ($course, $module, $track, $folderId, $lessonStatus, $run, $videos): void {
+            DB::transaction(function () use ($course, $module, $track, $folderId, $folderReference, $lessonStatus, $run, $videos): void {
                 $created = 0;
                 $updated = 0;
                 $planningLessons = [];
@@ -304,6 +315,7 @@ class PandaCourseImporter
                         'metadata' => [
                             'source' => 'panda',
                             'folder_id' => $folderId,
+                            'folder_reference' => $folderReference,
                             'library_folder_name' => $track?->name ?? $module?->name,
                             'library_folder_path' => collect([$module?->name, $track?->name])->filter()->join(' / '),
                             'import_context_module_id' => $module?->id,
@@ -371,6 +383,7 @@ class PandaCourseImporter
 
     public function importReplacingModuleByName(?Course $fallbackCourse, string $moduleName, string $folderId, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun
     {
+        $folderId = $this->client->resolveFolderReference($folderId);
         $module = $this->findModuleByName($moduleName);
 
         if (! $module) {

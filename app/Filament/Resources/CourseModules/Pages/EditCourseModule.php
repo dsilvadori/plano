@@ -34,7 +34,8 @@ class EditCourseModule extends EditRecord
                 ->modalDescription('Informe a pasta do provedor de vídeo. Cada vídeo será criado ou atualizado como aula reutilizável e vinculado a este módulo.')
                 ->form([
                     TextInput::make('panda_folder_id')
-                        ->label('ID da pasta no provedor')
+                        ->label('Pasta no provedor')
+                        ->helperText('Aceita URL completa, ID ou nome da pasta.')
                         ->default(fn () => $this->record->panda_folder_id)
                         ->required(),
                     Select::make('module_type')

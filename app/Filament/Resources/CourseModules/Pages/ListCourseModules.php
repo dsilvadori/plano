@@ -41,7 +41,8 @@ class ListCourseModules extends ListRecords
                         ->default('specific')
                         ->required(),
                     TextInput::make('panda_folder_id')
-                        ->label('ID da pasta no provedor')
+                        ->label('Pasta no provedor')
+                        ->helperText('Aceita URL completa, ID ou nome da pasta.')
                         ->required(),
                     Select::make('lesson_status')
                         ->label('Status inicial das aulas')

@@ -7,6 +7,7 @@ use App\Models\Lesson;
 use App\Services\ActiveStudyPlanRefresher;
 use App\Services\LessonCourseLinker;
 use App\Services\PandaVideoClient;
+use DateTimeInterface;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -17,7 +18,7 @@ class SyncPandaVideoStatus implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 12;
+    public int $tries = 100;
 
     public int $timeout = 120;
 
@@ -34,6 +35,11 @@ class SyncPandaVideoStatus implements ShouldQueue
                 ->expireAfter($this->timeout)
                 ->releaseAfter(60),
         ];
+    }
+
+    public function retryUntil(): DateTimeInterface
+    {
+        return now()->addDays(3);
     }
 
     public function handle(PandaVideoClient $panda, ?LessonCourseLinker $linker = null, ?ActiveStudyPlanRefresher $refresher = null): void
@@ -115,6 +121,10 @@ class SyncPandaVideoStatus implements ShouldQueue
     protected function markFailed(Lesson $lesson, ?array $video, string $message): void
     {
         $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+        $validationError = (string) data_get($video, 'payload.validation_error', '');
+        $failureMessage = $validationError !== ''
+            ? $message.' Erro Panda: '.$validationError.'.'
+            : $message;
 
         $lesson->forceFill([
             'panda_status' => $video['panda_status'] ?? $lesson->panda_status,
@@ -123,11 +133,11 @@ class SyncPandaVideoStatus implements ShouldQueue
                 ...$metadata,
                 'panda_upload' => $video['payload'] ?? ($metadata['panda_upload'] ?? null),
                 'panda_status_checked_at' => now()->toIso8601String(),
-                'panda_processing_error' => $message,
+                'panda_processing_error' => $failureMessage,
             ],
         ])->save();
 
-        $this->updateRunMessage('Processamento Panda falhou: '.$lesson->title, $message);
+        $this->updateRunMessage('Processamento Panda falhou: '.$lesson->title, $failureMessage);
     }
 
     protected function markRunReady(Lesson $lesson): void

@@ -429,6 +429,42 @@ class PandaImportTest extends TestCase
         $this->assertSame('folder-excel', $folder['panda_folder_id']);
     }
 
+    public function test_panda_client_resolves_folder_id_from_full_dashboard_url(): void
+    {
+        $folderId = 'b96cfc31-771f-4237-b5ca-015edb0e5a3b';
+
+        $resolved = app(PandaVideoClient::class)->resolveFolderReference(
+            'https://dashboard.pandavideo.com.br/#/folders/'.$folderId,
+        );
+
+        $this->assertSame($folderId, $resolved);
+    }
+
+    public function test_panda_client_resolves_folder_by_flexible_name_match(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.auth_header' => 'Authorization',
+            'services.panda.auth_scheme' => '',
+            'services.panda.folders_path' => '/folders',
+        ]);
+
+        Http::fake([
+            'https://panda.test/folders' => Http::response([
+                'data' => [[
+                    'id' => 'folder-assistencia-social',
+                    'name' => '01 - Assistência Social',
+                    'status' => true,
+                ]],
+            ], 200),
+        ]);
+
+        $resolved = app(PandaVideoClient::class)->resolveFolderReference('Assistencia Social');
+
+        $this->assertSame('folder-assistencia-social', $resolved);
+    }
+
     public function test_panda_client_does_not_reconcile_draft_video_after_binary_failure(): void
     {
         config([
@@ -1242,6 +1278,48 @@ class PandaImportTest extends TestCase
         $this->assertSame('published', $lesson->status);
         $this->assertSame('media_ready', $lesson->source_status);
         $this->assertSame('panda-folder-standalone', $lesson->metadata['folder_id']);
+    }
+
+    public function test_panda_import_from_lessons_area_accepts_full_folder_url(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        $folderId = 'b96cfc31-771f-4237-b5ca-015edb0e5a3b';
+        $folderUrl = 'https://dashboard.pandavideo.com.br/#/folders/'.$folderId;
+
+        Http::fake([
+            'panda.test/videos?folder_id='.$folderId => Http::response([
+                'data' => [
+                    [
+                        'id' => 'standalone-url-video-1',
+                        'title' => '01 - Aula pela URL',
+                        'duration_seconds' => 900,
+                        'status' => 'CONVERTED',
+                        'embed_url' => 'https://player.test/standalone-url-video-1',
+                        'folder_id' => $folderId,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $run = app(PandaCourseImporter::class)->importLessons(
+            null,
+            null,
+            null,
+            $folderUrl,
+            'published',
+        );
+
+        $lesson = Lesson::query()->where('panda_video_id', 'standalone-url-video-1')->firstOrFail();
+
+        $this->assertSame('finished', $run->status);
+        $this->assertSame($folderId, $run->panda_folder_id);
+        $this->assertSame($folderId, $lesson->metadata['folder_id']);
+        $this->assertSame($folderUrl, $lesson->metadata['folder_reference']);
     }
 
     public function test_panda_import_from_lessons_area_links_ready_lesson_to_course_by_approximate_planning_name(): void

@@ -7,16 +7,16 @@ use App\Models\Lesson;
 use App\Services\ActiveStudyPlanRefresher;
 use App\Services\GoogleDriveTrackImporter;
 use App\Services\LessonCourseLinker;
+use DateTimeInterface;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Throwable;
 
 class UploadLessonToPanda implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 8;
+    public int $tries = 1000;
 
     public int $timeout = 7200;
 
@@ -27,12 +27,12 @@ class UploadLessonToPanda implements ShouldQueue
 
     public function middleware(): array
     {
-        return [
-            (new WithoutOverlapping('panda-video-upload'))
-                ->shared()
-                ->expireAfter($this->timeout)
-                ->releaseAfter(60),
-        ];
+        return [];
+    }
+
+    public function retryUntil(): DateTimeInterface
+    {
+        return now()->addDays(3);
     }
 
     public function handle(GoogleDriveTrackImporter $importer, ?LessonCourseLinker $linker = null, ?ActiveStudyPlanRefresher $refresher = null): void
@@ -44,9 +44,12 @@ class UploadLessonToPanda implements ShouldQueue
             $importer->uploadQueuedLessonToPanda($lesson, $run);
 
             if (($lesson->fresh()?->source_status) === 'panda_processing') {
-                SyncPandaVideoStatus::dispatch($lesson->id, $run?->id)
-                    ->delay(now()->addSeconds(max(0, (int) config('services.panda.video_status_sync_delay_seconds', 300))))
-                    ->afterResponse();
+                $dispatch = SyncPandaVideoStatus::dispatch($lesson->id, $run?->id)
+                    ->delay(now()->addSeconds(max(0, (int) config('services.panda.video_status_sync_delay_seconds', 300))));
+
+                if (config('queue.default') === 'sync') {
+                    $dispatch->afterResponse();
+                }
             } elseif (($lesson->fresh()?->source_status) === 'media_ready') {
                 ($linker ?? app(LessonCourseLinker::class))->sync();
                 ($refresher ?? app(ActiveStudyPlanRefresher::class))->refreshCoursesForLesson($lesson->fresh());
@@ -114,8 +117,8 @@ class UploadLessonToPanda implements ShouldQueue
     protected function updateRunForRetry(?GoogleDriveImportRun $run, Lesson $lesson, Throwable $exception): void
     {
         $run?->forceFill([
-            'latest_message' => 'Upload Panda reagendado: '.$lesson->title,
-            'error_message' => $exception->getMessage(),
+            'latest_message' => 'Panda limitou uploads; nova tentativa agendada: '.$lesson->title,
+            'error_message' => null,
         ])->save();
     }
 
