@@ -284,6 +284,8 @@ class LessonResource extends Resource
                 SelectFilter::make('course_id')
                     ->label('Curso')
                     ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
+                    ->searchable()
+                    ->preload()
                     ->query(fn ($query, array $data) => filled($data['value'] ?? null)
                         ? $query->where(function ($query) use ($data): void {
                             $query->where('course_id', $data['value'])
@@ -291,9 +293,48 @@ class LessonResource extends Resource
                                 ->orWhereHas('tracks.courses', fn ($query) => $query->whereKey($data['value']));
                         })
                         : $query),
+                SelectFilter::make('course_module_id')
+                    ->label('Pasta')
+                    ->options(fn (): array => CourseModule::query()
+                        ->orderBy('sort_order')
+                        ->orderBy('name')
+                        ->pluck('name', 'id')
+                        ->all())
+                    ->searchable()
+                    ->preload()
+                    ->query(fn ($query, array $data) => filled($data['value'] ?? null)
+                        ? $query->where(function ($query) use ($data): void {
+                            $query->where('course_module_id', $data['value'])
+                                ->orWhere('metadata->import_context_module_id', (int) $data['value'])
+                                ->orWhereHas('modules', fn ($query) => $query->whereKey($data['value']));
+                        })
+                        : $query),
+                SelectFilter::make('course_module_track_id')
+                    ->label('Subpasta')
+                    ->options(fn (): array => CourseModuleTrack::query()
+                        ->with('module:id,name')
+                        ->orderBy('course_module_id')
+                        ->orderBy('sort_order')
+                        ->orderBy('name')
+                        ->get(['id', 'course_module_id', 'name'])
+                        ->mapWithKeys(fn (CourseModuleTrack $track): array => [
+                            $track->id => collect([$track->module?->name, $track->name])->filter()->join(' / '),
+                        ])
+                        ->all())
+                    ->searchable()
+                    ->preload()
+                    ->query(fn ($query, array $data) => filled($data['value'] ?? null)
+                        ? $query->where(function ($query) use ($data): void {
+                            $query->where('course_module_track_id', $data['value'])
+                                ->orWhere('metadata->import_context_track_id', (int) $data['value'])
+                                ->orWhereHas('tracks', fn ($query) => $query->whereKey($data['value']));
+                        })
+                        : $query),
                 SelectFilter::make('question_bank_id')
                     ->label('Banco de questões')
                     ->options(QuestionBank::query()->orderBy('title')->pluck('title', 'id'))
+                    ->searchable()
+                    ->preload()
                     ->query(fn ($query, array $data) => filled($data['value'] ?? null)
                         ? $query->where(function ($query) use ($data): void {
                             $query->whereHas('questionBanks', fn ($query) => $query->whereKey($data['value']))
