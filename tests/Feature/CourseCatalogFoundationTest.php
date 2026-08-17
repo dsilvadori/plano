@@ -150,6 +150,46 @@ class CourseCatalogFoundationTest extends TestCase
         $this->assertSame(1, $thirdCourse->linkedLessonsCount());
     }
 
+    public function test_lesson_admin_module_and_track_filter_options_follow_selected_course(): void
+    {
+        $firstCourse = Course::factory()->create(['status' => 'published']);
+        $secondCourse = Course::factory()->create(['status' => 'published']);
+        $firstModule = CourseModule::factory()->create(['name' => 'Português']);
+        $secondModule = CourseModule::factory()->create(['name' => 'Matemática']);
+        $firstTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $firstModule->id,
+            'name' => 'Classes',
+            'slug' => 'classes',
+            'status' => 'published',
+        ]);
+        $secondTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $secondModule->id,
+            'name' => 'Frações',
+            'slug' => 'fracoes',
+            'status' => 'published',
+        ]);
+
+        $firstModule->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondModule->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+        $firstTrack->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondTrack->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+
+        $this->assertSame(
+            [$secondModule->id => 'Matemática', $firstModule->id => 'Português'],
+            LessonResource::moduleFilterOptions(),
+        );
+        $this->assertSame([$firstModule->id => 'Português'], LessonResource::moduleFilterOptions($firstCourse->id));
+        $this->assertSame([$secondModule->id => 'Matemática'], LessonResource::moduleFilterOptions($secondCourse->id));
+
+        $allTrackOptions = LessonResource::trackFilterOptions();
+
+        $this->assertArrayHasKey($firstTrack->id, $allTrackOptions);
+        $this->assertArrayHasKey($secondTrack->id, $allTrackOptions);
+        $this->assertSame([$firstTrack->id => 'Português / Classes'], LessonResource::trackFilterOptions($firstCourse->id));
+        $this->assertSame([$secondTrack->id => 'Matemática / Frações'], LessonResource::trackFilterOptions($secondCourse->id));
+        $this->assertSame([$firstTrack->id => 'Português / Classes'], LessonResource::trackFilterOptions(null, $firstModule->id));
+    }
+
     public function test_course_lists_lessons_from_modules_linked_through_study_track(): void
     {
         $course = Course::factory()->create(['status' => 'published']);

@@ -281,10 +281,9 @@ class LessonResource extends Resource
                         : $query),
                 SelectFilter::make('course_module_id')
                     ->label('Módulo')
-                    ->options(fn (): array => CourseModule::query()
-                        ->orderBy('name')
-                        ->pluck('name', 'id')
-                        ->all())
+                    ->options(fn ($livewire): array => self::moduleFilterOptions(
+                        self::selectedFilterValue($livewire, 'course_id'),
+                    ))
                     ->searchable()
                     ->preload()
                     ->query(fn ($query, array $data) => filled($data['value'] ?? null)
@@ -296,15 +295,10 @@ class LessonResource extends Resource
                         : $query),
                 SelectFilter::make('course_module_track_id')
                     ->label('Trilha')
-                    ->options(fn (): array => CourseModuleTrack::query()
-                        ->with('module:id,name')
-                        ->orderBy('name')
-                        ->get(['id', 'course_module_id', 'name'])
-                        ->mapWithKeys(fn (CourseModuleTrack $track): array => [
-                            $track->id => collect([$track->module?->name, $track->name])->filter()->join(' / '),
-                        ])
-                        ->sort()
-                        ->all())
+                    ->options(fn ($livewire): array => self::trackFilterOptions(
+                        self::selectedFilterValue($livewire, 'course_id'),
+                        self::selectedFilterValue($livewire, 'course_module_id'),
+                    ))
                     ->searchable()
                     ->preload()
                     ->query(fn ($query, array $data) => filled($data['value'] ?? null)
@@ -329,6 +323,7 @@ class LessonResource extends Resource
                         })
                         : $query),
                 SelectFilter::make('type')
+                    ->label('Tipo')
                     ->options([
                         'video' => 'Vídeo',
                         'pdf' => 'PDF',
@@ -525,6 +520,46 @@ class LessonResource extends Resource
             'create' => CreateLesson::route('/create'),
             'edit' => EditLesson::route('/{record}/edit'),
         ];
+    }
+
+    public static function moduleFilterOptions(mixed $courseId = null): array
+    {
+        return CourseModule::query()
+            ->when(filled($courseId), fn ($query) => $query->where(function ($query) use ($courseId): void {
+                $query->where('course_id', $courseId)
+                    ->orWhereHas('courses', fn ($query) => $query->whereKey($courseId))
+                    ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $courseId))
+                    ->orWhereHas('tracks.courses', fn ($query) => $query->whereKey($courseId));
+            }))
+            ->orderBy('name')
+            ->pluck('name', 'id')
+            ->all();
+    }
+
+    public static function trackFilterOptions(mixed $courseId = null, mixed $moduleId = null): array
+    {
+        return CourseModuleTrack::query()
+            ->with('module:id,name')
+            ->when(filled($moduleId), fn ($query) => $query->where('course_module_id', $moduleId))
+            ->when(filled($courseId), fn ($query) => $query->where(function ($query) use ($courseId): void {
+                $query->whereHas('courses', fn ($query) => $query->whereKey($courseId))
+                    ->orWhereHas('module', fn ($query) => $query
+                        ->where('course_id', $courseId)
+                        ->orWhereHas('courses', fn ($query) => $query->whereKey($courseId))
+                        ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $courseId)));
+            }))
+            ->orderBy('name')
+            ->get(['id', 'course_module_id', 'name'])
+            ->mapWithKeys(fn (CourseModuleTrack $track): array => [
+                $track->id => collect([$track->module?->name, $track->name])->filter()->join(' / '),
+            ])
+            ->sort()
+            ->all();
+    }
+
+    protected static function selectedFilterValue(mixed $livewire, string $filter): mixed
+    {
+        return data_get($livewire, "tableFilters.{$filter}.value");
     }
 
     public static function syncPrimaryCatalogLinks(Lesson $lesson): void
