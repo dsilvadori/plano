@@ -23,10 +23,10 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
-use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Collection;
@@ -48,70 +48,35 @@ class LessonResource extends Resource
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Select::make('course_module_id')
-                ->label('Módulo')
+            Select::make('modules')
+                ->label('Módulos vinculados')
+                ->relationship('modules', 'name')
                 ->options(fn (): array => CourseModule::query()
-                    ->orderBy('sort_order')
                     ->orderBy('name')
                     ->pluck('name', 'id')
                     ->all())
+                ->multiple()
                 ->searchable()
                 ->preload()
-                ->createOptionForm([
-                    TextInput::make('name')
-                        ->label('Nome')
-                        ->required(),
-                    Textarea::make('description')
-                        ->label('Descrição')
-                        ->rows(3)
-                        ->columnSpanFull(),
-                    Select::make('type')
-                        ->label('Tipo')
-                        ->options([
-                            'basic' => 'Matéria Básica',
-                            'specific' => 'Conhecimentos Específicos',
-                            'complementary' => 'Conhecimentos Complementares',
-                            'review' => 'Revisão',
-                            'questions' => 'Questões',
-                            'other' => 'Outro/Legado',
-                        ])
-                        ->default('other')
-                        ->required(),
-                    TextInput::make('workload_minutes')
-                        ->label('Carga horária (minutos)')
-                        ->numeric()
-                        ->default(0)
-                        ->required(),
-                    TextInput::make('sort_order')
-                        ->label('Ordem')
-                        ->numeric()
-                        ->default(0)
-                        ->required(),
-                    TextInput::make('panda_folder_id')
-                        ->label('ID da pasta no provedor'),
-                ])
-                ->createOptionUsing(function (array $data): int {
-                    return CourseModule::create([
-                        ...$data,
-                        'is_active' => true,
-                    ])->getKey();
-                })
-                ->afterStateUpdated(function ($state, Set $set): void {
-                    $set('course_module_track_id', null);
-                })
-                ->nullable(),
-            Select::make('course_module_track_id')
-                ->label('Trilha')
-                ->options(fn (Get $get): array => filled($get('course_module_id'))
-                    ? CourseModuleTrack::query()
-                        ->where('course_module_id', $get('course_module_id'))
-                        ->orderBy('sort_order')
-                        ->orderBy('name')
-                        ->pluck('name', 'id')
-                        ->all()
-                    : [])
+                ->helperText('Uma aula pode aparecer em vários módulos. Os cursos vêm dos vínculos destes módulos.')
+                ->columnSpanFull(),
+            Select::make('tracks')
+                ->label('Trilhas vinculadas')
+                ->relationship('tracks', 'name')
+                ->options(fn (): array => CourseModuleTrack::query()
+                    ->with('module:id,name')
+                    ->orderBy('name')
+                    ->get(['id', 'course_module_id', 'name'])
+                    ->mapWithKeys(fn (CourseModuleTrack $track): array => [
+                        $track->id => collect([$track->module?->name, $track->name])->filter()->join(' / '),
+                    ])
+                    ->sort()
+                    ->all())
+                ->multiple()
                 ->searchable()
-                ->preload(),
+                ->preload()
+                ->helperText('Uma aula pode aparecer em várias trilhas. Cada trilha também pode estar vinculada a vários cursos.')
+                ->columnSpanFull(),
             TextInput::make('title')
                 ->label('Título')
                 ->required()
@@ -283,20 +248,40 @@ class LessonResource extends Resource
             ->filters([
                 SelectFilter::make('course_id')
                     ->label('Curso')
-                    ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
+                    ->options(fn (): array => Course::query()
+                        ->orderBy('name')
+                        ->pluck('name', 'id')
+                        ->all())
                     ->searchable()
                     ->preload()
                     ->query(fn ($query, array $data) => filled($data['value'] ?? null)
                         ? $query->where(function ($query) use ($data): void {
                             $query->where('course_id', $data['value'])
-                                ->orWhereHas('modules.courses', fn ($query) => $query->whereKey($data['value']))
-                                ->orWhereHas('tracks.courses', fn ($query) => $query->whereKey($data['value']));
+                                ->orWhereHas('module', fn ($query) => $query
+                                    ->where('course_id', $data['value'])
+                                    ->orWhereHas('courses', fn ($query) => $query->whereKey($data['value']))
+                                    ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $data['value'])))
+                                ->orWhereHas('modules', fn ($query) => $query
+                                    ->where('course_id', $data['value'])
+                                    ->orWhereHas('courses', fn ($query) => $query->whereKey($data['value']))
+                                    ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $data['value'])))
+                                ->orWhereHas('track', fn ($query) => $query
+                                    ->whereHas('courses', fn ($query) => $query->whereKey($data['value']))
+                                    ->orWhereHas('module', fn ($query) => $query
+                                        ->where('course_id', $data['value'])
+                                        ->orWhereHas('courses', fn ($query) => $query->whereKey($data['value']))
+                                        ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $data['value']))))
+                                ->orWhereHas('tracks', fn ($query) => $query
+                                    ->whereHas('courses', fn ($query) => $query->whereKey($data['value']))
+                                    ->orWhereHas('module', fn ($query) => $query
+                                        ->where('course_id', $data['value'])
+                                        ->orWhereHas('courses', fn ($query) => $query->whereKey($data['value']))
+                                        ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $data['value']))));
                         })
                         : $query),
                 SelectFilter::make('course_module_id')
-                    ->label('Pasta')
+                    ->label('Módulo')
                     ->options(fn (): array => CourseModule::query()
-                        ->orderBy('sort_order')
                         ->orderBy('name')
                         ->pluck('name', 'id')
                         ->all())
@@ -310,16 +295,15 @@ class LessonResource extends Resource
                         })
                         : $query),
                 SelectFilter::make('course_module_track_id')
-                    ->label('Subpasta')
+                    ->label('Trilha')
                     ->options(fn (): array => CourseModuleTrack::query()
                         ->with('module:id,name')
-                        ->orderBy('course_module_id')
-                        ->orderBy('sort_order')
                         ->orderBy('name')
                         ->get(['id', 'course_module_id', 'name'])
                         ->mapWithKeys(fn (CourseModuleTrack $track): array => [
                             $track->id => collect([$track->module?->name, $track->name])->filter()->join(' / '),
                         ])
+                        ->sort()
                         ->all())
                     ->searchable()
                     ->preload()
@@ -370,7 +354,8 @@ class LessonResource extends Resource
                         'media_ready' => 'Mídia pronta',
                         'published' => 'Publicado',
                     ]),
-            ])
+            ], layout: FiltersLayout::AboveContent)
+            ->filtersFormColumns(3)
             ->recordActions([
                 Action::make('activatePandaAi')
                     ->label('Gerar Recursos de IA')
@@ -542,6 +527,40 @@ class LessonResource extends Resource
         ];
     }
 
+    public static function syncPrimaryCatalogLinks(Lesson $lesson): void
+    {
+        $trackModuleIds = $lesson->tracks()
+            ->with('module:id')
+            ->get()
+            ->pluck('module.id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($trackModuleIds->isNotEmpty()) {
+            $lesson->modules()->syncWithoutDetaching(
+                $trackModuleIds
+                    ->mapWithKeys(fn (int $moduleId): array => [$moduleId => ['sort_order' => (int) $lesson->sort_order]])
+                    ->all()
+            );
+        }
+
+        $primaryModuleId = $lesson->modules()
+            ->orderByPivot('sort_order')
+            ->orderBy('course_modules.name')
+            ->value('course_modules.id');
+
+        $primaryTrackId = $lesson->tracks()
+            ->orderByPivot('sort_order')
+            ->orderBy('course_module_tracks.name')
+            ->value('course_module_tracks.id');
+
+        $lesson->forceFill([
+            'course_module_id' => $primaryModuleId,
+            'course_module_track_id' => $primaryTrackId,
+        ])->saveQuietly();
+    }
+
     protected static function linkedCourseNames(Lesson $lesson): string
     {
         $names = collect();
@@ -550,10 +569,42 @@ class LessonResource extends Resource
             $names->push($lesson->course->name);
         }
 
-        $moduleCourses = ($lesson->relationLoaded('modules') ? $lesson->modules : $lesson->modules()->with('courses')->get())
-            ->flatMap(fn (CourseModule $module) => $module->courses);
-        $trackCourses = ($lesson->relationLoaded('tracks') ? $lesson->tracks : $lesson->tracks()->with('courses')->get())
-            ->flatMap(fn (CourseModuleTrack $track) => $track->courses);
+        $moduleCourses = collect();
+
+        if ($lesson->relationLoaded('module') ? $lesson->module : $lesson->module()->first()) {
+            if ($lesson->module->course) {
+                $moduleCourses->push($lesson->module->course);
+            }
+
+            $moduleCourses = $moduleCourses
+                ->merge($lesson->module->courses)
+                ->merge($lesson->module->studyTracks()->with('course')->get()->pluck('course'));
+        }
+
+        $moduleCourses = $moduleCourses->merge(
+            ($lesson->relationLoaded('modules') ? $lesson->modules : $lesson->modules()->with(['course', 'courses', 'studyTracks.course'])->get())
+                ->flatMap(fn (CourseModule $module) => collect([$module->course])
+                    ->merge($module->courses)
+                    ->merge($module->studyTracks->pluck('course')))
+        );
+
+        $trackCourses = collect();
+
+        if ($lesson->relationLoaded('track') ? $lesson->track : $lesson->track()->first()) {
+            $trackCourses = $trackCourses
+                ->merge($lesson->track->courses)
+                ->merge(collect([$lesson->track->module?->course]))
+                ->merge($lesson->track->module?->courses ?? collect())
+                ->merge($lesson->track->module?->studyTracks()->with('course')->get()->pluck('course') ?? collect());
+        }
+
+        $trackCourses = $trackCourses->merge(
+            ($lesson->relationLoaded('tracks') ? $lesson->tracks : $lesson->tracks()->with(['courses', 'module.course', 'module.courses', 'module.studyTracks.course'])->get())
+                ->flatMap(fn (CourseModuleTrack $track) => $track->courses
+                    ->merge(collect([$track->module?->course]))
+                    ->merge($track->module?->courses ?? collect())
+                    ->merge($track->module?->studyTracks->pluck('course') ?? collect()))
+        );
 
         return $names
             ->merge($moduleCourses->pluck('name'))

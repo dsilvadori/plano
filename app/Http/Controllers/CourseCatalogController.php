@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\AiArtifact;
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
 use App\Models\Lesson;
@@ -119,6 +120,11 @@ class CourseCatalogController extends Controller
 
     public function show(Course $course): View
     {
+        return $this->modules($course);
+    }
+
+    public function modules(Course $course): View
+    {
         $user = request()->user();
 
         abort_unless($user->canAccessStudentArea(), 403);
@@ -146,6 +152,72 @@ class CourseCatalogController extends Controller
             'inProgressLessonIds' => $this->inProgressLessonIdsForCourse($course, $user),
             'continueLesson' => $hasAccess ? $this->continueLessonForCourse($course, $user) : null,
             'trackEntryLessons' => $hasAccess ? $this->trackEntryLessonsForCourse($course, $user) : collect(),
+        ]);
+    }
+
+    public function moduleTracks(Course $course, CourseModule $module): View
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($this->moduleBelongsToCourse($module, $course), 404);
+
+        $hasAccess = $this->userCanAccessCourse($user, $course);
+
+        $module->load(['tracks' => fn ($trackQuery) => $trackQuery
+            ->where('status', 'published')
+            ->where(function (Builder $query) use ($course): void {
+                $query
+                    ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                    ->orWhereHas('module', fn (Builder $query) => $query
+                        ->where('course_id', $course->id)
+                        ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                        ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
+            })
+            ->with(['lessons' => fn ($lessonQuery) => $lessonQuery
+                ->where('status', '!=', 'archived')
+                ->orderBy('sort_order')
+                ->orderBy('title'),
+            ])
+            ->orderBy('sort_order')
+            ->orderBy('name'),
+        ]);
+
+        return view('dashboard.courses.module-tracks', [
+            'course' => $course,
+            'module' => $module,
+            'hasAccess' => $hasAccess,
+            'completedLessonIds' => $this->completedLessonIdsForCourse($course, $user),
+            'inProgressLessonIds' => $this->inProgressLessonIdsForCourse($course, $user),
+            'trackEntryLessons' => $hasAccess ? $this->trackEntryLessonsForCourse($course, $user) : collect(),
+        ]);
+    }
+
+    public function trackLessons(Course $course, CourseModule $module, CourseModuleTrack $track): View
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($this->moduleBelongsToCourse($module, $course), 404);
+        abort_unless($this->trackBelongsToModuleAndCourse($track, $module, $course), 404);
+
+        $hasAccess = $this->userCanAccessCourse($user, $course);
+
+        $track->load(['lessons' => fn ($lessonQuery) => $lessonQuery
+            ->where('status', '!=', 'archived')
+            ->orderBy('sort_order')
+            ->orderBy('title'),
+        ]);
+
+        return view('dashboard.courses.track-lessons', [
+            'course' => $course,
+            'module' => $module,
+            'track' => $track,
+            'hasAccess' => $hasAccess,
+            'completedLessonIds' => $this->completedLessonIdsForCourse($course, $user),
+            'inProgressLessonIds' => $this->inProgressLessonIdsForCourse($course, $user),
         ]);
     }
 
@@ -471,7 +543,14 @@ class CourseCatalogController extends Controller
                     ->where('lessons.course_id', $course->id)
                     ->orWhere('course_modules.course_id', $course->id)
                     ->orWhere('course_module_course.course_id', $course->id)
-                    ->orWhere('course_module_track_course.course_id', $course->id);
+                    ->orWhere('course_module_track_course.course_id', $course->id)
+                    ->orWhereExists(function ($query) use ($course): void {
+                        $query->selectRaw('1')
+                            ->from('study_track_modules')
+                            ->join('study_tracks', 'study_tracks.id', '=', 'study_track_modules.study_track_id')
+                            ->whereColumn('study_track_modules.course_module_id', 'course_modules.id')
+                            ->where('study_tracks.course_id', $course->id);
+                    });
             })
             ->where('course_module_tracks.status', 'published')
             ->where('lessons.status', '!=', 'archived')
@@ -500,6 +579,38 @@ class CourseCatalogController extends Controller
             ->exists();
     }
 
+    protected function moduleBelongsToCourse(CourseModule $module, Course $course): bool
+    {
+        if ((int) $module->course_id === (int) $course->id) {
+            return true;
+        }
+
+        if ($module->courses()->whereKey($course->id)->exists()) {
+            return true;
+        }
+
+        if ($module->studyTracks()->where('course_id', $course->id)->exists()) {
+            return true;
+        }
+
+        return $module->tracks()
+            ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+            ->exists();
+    }
+
+    protected function trackBelongsToModuleAndCourse(CourseModuleTrack $track, CourseModule $module, Course $course): bool
+    {
+        if ((int) $track->course_module_id !== (int) $module->id) {
+            return false;
+        }
+
+        if ($track->courses()->whereKey($course->id)->exists()) {
+            return true;
+        }
+
+        return $this->moduleBelongsToCourse($module, $course);
+    }
+
     protected function modulesForCourse(Course $course): EloquentCollection
     {
         return CourseModule::query()
@@ -507,10 +618,20 @@ class CourseCatalogController extends Controller
             ->where(function (Builder $query) use ($course): void {
                 $query
                     ->where('course_id', $course->id)
-                    ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id));
+                    ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                    ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id))
+                    ->orWhereHas('tracks.courses', fn (Builder $query) => $query->whereKey($course->id));
             })
             ->with(['tracks' => fn ($trackQuery) => $trackQuery
                 ->where('status', 'published')
+                ->where(function (Builder $query) use ($course): void {
+                    $query
+                        ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                        ->orWhereHas('module', fn (Builder $query) => $query
+                            ->where('course_id', $course->id)
+                            ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                            ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
+                })
                 ->with(['lessons' => fn ($lessonQuery) => $lessonQuery
                     ->where('status', '!=', 'archived')
                     ->orderBy('sort_order')

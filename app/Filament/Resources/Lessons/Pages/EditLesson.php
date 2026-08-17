@@ -20,6 +20,8 @@ class EditLesson extends EditRecord
 
     protected function afterSave(): void
     {
+        LessonResource::syncPrimaryCatalogLinks($this->record);
+
         app(ActiveStudyPlanRefresher::class)->refreshCoursesForLesson($this->record);
     }
 

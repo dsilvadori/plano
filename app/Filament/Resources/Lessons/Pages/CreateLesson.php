@@ -12,6 +12,8 @@ class CreateLesson extends CreateRecord
 
     protected function afterCreate(): void
     {
+        LessonResource::syncPrimaryCatalogLinks($this->record);
+
         app(ActiveStudyPlanRefresher::class)->refreshCoursesForLesson($this->record);
     }
 }

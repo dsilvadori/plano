@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Courses\Tables;
 use App\Models\Course;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
@@ -50,6 +51,9 @@ class CoursesTable
             ])
             ->recordActions([
                 EditAction::make(),
+                DeleteAction::make()
+                    ->modalHeading('Excluir curso')
+                    ->modalDescription('Apenas o curso será excluído. Aulas, módulos e trilhas vinculados serão preservados para outros cursos. Matrículas, planos e progresso deste curso serão removidos.'),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([

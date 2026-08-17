@@ -113,6 +113,65 @@ class CourseCatalogFoundationTest extends TestCase
         $this->assertSame(3, $course->linkedMediaLessonsCount());
     }
 
+    public function test_single_lesson_can_be_linked_to_many_courses_through_many_modules_and_tracks(): void
+    {
+        $firstCourse = Course::factory()->create(['status' => 'published']);
+        $secondCourse = Course::factory()->create(['status' => 'published']);
+        $thirdCourse = Course::factory()->create(['status' => 'published']);
+
+        $firstModule = CourseModule::factory()->create(['name' => 'Português']);
+        $secondModule = CourseModule::factory()->create(['name' => 'Direito']);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $secondModule->id,
+            'name' => 'Lei seca',
+            'slug' => 'lei-seca',
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'title' => 'Aula compartilhada',
+            'status' => 'published',
+            'panda_video_id' => 'shared-video',
+        ]);
+
+        $firstModule->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondModule->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$thirdCourse->id => ['sort_order' => 1]]);
+        $lesson->modules()->syncWithoutDetaching([
+            $firstModule->id => ['sort_order' => 1],
+            $secondModule->id => ['sort_order' => 2],
+        ]);
+        $lesson->tracks()->syncWithoutDetaching([$track->id => ['sort_order' => 1]]);
+
+        $this->assertTrue($firstCourse->linkedLessons()->contains($lesson));
+        $this->assertTrue($secondCourse->linkedLessons()->contains($lesson));
+        $this->assertTrue($thirdCourse->linkedLessons()->contains($lesson));
+        $this->assertSame(1, $firstCourse->linkedLessonsCount());
+        $this->assertSame(1, $secondCourse->linkedLessonsCount());
+        $this->assertSame(1, $thirdCourse->linkedLessonsCount());
+    }
+
+    public function test_course_lists_lessons_from_modules_linked_through_study_track(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $studyTrack = StudyTrack::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Trilha oficial',
+        ]);
+        $module = CourseModule::factory()->create(['name' => 'Português']);
+        $lesson = Lesson::factory()->create([
+            'title' => 'Aula pela trilha de estudo',
+            'status' => 'published',
+            'panda_embed_url' => 'https://player.test/aula',
+        ]);
+
+        $studyTrack->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 1, 'weight' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+
+        $this->assertTrue($course->linkedLessons()->contains($lesson));
+        $this->assertSame(1, $course->linkedLessonsCount());
+        $this->assertSame(1, $course->linkedMediaLessonsCount());
+    }
+
     public function test_student_can_browse_catalog_and_only_sees_enrolled_courses_in_my_courses(): void
     {
         $student = User::factory()->create(['role' => 'student']);
@@ -188,6 +247,22 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.show', $course->slug))
             ->assertOk()
             ->assertSee('Português')
+            ->assertSee('Ver trilhas')
+            ->assertSee(route('courses.modules.tracks.index', [$course->slug, $module]), false)
+            ->assertDontSee('Classe de palavras')
+            ->assertDontSee('01 - Substantivo');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
+            ->assertOk()
+            ->assertSee('Classe de palavras')
+            ->assertSee('Ver aulas')
+            ->assertSee(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]), false)
+            ->assertDontSee('01 - Substantivo');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
             ->assertSee('Classe de palavras')
             ->assertSee('01 - Substantivo');
 
@@ -283,8 +358,8 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.show', $course->slug))
             ->assertOk()
             ->assertSee('1 de 1 aula(s) concluída(s).')
-            ->assertSee('Rever trilha')
-            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
+            ->assertSee('Ver trilhas')
+            ->assertSee(route('courses.modules.tracks.index', [$course->slug, $module]), false);
     }
 
     public function test_course_track_card_links_to_in_progress_lesson_before_first_lesson(): void
@@ -347,12 +422,19 @@ class CourseCatalogFoundationTest extends TestCase
         ]);
 
         $this->actingAs($student)
-            ->get(route('courses.show', $course->slug))
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
             ->assertOk()
             ->assertSee('Continuar trilha')
-            ->assertSee('02 - Configurações')
             ->assertSee(route('courses.lessons.show', [$course->slug, $secondLesson]), false)
-            ->assertDontSee('Assistir aula');
+            ->assertDontSee('02 - Configurações');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
+            ->assertSee('02 - Configurações')
+            ->assertSee('Continuar')
+            ->assertSee('Assistir aula')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $secondLesson]), false);
     }
 
     public function test_courses_show_published_tracks_from_attached_modules(): void
@@ -412,9 +494,30 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.show', $firstCourse->slug))
             ->assertOk()
+            ->assertSee('Português')
+            ->assertSee('Ver trilhas')
+            ->assertDontSee('Classe de palavras')
+            ->assertDontSee('Aula da primeira trilha')
+            ->assertDontSee('Crase')
+            ->assertDontSee('Aula da segunda trilha');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$firstCourse->slug, $module]))
+            ->assertOk()
             ->assertSee('Classe de palavras')
-            ->assertSee('Aula da primeira trilha')
             ->assertSee('Crase')
+            ->assertDontSee('Aula da primeira trilha')
+            ->assertDontSee('Aula da segunda trilha');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$firstCourse->slug, $module, $firstTrack]))
+            ->assertOk()
+            ->assertSee('Aula da primeira trilha')
+            ->assertDontSee('Aula da segunda trilha');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$firstCourse->slug, $module, $secondTrack]))
+            ->assertOk()
             ->assertSee('Aula da segunda trilha');
 
         $this->actingAs($student)
@@ -442,7 +545,7 @@ class CourseCatalogFoundationTest extends TestCase
         $module->courses()->syncWithoutDetaching([
             $course->id => ['sort_order' => 1],
         ]);
-        CourseModuleTrack::query()->create([
+        $track = CourseModuleTrack::query()->create([
             'course_module_id' => $module->id,
             'name' => 'Teorias da Administração',
             'slug' => 'teorias-da-administracao',
@@ -455,14 +558,17 @@ class CourseCatalogFoundationTest extends TestCase
         $student->courses()->attach($course, ['source' => 'manual']);
 
         $this->actingAs($student)
-            ->get(route('courses.show', $course->slug))
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
             ->assertOk()
             ->assertSee('Teorias da Administração')
-            ->assertSee('Aulas disponíveis em breve')
-            ->assertSee('Aulas em breve')
-            ->assertSee('Arraste para o lado')
-            ->assertSee('h-40')
-            ->assertDontSee('Começar trilha');
+            ->assertSee('Ver aulas')
+            ->assertDontSee('Começar');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
+            ->assertSee('Nenhuma aula publicada nesta trilha ainda.')
+            ->assertDontSee('Começar');
     }
 
     public function test_course_track_with_lesson_without_media_is_available_and_lesson_page_shows_coming_soon(): void
@@ -504,12 +610,18 @@ class CourseCatalogFoundationTest extends TestCase
         $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
 
         $this->actingAs($student)
-            ->get(route('courses.show', $course->slug))
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
             ->assertOk()
             ->assertSee('Teorias da Administração')
-            ->assertSee('01 - Teorias da Administração - Teoria Científica')
-            ->assertSee('Aulas em breve')
             ->assertSee('Começar trilha')
+            ->assertDontSee('01 - Teorias da Administração - Teoria Científica');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
+            ->assertSee('01 - Teorias da Administração - Teoria Científica')
+            ->assertSee('Em breve')
+            ->assertSee('Assistir aula')
             ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
 
         $this->actingAs($student)
@@ -521,7 +633,7 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('Marcar como concluída');
     }
 
-    public function test_course_tracks_render_as_carousel_controls_when_module_has_multiple_tracks(): void
+    public function test_course_tracks_render_as_filtered_track_cards_when_module_has_multiple_tracks(): void
     {
         $student = User::factory()->create(['role' => 'student']);
         $course = Course::factory()->create([
@@ -552,11 +664,22 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.show', $course->slug))
             ->assertOk()
-            ->assertSee('snap-x')
-            ->assertSee('Arraste para o lado')
-            ->assertSee('Trilha anterior')
-            ->assertSee('Próxima trilha')
-            ->assertSee('Ir para a trilha 2');
+            ->assertSee('Português')
+            ->assertSee('2 trilha(s)')
+            ->assertSee('Ver trilhas')
+            ->assertDontSee('Classes de palavras')
+            ->assertDontSee('Pontuação');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
+            ->assertOk()
+            ->assertSee('2 trilha(s)')
+            ->assertSee('Trilha 1')
+            ->assertSee('Classes de palavras')
+            ->assertSee('Trilha 2')
+            ->assertSee('Pontuação')
+            ->assertDontSee('snap-x')
+            ->assertDontSee('Arraste para o lado');
     }
 
     public function test_deleting_course_module_or_track_preserves_lessons(): void
@@ -619,6 +742,7 @@ class CourseCatalogFoundationTest extends TestCase
     public function test_deleting_course_preserves_modules_tracks_and_lessons(): void
     {
         $course = Course::factory()->create(['status' => 'published']);
+        $otherCourse = Course::factory()->create(['status' => 'published']);
         $module = CourseModule::factory()->create([
             'course_id' => $course->id,
         ]);
@@ -641,8 +765,10 @@ class CourseCatalogFoundationTest extends TestCase
         ]);
 
         $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->courses()->syncWithoutDetaching([$otherCourse->id => ['sort_order' => 2]]);
         $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
         $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$otherCourse->id => ['sort_order' => 2]]);
         $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
         $studyTrack->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 1, 'weight' => 1]]);
 
@@ -674,6 +800,15 @@ class CourseCatalogFoundationTest extends TestCase
             'course_id' => $course->id,
             'course_module_track_id' => $track->id,
         ]);
+        $this->assertDatabaseHas('course_module_course', [
+            'course_id' => $otherCourse->id,
+            'course_module_id' => $module->id,
+        ]);
+        $this->assertDatabaseHas('course_module_track_course', [
+            'course_id' => $otherCourse->id,
+            'course_module_track_id' => $track->id,
+        ]);
+        $this->assertTrue($otherCourse->linkedLessons()->contains($lesson));
     }
 
     public function test_locked_student_cannot_open_lesson_player(): void

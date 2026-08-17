@@ -138,8 +138,27 @@ class Course extends Model
     {
         return Lesson::query()
             ->where(function (Builder $query): void {
-                $query->whereHas('modules.courses', fn (Builder $query) => $query->whereKey($this->id))
-                    ->orWhereHas('tracks.courses', fn (Builder $query) => $query->whereKey($this->id));
+                $query->where('course_id', $this->id)
+                    ->orWhereHas('module', fn (Builder $query) => $query
+                        ->where('course_id', $this->id)
+                        ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($this->id))
+                        ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $this->id)))
+                    ->orWhereHas('modules', fn (Builder $query) => $query
+                        ->where('course_id', $this->id)
+                        ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($this->id))
+                        ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $this->id)))
+                    ->orWhereHas('track', fn (Builder $query) => $query
+                        ->whereHas('courses', fn (Builder $query) => $query->whereKey($this->id))
+                        ->orWhereHas('module', fn (Builder $query) => $query
+                            ->where('course_id', $this->id)
+                            ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($this->id))
+                            ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $this->id))))
+                    ->orWhereHas('tracks', fn (Builder $query) => $query
+                        ->whereHas('courses', fn (Builder $query) => $query->whereKey($this->id))
+                        ->orWhereHas('module', fn (Builder $query) => $query
+                            ->where('course_id', $this->id)
+                            ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($this->id))
+                            ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $this->id))));
             })
             ->with(['module', 'track', 'modules', 'tracks'])
             ->distinct()
