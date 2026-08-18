@@ -349,9 +349,14 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.show', $course->slug))
             ->assertOk()
             ->assertSee('Português')
-            ->assertSee('Ver trilhas')
-            ->assertSee(route('courses.modules.tracks.index', [$course->slug, $module]), false)
-            ->assertDontSee('Classe de palavras')
+            ->assertSee('Fechar')
+            ->assertSee('Abrir')
+            ->assertSee('Ver aulas')
+            ->assertSee('Arraste para ver as próximas trilhas.')
+            ->assertSee('Trilhas anteriores')
+            ->assertSee('Próximas trilhas')
+            ->assertSee(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]), false)
+            ->assertSee('Classe de palavras')
             ->assertDontSee('01 - Substantivo');
 
         $this->actingAs($student)
@@ -366,6 +371,9 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
             ->assertOk()
             ->assertSee('Classe de palavras')
+            ->assertSee('Arraste para ver as próximas aulas.')
+            ->assertSee('Aulas anteriores')
+            ->assertSee('Próximas aulas')
             ->assertSee('01 - Substantivo');
 
         $this->actingAs($student)
@@ -456,12 +464,14 @@ class CourseCatalogFoundationTest extends TestCase
         $this->assertSame(900, $progress->progress_seconds);
         $this->assertNotNull($progress->completed_at);
 
+        $track = $lesson->fresh()->track;
+
         $this->actingAs($student)
             ->get(route('courses.show', $course->slug))
             ->assertOk()
             ->assertSee('1 de 1 aula(s) concluída(s).')
-            ->assertSee('Ver trilhas')
-            ->assertSee(route('courses.modules.tracks.index', [$course->slug, $module]), false);
+            ->assertSee('Ver aulas')
+            ->assertSee(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]), false);
     }
 
     public function test_course_track_card_links_to_in_progress_lesson_before_first_lesson(): void
@@ -597,10 +607,12 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.show', $firstCourse->slug))
             ->assertOk()
             ->assertSee('Português')
-            ->assertSee('Ver trilhas')
-            ->assertDontSee('Classe de palavras')
+            ->assertSee('Ver aulas')
+            ->assertSee('Trilhas anteriores')
+            ->assertSee('Próximas trilhas')
+            ->assertSee('Classe de palavras')
             ->assertDontSee('Aula da primeira trilha')
-            ->assertDontSee('Crase')
+            ->assertSee('Crase')
             ->assertDontSee('Aula da segunda trilha');
 
         $this->actingAs($student)
@@ -768,20 +780,23 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertOk()
             ->assertSee('Português')
             ->assertSee('2 trilha(s)')
-            ->assertSee('Ver trilhas')
-            ->assertDontSee('Classes de palavras')
-            ->assertDontSee('Pontuação');
+            ->assertSee('Ver aulas')
+            ->assertSee('Classes de palavras')
+            ->assertSee('Pontuação')
+            ->assertSee('course-carousel-track');
 
         $this->actingAs($student)
             ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
             ->assertOk()
             ->assertSee('2 trilha(s)')
+            ->assertSee('Arraste para ver as próximas trilhas.')
+            ->assertSee('Trilhas anteriores')
+            ->assertSee('Próximas trilhas')
+            ->assertSee('course-carousel-track')
             ->assertSee('Trilha 1')
             ->assertSee('Classes de palavras')
             ->assertSee('Trilha 2')
-            ->assertSee('Pontuação')
-            ->assertDontSee('snap-x')
-            ->assertDontSee('Arraste para o lado');
+            ->assertSee('Pontuação');
     }
 
     public function test_deleting_course_module_or_track_preserves_lessons(): void

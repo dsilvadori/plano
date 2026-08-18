@@ -4,6 +4,70 @@ import Alpine from 'alpinejs';
 
 window.Alpine = Alpine;
 
+Alpine.data('lessonCarousel', () => ({
+    atStart: true,
+    atEnd: false,
+    activeIndex: 0,
+    itemCount: 0,
+
+    init() {
+        this.itemCount = this.$refs.track?.querySelectorAll('[data-carousel-item]').length ?? 0;
+        this.$nextTick(() => this.update());
+    },
+
+    scroll(direction) {
+        const track = this.$refs.track;
+
+        if (!track) {
+            return;
+        }
+
+        const firstItem = track.querySelector('[data-carousel-item]');
+        const gap = 16;
+        const distance = firstItem ? firstItem.getBoundingClientRect().width + gap : track.clientWidth;
+
+        track.scrollBy({
+            left: direction * distance,
+            behavior: 'smooth',
+        });
+    },
+
+    goTo(index) {
+        const track = this.$refs.track;
+        const item = track?.querySelectorAll('[data-carousel-item]')[index];
+
+        item?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'nearest',
+            inline: 'start',
+        });
+    },
+
+    update() {
+        const track = this.$refs.track;
+
+        if (!track) {
+            return;
+        }
+
+        const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
+
+        this.atStart = track.scrollLeft <= 4;
+        this.atEnd = track.scrollLeft >= maxScroll - 4;
+
+        const items = Array.from(track.querySelectorAll('[data-carousel-item]'));
+        const trackLeft = track.getBoundingClientRect().left;
+        const nearest = items
+            .map((item, index) => ({
+                index,
+                distance: Math.abs(item.getBoundingClientRect().left - trackLeft),
+            }))
+            .sort((left, right) => left.distance - right.distance)[0];
+
+        this.activeIndex = nearest?.index ?? 0;
+    },
+}));
+
 Alpine.start();
 
 const themeColorMeta = document.querySelector('meta[name="theme-color"]');

@@ -514,6 +514,49 @@ html[data-theme="light"] .color-scheme-dark {
         @apply rounded-2xl border border-white/10 bg-slate-900/70 p-4;
     }
 
+    .course-carousel-shell {
+        @apply relative;
+    }
+
+    .course-carousel-track {
+        @apply flex snap-x snap-mandatory gap-4 overflow-x-auto pb-4 scroll-smooth;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+    }
+
+    .course-carousel-track::-webkit-scrollbar {
+        display: none;
+    }
+
+    .course-carousel-card {
+        @apply snap-start;
+        flex: 0 0 82%;
+        min-width: 0;
+    }
+
+    .course-carousel-arrow {
+        @apply hidden h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-slate-950/75 text-slate-100 shadow-lg shadow-black/30 backdrop-blur transition hover:bg-slate-900/90 disabled:cursor-not-allowed disabled:opacity-35 md:inline-flex;
+    }
+
+    .course-carousel-arrow-left,
+    .course-carousel-arrow-right {
+        @apply absolute top-1/2 z-10 -translate-y-1/2;
+    }
+
+    .course-carousel-arrow-left {
+        @apply -left-6;
+    }
+
+    .course-carousel-arrow-right {
+        @apply -right-6;
+    }
+
+    @screen md {
+        .course-carousel-card {
+            flex-basis: calc((100% - 3rem) / 3.15);
+        }
+    }
+
     .hero-panel {
         @apply rounded-[2rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(250,204,21,0.14),_transparent_26%),linear-gradient(135deg,_rgba(15,23,42,0.96),_rgba(2,6,23,0.92))] p-6 shadow-2xl shadow-black/25;
     }

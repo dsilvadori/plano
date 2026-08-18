@@ -47,63 +47,90 @@
             </div>
         @endif
 
-        <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
-            @forelse ($module->tracks as $track)
-                @php
-                    $trackLessonCount = $track->lessons->count();
-                    $trackCompletedCount = $track->lessons->filter(fn ($lesson) => $completedLessonIds->contains($lesson->id))->count();
-                    $trackProgress = $trackLessonCount > 0 ? (int) round(($trackCompletedCount / $trackLessonCount) * 100) : 0;
-                    $trackEntryLesson = $trackEntryLessons->get($track->id);
-                    $trackHasInProgressLesson = $trackEntryLesson && $inProgressLessonIds->contains($trackEntryLesson->id);
-                @endphp
+        @if ($module->tracks->isNotEmpty())
+            <div class="course-carousel-shell mt-6" x-data="lessonCarousel">
+                <div class="mb-3 flex items-center justify-between gap-3">
+                    <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 md:hidden">
+                        Arraste para ver as próximas trilhas.
+                    </p>
+                </div>
 
-                <article class="card-subtle flex h-full flex-col overflow-hidden p-0">
-                    <div class="bg-slate-950 p-3">
-                        <div class="flex h-40 w-full items-center justify-center rounded-xl bg-slate-900/80">
-                            <img src="{{ $track->thumbnail_display_url }}" alt="{{ $track->name }}" class="max-h-full max-w-full rounded-lg object-contain">
-                        </div>
-                    </div>
-                    <div class="flex flex-1 flex-col p-5">
-                        <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Trilha {{ $loop->iteration }}</p>
-                        <h3 class="mt-3 text-lg font-semibold leading-7 text-white">{{ $track->name }}</h3>
-                        <p class="mt-2 line-clamp-3 text-sm text-slate-400">{{ $track->description ?: 'Acesse a lista de aulas desta trilha.' }}</p>
+                <button type="button" @click="scroll(-1)" :disabled="atStart" aria-label="Trilhas anteriores" class="course-carousel-arrow course-carousel-arrow-left">
+                    <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M12.79 5.23a.75.75 0 0 1-.02 1.06L8.83 10l3.94 3.71a.75.75 0 1 1-1.04 1.08l-4.5-4.25a.75.75 0 0 1 0-1.08l4.5-4.25a.75.75 0 0 1 1.06.02Z" clip-rule="evenodd" />
+                    </svg>
+                </button>
+                <button type="button" @click="scroll(1)" :disabled="atEnd" aria-label="Próximas trilhas" class="course-carousel-arrow course-carousel-arrow-right">
+                    <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.17 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02Z" clip-rule="evenodd" />
+                    </svg>
+                </button>
 
-                        <div class="mt-4 flex flex-wrap gap-3 text-xs font-semibold text-slate-300">
-                            <span>{{ $trackLessonCount }} aula(s)</span>
-                            @if ($hasAccess && $trackLessonCount > 0)
-                                <span>{{ $trackProgress }}%</span>
-                            @endif
-                        </div>
+                <div x-ref="track" @scroll.debounce.100ms="update" class="course-carousel-track">
+                    @foreach ($module->tracks as $track)
+                        @php
+                            $trackLessonCount = $track->lessons->count();
+                            $trackCompletedCount = $track->lessons->filter(fn ($lesson) => $completedLessonIds->contains($lesson->id))->count();
+                            $trackProgress = $trackLessonCount > 0 ? (int) round(($trackCompletedCount / $trackLessonCount) * 100) : 0;
+                            $trackEntryLesson = $trackEntryLessons->get($track->id);
+                            $trackHasInProgressLesson = $trackEntryLesson && $inProgressLessonIds->contains($trackEntryLesson->id);
+                        @endphp
 
-                        @if ($hasAccess && $trackLessonCount > 0)
-                            <div class="mt-4">
-                                <div class="mb-2 flex items-center justify-between text-xs font-semibold text-slate-300">
-                                    <span>{{ $trackCompletedCount }} de {{ $trackLessonCount }} aula(s)</span>
-                                    <span>{{ $trackProgress }}%</span>
-                                </div>
-                                <div class="h-2 overflow-hidden rounded-full bg-slate-800">
-                                    <div class="h-full rounded-full bg-sky-400" style="width: {{ min(100, $trackProgress) }}%"></div>
+                        <article data-carousel-item class="card-subtle course-carousel-card flex flex-col overflow-hidden p-0">
+                            <div class="bg-slate-950 p-3">
+                                <div class="flex h-40 w-full items-center justify-center rounded-xl bg-slate-900/80">
+                                    <img src="{{ $track->thumbnail_display_url }}" alt="{{ $track->name }}" class="max-h-full max-w-full rounded-lg object-contain">
                                 </div>
                             </div>
-                        @endif
+                            <div class="flex flex-1 flex-col p-5">
+                                <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Trilha {{ $loop->iteration }}</p>
+                                <h3 class="mt-3 text-lg font-semibold leading-7 text-white">{{ $track->name }}</h3>
+                                <p class="mt-2 line-clamp-3 text-sm text-slate-400">{{ $track->description ?: 'Acesse a lista de aulas desta trilha.' }}</p>
 
-                        <div class="mt-auto space-y-3 pt-5">
-                            <a href="{{ route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]) }}" class="inline-flex w-full justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-400/20">
-                                Ver aulas
-                            </a>
-                            @if ($hasAccess && $trackEntryLesson)
-                                <a href="{{ route('courses.lessons.show', [$course->slug, $trackEntryLesson]) }}" class="inline-flex w-full justify-center rounded-2xl bg-amber-300 px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
-                                    {{ $trackHasInProgressLesson || ($trackProgress > 0 && $trackProgress < 100) ? 'Continuar trilha' : ($trackProgress >= 100 ? 'Rever trilha' : 'Começar trilha') }}
-                                </a>
-                            @endif
-                        </div>
-                    </div>
-                </article>
-            @empty
-                <div class="card-subtle">
-                    <p class="text-sm text-slate-400">Nenhuma trilha publicada neste módulo ainda.</p>
+                                <div class="mt-4 flex flex-wrap gap-3 text-xs font-semibold text-slate-300">
+                                    <span>{{ $trackLessonCount }} aula(s)</span>
+                                    @if ($hasAccess && $trackLessonCount > 0)
+                                        <span>{{ $trackProgress }}%</span>
+                                    @endif
+                                </div>
+
+                                @if ($hasAccess && $trackLessonCount > 0)
+                                    <div class="mt-4">
+                                        <div class="mb-2 flex items-center justify-between text-xs font-semibold text-slate-300">
+                                            <span>{{ $trackCompletedCount }} de {{ $trackLessonCount }} aula(s)</span>
+                                            <span>{{ $trackProgress }}%</span>
+                                        </div>
+                                        <div class="h-2 overflow-hidden rounded-full bg-slate-800">
+                                            <div class="h-full rounded-full bg-sky-400" style="width: {{ min(100, $trackProgress) }}%"></div>
+                                        </div>
+                                    </div>
+                                @endif
+
+                                <div class="mt-auto space-y-3 pt-5">
+                                    <a href="{{ route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]) }}" class="inline-flex w-full justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-400/20">
+                                        Ver aulas
+                                    </a>
+                                    @if ($hasAccess && $trackEntryLesson)
+                                        <a href="{{ route('courses.lessons.show', [$course->slug, $trackEntryLesson]) }}" class="inline-flex w-full justify-center rounded-2xl bg-amber-300 px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
+                                            {{ $trackHasInProgressLesson || ($trackProgress > 0 && $trackProgress < 100) ? 'Continuar trilha' : ($trackProgress >= 100 ? 'Rever trilha' : 'Começar trilha') }}
+                                        </a>
+                                    @endif
+                                </div>
+                            </div>
+                        </article>
+                    @endforeach
                 </div>
-            @endforelse
-        </div>
+
+                <div class="mt-1 flex justify-center gap-2 md:hidden" aria-label="Navegação das trilhas">
+                    @foreach ($module->tracks as $track)
+                        <button type="button" @click="goTo({{ $loop->index }})" class="h-2.5 rounded-full transition-all" :class="activeIndex === {{ $loop->index }} ? 'w-6 bg-sky-300' : 'w-2.5 bg-slate-600'" aria-label="Ir para trilha {{ $loop->iteration }}"></button>
+                    @endforeach
+                </div>
+            </div>
+        @else
+            <div class="mt-6 card-subtle">
+                <p class="text-sm text-slate-400">Nenhuma trilha publicada neste módulo ainda.</p>
+            </div>
+        @endif
     </section>
 </x-app-layout>
