@@ -307,6 +307,9 @@ class CourseSpreadsheetImporter
                 'course_module_id' => $module->id,
                 'name' => $trackName,
                 'slug' => $track->exists ? $track->slug : $slug,
+                'teacher_name' => filled($trackData['teacher_name'] ?? null)
+                    ? trim((string) $trackData['teacher_name'])
+                    : $track->teacher_name,
                 'thumbnail_url' => $trackData['thumbnail_url'] ?? $track->thumbnail_url,
                 'sort_order' => $sortOrder,
                 'status' => $trackData['status'] ?? 'published',

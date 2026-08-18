@@ -30,6 +30,7 @@ class CourseModuleTrack extends Model
         'name',
         'slug',
         'description',
+        'teacher_name',
         'thumbnail_url',
         'thumbnail_path',
         'sort_order',

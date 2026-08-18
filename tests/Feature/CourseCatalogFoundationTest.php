@@ -925,6 +925,7 @@ class CourseCatalogFoundationTest extends TestCase
                 'course_module_id' => $module->id,
                 'name' => $trackName,
                 'slug' => str($trackName)->slug()->toString(),
+                'teacher_name' => $index === 0 ? 'Dorival Conte Jr.' : null,
                 'status' => 'published',
                 'sort_order' => $index + 1,
             ]);
@@ -940,6 +941,10 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('Ver aulas')
             ->assertSee('Classes de palavras')
             ->assertSee('Pontuação')
+            ->assertSee('Dorival Conte Jr.')
+            ->assertDontSee('Professor: Dorival Conte Jr.')
+            ->assertDontSee('Professor não informado')
+            ->assertDontSee('Acesse as aulas desta trilha.')
             ->assertSee('course-carousel-track');
 
         $this->actingAs($student)
@@ -950,10 +955,14 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('Trilhas anteriores')
             ->assertSee('Próximas trilhas')
             ->assertSee('course-carousel-track')
-            ->assertSee('Trilha 1')
             ->assertSee('Classes de palavras')
-            ->assertSee('Trilha 2')
-            ->assertSee('Pontuação');
+            ->assertSee('Pontuação')
+            ->assertSee('Dorival Conte Jr.')
+            ->assertDontSee('Professor: Dorival Conte Jr.')
+            ->assertDontSee('Professor não informado')
+            ->assertDontSee('Acesse as aulas desta trilha.')
+            ->assertDontSee('Trilha 1')
+            ->assertDontSee('Trilha 2');
     }
 
     public function test_deleting_course_module_or_track_preserves_lessons(): void

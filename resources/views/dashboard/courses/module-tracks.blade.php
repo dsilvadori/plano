@@ -75,18 +75,19 @@
                             $trackEntryLesson = $trackEntryLessons->get($track->id);
                         @endphp
 
-                        <article data-carousel-item class="card-subtle course-carousel-card flex flex-col overflow-hidden p-0">
+                        <article data-carousel-item class="card-subtle course-carousel-card course-track-card flex flex-col overflow-hidden p-0">
                             <div class="course-thumbnail-frame p-3">
-                                <div class="flex h-40 w-full items-center justify-center rounded-xl bg-slate-900/80">
-                                    <img src="{{ $track->thumbnail_display_url }}" alt="{{ $track->name }}" class="max-h-full max-w-full rounded-lg object-contain">
+                                <div class="course-track-thumbnail">
+                                    <img src="{{ $track->thumbnail_display_url }}" alt="{{ $track->name }}">
                                 </div>
                             </div>
-                            <div class="flex flex-1 flex-col p-5">
-                                <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Trilha {{ $loop->iteration }}</p>
-                                <h3 class="mt-3 text-lg font-semibold leading-7 text-white">{{ $track->name }}</h3>
-                                <p class="mt-2 line-clamp-3 text-sm text-slate-400">{{ $track->description ?: 'Acesse a lista de aulas desta trilha.' }}</p>
+                            <div class="flex flex-1 flex-col p-4">
+                                <h3 class="text-sm font-semibold leading-5 text-white">{{ $track->name }}</h3>
+                                @if (filled($track->teacher_name))
+                                    <p class="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{{ $track->teacher_name }}</p>
+                                @endif
 
-                                <div class="mt-4 flex flex-wrap gap-3 text-xs font-semibold text-slate-300">
+                                <div class="mt-3 flex flex-wrap gap-3 text-xs font-semibold text-slate-300">
                                     <span>{{ $trackLessonCount }} aula(s)</span>
                                     @if ($hasAccess && $trackLessonCount > 0)
                                         <span>{{ $trackProgress }}%</span>
@@ -94,7 +95,7 @@
                                 </div>
 
                                 @if ($hasAccess && $trackLessonCount > 0)
-                                    <div class="mt-4">
+                                    <div class="mt-3">
                                         <div class="mb-2 flex items-center justify-between text-xs font-semibold text-slate-300">
                                             <span>{{ $trackCompletedCount }} de {{ $trackLessonCount }} aula(s)</span>
                                             <span>{{ $trackProgress }}%</span>
@@ -105,7 +106,7 @@
                                     </div>
                                 @endif
 
-                                <div class="mt-auto pt-5">
+                                <div class="mt-auto pt-3">
                                     <a href="{{ $trackEntryLesson ? route('courses.lessons.show', [$course->slug, $trackEntryLesson]) : route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]) }}" class="inline-flex w-full justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-400/20">
                                         Ver aulas
                                     </a>

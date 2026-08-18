@@ -472,6 +472,10 @@ html[data-theme="light"] .course-thumbnail-frame .bg-slate-950\/80 {
     color: var(--vc-primary) !important;
 }
 
+html[data-theme="light"] .course-track-thumbnail {
+    background: #ffffff !important;
+}
+
 html[data-theme="light"] .course-accordion-toggle {
     border-color: #c7d2fe !important;
     background: #eef2ff !important;
@@ -563,6 +567,19 @@ html[data-theme="light"] .color-scheme-dark {
         min-width: 0;
     }
 
+    .course-track-card {
+        flex-basis: 78%;
+    }
+
+    .course-track-thumbnail {
+        @apply flex h-[17rem] w-full items-center justify-center overflow-hidden rounded-xl bg-slate-900/55;
+    }
+
+    .course-track-thumbnail img {
+        @apply h-full w-full rounded-lg object-cover;
+        object-position: center 40%;
+    }
+
     .course-thumbnail-frame {
         @apply bg-slate-950;
     }
@@ -590,6 +607,10 @@ html[data-theme="light"] .color-scheme-dark {
 
     @screen md {
         .course-carousel-card {
+            flex-basis: calc((100% - 3rem) / 3.15);
+        }
+
+        .course-track-card {
             flex-basis: calc((100% - 3rem) / 3.15);
         }
     }

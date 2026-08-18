@@ -138,6 +138,7 @@ class CourseSpreadsheetParser
                         return [
                             'name' => trim($trackName),
                             'sort_order' => (int) ($firstTrackRow['track_sort_order'] ?? $firstTrackRow['ordem_trilha'] ?? $trackSortOrder++),
+                            'teacher_name' => $this->resolveTeacherName($firstTrackRow),
                             'thumbnail_url' => $firstTrackRow['track_thumbnail_url'] ?? null,
                             'google_doc_url' => $firstTrackRow['track_google_doc_url'] ?? null,
                             'panda_folder_id' => $firstTrackRow['panda_folder_id'] ?? null,
@@ -195,13 +196,15 @@ class CourseSpreadsheetParser
                 $rows = $this->readWorksheetRows($archive, $sheet['target'], $sharedStrings);
                 $groupName = $this->normalizeSheetName($sheet['name']);
                 $currentTrackName = null;
+                $currentTeacherName = null;
                 $currentLessons = [];
                 $tracks = [];
                 $trackSortOrder = 1;
 
-                $flushTrack = function () use (&$tracks, &$currentTrackName, &$currentLessons, &$trackSortOrder): void {
+                $flushTrack = function () use (&$tracks, &$currentTrackName, &$currentTeacherName, &$currentLessons, &$trackSortOrder): void {
                     if (blank($currentTrackName) || empty($currentLessons)) {
                         $currentTrackName = null;
+                        $currentTeacherName = null;
                         $currentLessons = [];
 
                         return;
@@ -210,11 +213,13 @@ class CourseSpreadsheetParser
                     $tracks[] = [
                         'name' => $currentTrackName,
                         'sort_order' => $trackSortOrder++,
+                        'teacher_name' => $currentTeacherName,
                         'workload_minutes' => array_sum(array_column($currentLessons, 'minutes')),
                         'lessons' => $currentLessons,
                     ];
 
                     $currentTrackName = null;
+                    $currentTeacherName = null;
                     $currentLessons = [];
                 };
 
@@ -237,6 +242,15 @@ class CourseSpreadsheetParser
                     if (Str::startsWith($firstCell, 'Trilha - ')) {
                         $flushTrack();
                         $currentTrackName = trim(Str::after($firstCell, 'Trilha - '));
+                        $currentTeacherName = $this->resolveTeacherName([
+                            'professor' => Arr::get($row, 'C'),
+                        ]);
+
+                        continue;
+                    }
+
+                    if ($this->isTeacherRow($firstCell)) {
+                        $currentTeacherName = $this->teacherNameFromLabel($firstCell);
 
                         continue;
                     }
@@ -309,6 +323,49 @@ class CourseSpreadsheetParser
             'horas aulas',
             'aula',
         ], true);
+    }
+
+    protected function isTeacherRow(string $value): bool
+    {
+        $normalized = Str::of($value)
+            ->lower()
+            ->ascii()
+            ->squish()
+            ->value();
+
+        return Str::startsWith($normalized, [
+            'professor - ',
+            'professor: ',
+            'professora - ',
+            'professora: ',
+            'instrutor - ',
+            'instrutor: ',
+            'docente - ',
+            'docente: ',
+        ]);
+    }
+
+    protected function teacherNameFromLabel(string $value): ?string
+    {
+        $name = trim((string) preg_replace('/^(professor(a)?|instrutor(a)?|docente)\s*[-:]\s*/iu', '', $value));
+
+        return $name !== '' ? $name : null;
+    }
+
+    protected function resolveTeacherName(array $row): ?string
+    {
+        $value = $row['track_teacher_name']
+            ?? $row['teacher_name']
+            ?? $row['professor']
+            ?? $row['professora']
+            ?? $row['instrutor']
+            ?? $row['instrutora']
+            ?? $row['docente']
+            ?? null;
+
+        $name = trim((string) $value);
+
+        return $name !== '' ? $name : null;
     }
 
     protected function resolveCourseName(ZipArchive $archive, array $sharedStrings, Collection $sheets, string $path): string

@@ -64,6 +64,9 @@ class CourseModuleTrackResource extends Resource
             TextInput::make('slug')
                 ->label('Slug')
                 ->required(),
+            TextInput::make('teacher_name')
+                ->label('Professor')
+                ->maxLength(255),
             Textarea::make('description')
                 ->label('Descrição')
                 ->rows(3)
@@ -140,6 +143,7 @@ class CourseModuleTrackResource extends Resource
                     ->size(56)
                     ->square(),
                 TextColumn::make('name')->label('Trilha')->searchable()->sortable(),
+                TextColumn::make('teacher_name')->label('Professor')->searchable()->toggleable(),
                 TextColumn::make('module.name')->label('Módulo')->searchable()->sortable(),
                 TextColumn::make('courses_count')->label('Cursos')->counts('courses'),
                 TextColumn::make('lessons_count')->label('Aulas')->counts('lessons'),
