@@ -26,7 +26,7 @@
                     </a>
                 @endif
             </div>
-            <div class="overflow-hidden rounded-3xl border border-white/10 bg-slate-950 p-3 shadow-2xl shadow-slate-950/30">
+            <div class="course-thumbnail-frame overflow-hidden rounded-3xl border border-white/10 p-3 shadow-2xl shadow-slate-950/30">
                 <img src="{{ $thumbnail }}" alt="{{ $course->name }}" class="aspect-video h-full w-full rounded-2xl object-contain">
             </div>
         </div>
@@ -96,7 +96,7 @@
                             @if ($hasAccess && $moduleLessonCount > 0)
                                 <span class="rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1 text-sky-100">{{ $moduleProgress }}%</span>
                             @endif
-                            <span class="inline-flex min-w-24 items-center justify-center gap-2 rounded-full border border-white/10 bg-slate-950 px-3 py-1 text-slate-100">
+                            <span class="course-accordion-toggle inline-flex min-w-24 items-center justify-center gap-2 rounded-full border px-3 py-1">
                                 <span x-show="!open">Abrir</span>
                                 <span x-show="open" x-cloak>Fechar</span>
                                 <svg class="h-4 w-4 transition" :class="{ 'rotate-180': open }" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -149,7 +149,7 @@
                                         @endphp
 
                                         <article data-carousel-item class="card-subtle course-carousel-card flex flex-col overflow-hidden p-0">
-                                            <div class="bg-slate-950 p-3">
+                                            <div class="course-thumbnail-frame p-3">
                                                 <div class="flex h-36 w-full items-center justify-center rounded-xl bg-slate-900/80">
                                                     <img src="{{ $track->thumbnail_display_url }}" alt="{{ $track->name }}" class="max-h-full max-w-full rounded-lg object-contain">
                                                 </div>

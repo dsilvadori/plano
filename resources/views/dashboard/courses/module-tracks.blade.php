@@ -77,7 +77,7 @@
                         @endphp
 
                         <article data-carousel-item class="card-subtle course-carousel-card flex flex-col overflow-hidden p-0">
-                            <div class="bg-slate-950 p-3">
+                            <div class="course-thumbnail-frame p-3">
                                 <div class="flex h-40 w-full items-center justify-center rounded-xl bg-slate-900/80">
                                     <img src="{{ $track->thumbnail_display_url }}" alt="{{ $track->name }}" class="max-h-full max-w-full rounded-lg object-contain">
                                 </div>

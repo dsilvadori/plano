@@ -6,7 +6,7 @@
 @endphp
 
 <article class="card-subtle flex h-full flex-col overflow-hidden p-0">
-    <div class="relative aspect-video overflow-hidden rounded-t-2xl border-b border-white/10 bg-slate-950 p-3">
+    <div class="course-thumbnail-frame relative aspect-video overflow-hidden rounded-t-2xl border-b border-white/10 p-3">
         <img src="{{ $thumbnail }}" alt="{{ $course->name }}" class="h-full w-full rounded-xl object-contain" loading="lazy" decoding="async">
         @unless ($hasAccess)
             <div class="absolute right-3 top-3 rounded-full border border-white/20 bg-slate-950/80 px-3 py-1 text-xs font-semibold text-slate-100 shadow-lg">

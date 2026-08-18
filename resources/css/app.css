@@ -460,6 +460,35 @@ html[data-theme="light"] .border-sky-400\/20.bg-sky-400\/10 .text-sky-100 {
     color: var(--vc-primary) !important;
 }
 
+html[data-theme="light"] .course-thumbnail-frame {
+    border-color: #d7e0ee !important;
+    background: linear-gradient(180deg, #ffffff, #f4f7fb) !important;
+    box-shadow: inset 0 0 0 1px rgba(24, 24, 165, .04) !important;
+}
+
+html[data-theme="light"] .course-thumbnail-frame .bg-slate-950\/80 {
+    border-color: #c7d2fe !important;
+    background: rgba(255, 255, 255, .92) !important;
+    color: var(--vc-primary) !important;
+}
+
+html[data-theme="light"] .course-accordion-toggle {
+    border-color: #c7d2fe !important;
+    background: #eef2ff !important;
+    color: var(--vc-primary) !important;
+}
+
+html[data-theme="light"] .course-carousel-arrow {
+    border-color: #cbd5e1 !important;
+    background: rgba(255, 255, 255, .92) !important;
+    color: var(--vc-primary) !important;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, .16) !important;
+}
+
+html[data-theme="light"] .course-carousel-arrow:hover {
+    background: #eef2ff !important;
+}
+
 html[data-theme="light"] #install-app-button {
     border-color: rgba(24, 24, 165, .2) !important;
     background: var(--vc-primary) !important;
@@ -532,6 +561,14 @@ html[data-theme="light"] .color-scheme-dark {
         @apply snap-start;
         flex: 0 0 82%;
         min-width: 0;
+    }
+
+    .course-thumbnail-frame {
+        @apply bg-slate-950;
+    }
+
+    .course-accordion-toggle {
+        @apply border-white/10 bg-slate-950 text-slate-100;
     }
 
     .course-carousel-arrow {
