@@ -383,7 +383,7 @@
         </div>
     </x-slot>
 
-    <div class="grid gap-6 xl:grid-cols-[1fr_20rem]">
+    <div class="grid gap-6 xl:grid-cols-[1fr_20rem]" x-data="lessonCompletion(@js($isCompleted))">
         <section class="card-panel">
             @if (session('status'))
                 <div class="mb-6 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-200">
@@ -429,20 +429,20 @@
                             default => $lesson->type,
                         } }}</span>
                         <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-200">{{ $lesson->duration_minutes }} min</span>
-                        @if ($isCompleted)
-                            <span class="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-200">Concluída</span>
-                        @endif
+                        <span x-show="completed" x-cloak class="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-200">Concluída</span>
+                        <span x-show="!completed" x-cloak class="rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1 text-xs font-semibold text-amber-200">Em andamento</span>
                     </div>
 
-                    @if ($lesson->description)
+                    @if ($lesson->description && $lesson->description !== 'Aula importada por planilha.')
                         <p class="mt-4 text-sm leading-6 text-slate-300">{{ $lesson->description }}</p>
                     @endif
+                    <p x-show="error" x-text="error" x-cloak class="mt-3 text-sm font-semibold text-rose-200"></p>
                 </div>
 
-                <form method="POST" action="{{ route('courses.lessons.complete', [$course->slug, $lesson]) }}" class="shrink-0">
+                <form method="POST" action="{{ route('courses.lessons.complete', [$course->slug, $lesson]) }}" class="shrink-0" @submit.prevent="toggle">
                     @csrf
-                    <button type="submit" class="w-full rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
-                        {{ $isCompleted ? 'Marcar concluída novamente' : 'Marcar como concluída' }}
+                    <button type="submit" class="w-full rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20 disabled:cursor-wait disabled:opacity-70" :disabled="loading">
+                        <span x-text="loading ? 'Atualizando...' : buttonLabel">{{ $isCompleted ? 'Desmarcar como concluída' : 'Marcar como concluída' }}</span>
                     </button>
                 </form>
             </div>
@@ -805,11 +805,32 @@
                         @endforeach
                     </div>
                 </div>
+            @elseif ($trackLessonContext)
+                <div class="card-panel">
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Aulas da trilha</p>
+                    <p class="mt-3 text-lg font-semibold text-white">{{ $trackLessonContext['track']->name }}</p>
+
+                    <div class="mt-5 space-y-2">
+                        @foreach ($trackLessonContext['lessons'] as $trackLesson)
+                            @php
+                                $isCurrentTrackLesson = $trackLesson->is($lesson);
+                            @endphp
+                            <a href="{{ route('courses.lessons.show', [$course->slug, $trackLesson]) }}" class="block rounded-xl border px-3 py-2 text-sm {{ $isCurrentTrackLesson ? 'border-amber-300/40 bg-amber-300/15 text-amber-100' : 'border-white/10 bg-slate-950/40 text-slate-200' }}">
+                                <span class="block font-semibold">{{ $trackLesson->title }}</span>
+                                @if ($trackLesson->duration_minutes > 0)
+                                    <span class="mt-1 block text-xs {{ $isCurrentTrackLesson ? 'text-amber-100/80' : 'text-slate-400' }}">
+                                        {{ $trackLesson->duration_minutes }} min
+                                    </span>
+                                @endif
+                            </a>
+                        @endforeach
+                    </div>
+                </div>
             @endif
 
             <div class="card-panel">
                 <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Status</p>
-                <p class="mt-3 text-2xl font-semibold text-white">{{ $isCompleted ? 'Aula concluída' : 'Em andamento' }}</p>
+                <p class="mt-3 text-2xl font-semibold text-white" x-text="statusLabel">{{ $isCompleted ? 'Aula concluída' : 'Em andamento' }}</p>
                 <p class="mt-2 text-sm text-slate-400">Ao concluir, o progresso do curso é atualizado automaticamente nos cards e na página do curso.</p>
             </div>
         </aside>

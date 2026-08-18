@@ -68,6 +68,59 @@ Alpine.data('lessonCarousel', () => ({
     },
 }));
 
+Alpine.data('lessonCompletion', (initialCompleted = false) => ({
+    completed: initialCompleted,
+    loading: false,
+    error: '',
+
+    get statusLabel() {
+        return this.completed ? 'Concluída' : 'Em andamento';
+    },
+
+    get buttonLabel() {
+        return this.completed ? 'Desmarcar como concluída' : 'Marcar como concluída';
+    },
+
+    async toggle(event) {
+        if (this.loading) {
+            return;
+        }
+
+        this.loading = true;
+        this.error = '';
+
+        const form = event.target;
+        const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
+
+        try {
+            const response = await fetch(form.action, {
+                method: 'POST',
+                headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': token,
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({
+                    completed: ! this.completed,
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error('Não foi possível atualizar a aula.');
+            }
+
+            const data = await response.json();
+
+            this.completed = Boolean(data.completed);
+        } catch (error) {
+            this.error = error.message || 'Não foi possível atualizar a aula.';
+        } finally {
+            this.loading = false;
+        }
+    },
+}));
+
 Alpine.start();
 
 const themeColorMeta = document.querySelector('meta[name="theme-color"]');

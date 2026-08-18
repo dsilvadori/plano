@@ -90,7 +90,7 @@
                             </div>
 
                             <h3 class="mt-3 text-lg font-semibold leading-7 text-white">{{ $lesson->title }}</h3>
-                            <p class="mt-2 line-clamp-3 text-sm text-slate-400">{{ $lesson->description ?: 'Aula da trilha selecionada.' }}</p>
+                            <p class="mt-2 line-clamp-3 text-sm text-slate-400">{{ $lesson->description && $lesson->description !== 'Aula importada por planilha.' ? $lesson->description : 'Aula da trilha selecionada.' }}</p>
 
                             @if ($lesson->duration_minutes > 0)
                                 <p class="mt-4 text-xs font-semibold text-slate-500">{{ $lesson->duration_minutes }} min</p>

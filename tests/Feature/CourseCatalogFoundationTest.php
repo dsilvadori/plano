@@ -425,7 +425,7 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('Arraste para ver as próximas trilhas.')
             ->assertSee('Trilhas anteriores')
             ->assertSee('Próximas trilhas')
-            ->assertSee(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]), false)
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false)
             ->assertSee('Classe de palavras')
             ->assertDontSee('01 - Substantivo');
 
@@ -434,7 +434,7 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertOk()
             ->assertSee('Classe de palavras')
             ->assertSee('Ver aulas')
-            ->assertSee(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]), false)
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false)
             ->assertDontSee('01 - Substantivo');
 
         $this->actingAs($student)
@@ -450,6 +450,8 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
             ->assertSee('01 - Substantivo')
+            ->assertSee('Aulas da trilha')
+            ->assertSee('Classe de palavras')
             ->assertSee('https://player.test/substantivo', false);
     }
 
@@ -522,8 +524,12 @@ class CourseCatalogFoundationTest extends TestCase
         ]);
 
         $this->actingAs($student)
-            ->post(route('courses.lessons.complete', [$course->slug, $lesson]))
-            ->assertRedirect();
+            ->postJson(route('courses.lessons.complete', [$course->slug, $lesson]), [
+                'completed' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('completed', true)
+            ->assertJsonPath('button_label', 'Desmarcar como concluída');
 
         $progress = LessonProgress::query()
             ->where('user_id', $student->id)
@@ -534,6 +540,24 @@ class CourseCatalogFoundationTest extends TestCase
         $this->assertSame(900, $progress->progress_seconds);
         $this->assertNotNull($progress->completed_at);
 
+        $this->actingAs($student)
+            ->postJson(route('courses.lessons.complete', [$course->slug, $lesson]), [
+                'completed' => false,
+            ])
+            ->assertOk()
+            ->assertJsonPath('completed', false)
+            ->assertJsonPath('button_label', 'Marcar como concluída');
+
+        $progress->refresh();
+
+        $this->assertSame('in_progress', $progress->status);
+        $this->assertSame(0, $progress->progress_seconds);
+        $this->assertNull($progress->completed_at);
+
+        $this->actingAs($student)
+            ->post(route('courses.lessons.complete', [$course->slug, $lesson]))
+            ->assertRedirect();
+
         $track = $lesson->fresh()->track;
 
         $this->actingAs($student)
@@ -541,7 +565,7 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertOk()
             ->assertSee('1 de 1 aula(s) concluída(s).')
             ->assertSee('Ver aulas')
-            ->assertSee(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]), false);
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
     }
 
     public function test_course_track_card_links_to_in_progress_lesson_before_first_lesson(): void
@@ -606,7 +630,10 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
             ->assertOk()
-            ->assertSee('Continuar trilha')
+            ->assertSee('Ver aulas')
+            ->assertDontSee('Continuar trilha')
+            ->assertDontSee('Começar trilha')
+            ->assertDontSee('Rever trilha')
             ->assertSee(route('courses.lessons.show', [$course->slug, $secondLesson]), false)
             ->assertDontSee('02 - Configurações');
 
@@ -617,6 +644,65 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('Continuar')
             ->assertSee('Assistir aula')
             ->assertSee(route('courses.lessons.show', [$course->slug, $secondLesson]), false);
+    }
+
+    public function test_course_track_card_ver_aulas_links_to_next_uncompleted_track_lesson(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com próxima aula',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Substantivo',
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Adjetivo',
+            'status' => 'published',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([
+            $firstLesson->id => ['sort_order' => 1],
+            $secondLesson->id => ['sort_order' => 2],
+        ]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        LessonProgress::query()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'lesson_id' => $firstLesson->id,
+            'status' => 'completed',
+            'progress_seconds' => 600,
+            'completed_at' => now(),
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Ver aulas')
+            ->assertDontSee('Continuar trilha')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $secondLesson]), false)
+            ->assertDontSee(route('courses.lessons.show', [$course->slug, $firstLesson]), false);
     }
 
     public function test_courses_show_published_tracks_from_attached_modules(): void
@@ -797,7 +883,8 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
             ->assertOk()
             ->assertSee('Teorias da Administração')
-            ->assertSee('Começar trilha')
+            ->assertSee('Ver aulas')
+            ->assertDontSee('Começar trilha')
             ->assertDontSee('01 - Teorias da Administração - Teoria Científica');
 
         $this->actingAs($student)
@@ -1146,6 +1233,53 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('01 - Conceitos Iniciais')
             ->assertSee('02 - Terminologias')
             ->assertSeeInOrder(['01 - Conceitos Iniciais', '02 - Terminologias']);
+    }
+
+    public function test_lesson_page_shows_track_sidebar_without_plan_and_hides_spreadsheet_import_description(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso sem plano',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de palavras',
+            'slug' => 'classes-de-palavras',
+            'status' => 'published',
+        ]);
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Substantivo',
+            'description' => 'Aula importada por planilha.',
+            'duration_seconds' => 900,
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Adjetivo',
+            'duration_seconds' => 600,
+            'status' => 'published',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $firstLesson]))
+            ->assertOk()
+            ->assertSee('Aulas da trilha')
+            ->assertSee('Classes de palavras')
+            ->assertSee('01 - Substantivo')
+            ->assertSee('02 - Adjetivo')
+            ->assertDontSee('Aula importada por planilha.');
     }
 
     public function test_lesson_page_renders_interactive_ai_questions(): void

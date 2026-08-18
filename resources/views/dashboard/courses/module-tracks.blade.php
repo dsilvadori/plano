@@ -73,7 +73,6 @@
                             $trackCompletedCount = $track->lessons->filter(fn ($lesson) => $completedLessonIds->contains($lesson->id))->count();
                             $trackProgress = $trackLessonCount > 0 ? (int) round(($trackCompletedCount / $trackLessonCount) * 100) : 0;
                             $trackEntryLesson = $trackEntryLessons->get($track->id);
-                            $trackHasInProgressLesson = $trackEntryLesson && $inProgressLessonIds->contains($trackEntryLesson->id);
                         @endphp
 
                         <article data-carousel-item class="card-subtle course-carousel-card flex flex-col overflow-hidden p-0">
@@ -106,15 +105,10 @@
                                     </div>
                                 @endif
 
-                                <div class="mt-auto space-y-3 pt-5">
-                                    <a href="{{ route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]) }}" class="inline-flex w-full justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-400/20">
+                                <div class="mt-auto pt-5">
+                                    <a href="{{ $trackEntryLesson ? route('courses.lessons.show', [$course->slug, $trackEntryLesson]) : route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]) }}" class="inline-flex w-full justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-400/20">
                                         Ver aulas
                                     </a>
-                                    @if ($hasAccess && $trackEntryLesson)
-                                        <a href="{{ route('courses.lessons.show', [$course->slug, $trackEntryLesson]) }}" class="inline-flex w-full justify-center rounded-2xl bg-amber-300 px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
-                                            {{ $trackHasInProgressLesson || ($trackProgress > 0 && $trackProgress < 100) ? 'Continuar trilha' : ($trackProgress >= 100 ? 'Rever trilha' : 'Começar trilha') }}
-                                        </a>
-                                    @endif
                                 </div>
                             </div>
                         </article>

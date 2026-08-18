@@ -21,6 +21,7 @@ use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Response;
 use Illuminate\Support\Arr;
@@ -266,6 +267,7 @@ class CourseCatalogController extends Controller
             'progressSummary' => $this->progressForCourse($course, $user),
             'aiArtifacts' => $lesson->aiArtifacts,
             'planLessonContext' => $planLessonContext,
+            'trackLessonContext' => $planLessonContext ? null : $this->trackLessonContextForLesson($course, $lesson),
             'lessonQuestionLinks' => $this->questionLinksForLesson($user, $course, $lesson),
             'pandaTutorUrl' => $this->pandaTutorUrlForLesson($lesson),
             'pandaTutorCandidateUrl' => $this->pandaTutorCandidateUrlForLesson($lesson),
@@ -273,7 +275,7 @@ class CourseCatalogController extends Controller
         ]);
     }
 
-    public function completeLesson(Course $course, Lesson $lesson): RedirectResponse
+    public function completeLesson(Course $course, Lesson $lesson): RedirectResponse|JsonResponse
     {
         $user = request()->user();
 
@@ -282,19 +284,39 @@ class CourseCatalogController extends Controller
         abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
         abort_unless($this->userCanAccessCourse($user, $course), 403);
 
-        LessonProgress::query()->updateOrCreate([
+        $completed = request()->boolean('completed', true);
+
+        $progress = LessonProgress::query()->updateOrCreate([
             'user_id' => $user->id,
             'lesson_id' => $lesson->id,
         ], [
             'course_id' => $course->id,
-            'status' => 'completed',
-            'progress_seconds' => max((int) $lesson->duration_seconds, 0),
-            'completed_at' => now(),
+            'status' => $completed ? 'completed' : 'in_progress',
+            'progress_seconds' => $completed ? max((int) $lesson->duration_seconds, 0) : 0,
+            'completed_at' => $completed ? now() : null,
         ]);
 
-        $this->markLinkedPlanItemsIfReady($user, $lesson);
+        if ($completed) {
+            $this->markLinkedPlanItemsIfReady($user, $lesson);
+        }
 
-        return back()->with('status', 'Aula marcada como concluída.');
+        if (request()->expectsJson()) {
+            $progressSummary = $this->progressForCourse($course, $user);
+
+            return response()->json([
+                'completed' => $progress->status === 'completed',
+                'status' => $progress->status,
+                'label' => $progress->status === 'completed' ? 'Aula concluída' : 'Em andamento',
+                'button_label' => $progress->status === 'completed' ? 'Desmarcar como concluída' : 'Marcar como concluída',
+                'progress' => [
+                    'completed' => $progressSummary['completed'],
+                    'total' => $progressSummary['total'],
+                    'percentage' => $progressSummary['percentage'],
+                ],
+            ]);
+        }
+
+        return back()->with('status', $completed ? 'Aula marcada como concluída.' : 'Aula desmarcada como concluída.');
     }
 
     public function downloadLessonSummary(Course $course, Lesson $lesson, LessonSummaryPdfGenerator $pdf): Response
@@ -684,6 +706,48 @@ class CourseCatalogController extends Controller
             'date_label' => $currentItem->scheduled_date->translatedFormat('d/m/Y'),
             'items' => $dayItems,
             'completed_lesson_ids' => $completedLessonIds,
+        ];
+    }
+
+    protected function trackLessonContextForLesson(Course $course, Lesson $lesson): ?array
+    {
+        $trackIds = collect([$lesson->course_module_track_id])
+            ->merge($lesson->tracks()->pluck('course_module_tracks.id'))
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($trackIds->isEmpty()) {
+            return null;
+        }
+
+        $track = CourseModuleTrack::query()
+            ->whereIn('id', $trackIds)
+            ->where(function (Builder $query) use ($course): void {
+                $query
+                    ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                    ->orWhereHas('module', fn (Builder $query) => $query
+                        ->where('course_id', $course->id)
+                        ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                        ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
+            })
+            ->with(['lessons' => fn ($query) => $query
+                ->where('status', '!=', 'archived')
+                ->orderBy('course_module_track_lessons.sort_order')
+                ->orderBy('lessons.sort_order')
+                ->orderBy('lessons.title'),
+            ])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->first();
+
+        if (! $track || $track->lessons->isEmpty()) {
+            return null;
+        }
+
+        return [
+            'track' => $track,
+            'lessons' => $track->lessons,
         ];
     }
 

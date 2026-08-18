@@ -369,7 +369,9 @@ class CourseSpreadsheetImporter
                 'course_module_track_id' => $this->resolveLessonTrackId($lesson, $track),
                 'title' => $title,
                 'slug' => $lessonExists ? $lesson->slug : $slug,
-                'description' => 'Aula importada por planilha.',
+                'description' => $lessonExists && $lesson->description !== 'Aula importada por planilha.'
+                    ? $lesson->description
+                    : null,
                 'type' => $this->normalizeLessonType((string) ($lessonData['type'] ?? 'video')),
                 'thumbnail_url' => $lessonData['thumbnail_url'] ?? $lesson->thumbnail_url,
                 'duration_seconds' => $minutes * 60,
