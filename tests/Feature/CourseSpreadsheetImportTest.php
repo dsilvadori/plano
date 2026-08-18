@@ -75,7 +75,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $course->load(['modules.tracks.lessons', 'studyTracks.modules']);
 
         $this->assertSame('Oficial de Administração', $course->name);
-        $this->assertCount(8, $course->modules);
+        $this->assertCount(8, $course->modules->reject->shouldBeExcludedFromStudyPlan());
         $this->assertCount(1, $course->studyTracks);
         $this->assertSame('Trilha Oficial - Oficial de Administração', $course->studyTracks->first()->name);
         $this->assertCount(8, $course->studyTracks->first()->modules);
@@ -147,7 +147,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'course_id' => $course->id,
             'name' => 'Trilha Oficial - Curso Gabaritando CRT',
         ]);
-        $this->assertSame(9, $course->modules()->count());
+        $this->assertSame(9, $course->modules()->get()->reject->shouldBeExcludedFromStudyPlan()->count());
         $this->assertSame(8, $course->studyTracks()->where('name', 'Trilha Oficial - Curso Gabaritando CRT')->first()->modules()->count());
     }
 
@@ -217,7 +217,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertGreaterThan(0, $preview['lessons']['total']);
         $this->assertSame($preview['lessons']['total'], $preview['lessons']['create']);
         $this->assertDatabaseCount('courses', 0);
-        $this->assertDatabaseCount('course_modules', 0);
+        $this->assertDatabaseCount('course_modules', 1);
         $this->assertDatabaseCount('lessons', 0);
     }
 
@@ -238,8 +238,8 @@ class CourseSpreadsheetImportTest extends TestCase
         }
 
         $this->assertSame('Curso CSV', $course->name);
-        $this->assertSame(2, $course->modules()->count());
-        $this->assertSame(2, CourseModuleTrack::query()->count());
+        $this->assertSame(2, $course->modules()->get()->reject->shouldBeExcludedFromStudyPlan()->count());
+        $this->assertSame(2, CourseModuleTrack::query()->whereHas('module', fn ($query) => $query->where('name', '!=', 'Comece por aqui'))->count());
         $this->assertSame(3, $course->linkedLessonsCount());
         $this->assertDatabaseHas('lessons', [
             'course_id' => null,
@@ -416,7 +416,7 @@ class CourseSpreadsheetImportTest extends TestCase
 
         $this->assertFalse($course->modules()->whereKey($compoundModule->id)->exists());
         $this->assertTrue($module->tracks()->where('name', 'Teorias da Administração')->exists());
-        $this->assertSame(1, $course->modules()->count());
+        $this->assertSame(1, $course->modules()->get()->reject->shouldBeExcludedFromStudyPlan()->count());
         $this->assertSame(1, $module->tracks()->count());
     }
 
@@ -514,6 +514,67 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('panda-windows-recursos', $existingLesson->panda_video_id);
         $this->assertSame('media_ready', $existingLesson->source_status);
         $this->assertSame('published', $existingLesson->status);
+    }
+
+    public function test_spreadsheet_import_uses_duration_when_matching_approximate_lesson_names(): void
+    {
+        $shortLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Recursos e configurações do Windows 10',
+            'slug' => 'recursos-configuracoes-windows-10-curta',
+            'description' => 'Aula parecida, mas curta demais.',
+            'type' => 'video',
+            'duration_seconds' => 600,
+            'sort_order' => 1,
+            'panda_video_id' => 'panda-windows-curta',
+            'panda_embed_url' => 'https://player.example.com/windows-curta',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => [
+                'source' => 'google_drive',
+                'drive_source_folder_path' => 'Windows 10',
+            ],
+        ]);
+        $rightDurationLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'AULA 09 - recursos_windows_10_configuracoes (720p)',
+            'slug' => 'recursos-configuracoes-windows-10-certa',
+            'description' => 'Aula parecida e com duração compatível.',
+            'type' => 'video',
+            'duration_seconds' => 1800,
+            'sort_order' => 2,
+            'panda_video_id' => 'panda-windows-certa',
+            'panda_embed_url' => 'https://player.example.com/windows-certa',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => [
+                'source' => 'google_drive',
+                'drive_source_folder_path' => 'Windows 10',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-duration-match-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Match Duracao,Informática,basic,1,Windows 10,01 - Recursos e configurações do Windows 10,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $track = $course->modules()->where('name', 'Informática')->firstOrFail()
+            ->tracks()->where('name', 'Windows 10')->firstOrFail();
+
+        $this->assertTrue($track->lessons()->whereKey($rightDurationLesson->id)->exists());
+        $this->assertFalse($track->lessons()->whereKey($shortLesson->id)->exists());
+        $this->assertTrue((bool) data_get($rightDurationLesson->fresh()->metadata, 'matched_by_duration'));
     }
 
     public function test_spreadsheet_import_prefers_ready_media_when_matching_existing_lessons(): void

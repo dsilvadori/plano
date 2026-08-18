@@ -387,6 +387,7 @@ class CourseSpreadsheetImporter
                     'matched_existing_lesson' => $lessonExists,
                     'matched_standalone_library_lesson' => $matchedStandaloneLibraryLesson,
                     'matched_by_name' => $lessonExists && $this->lessonNamesMatch($lesson->title, $title),
+                    'matched_by_duration' => $lessonExists && $this->lessonDurationMatchesImport($lesson, $lessonData),
                     'imported_at' => now()->toIso8601String(),
                 ]),
             ]);
@@ -553,7 +554,7 @@ class CourseSpreadsheetImporter
             ->when($excludeLessonIds !== [], fn (Collection $lessons) => $lessons->whereNotIn('id', $excludeLessonIds))
             ->map(fn (Lesson $lesson): array => [
                 'lesson' => $lesson,
-                'score' => $this->lessonMatchScore($lesson, $title, $module, $track),
+                'score' => $this->lessonMatchScore($lesson, $title, $module, $track, $lessonData),
                 'media_priority' => $this->lessonMediaPriority($lesson),
             ])
             ->filter(fn (array $candidate): bool => $candidate['score'] >= 72)
@@ -596,11 +597,12 @@ class CourseSpreadsheetImporter
         return $this->matchScoreForKeys($this->matchKey($left), $this->matchKey($right)) >= 72;
     }
 
-    protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null): float
+    protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $lessonData = []): float
     {
         $lessonKey = $this->matchKey($lesson->title, 'lesson-title-'.$lesson->id);
         $titleKey = $this->matchKey($title);
-        $score = $this->matchScoreForKeys($lessonKey, $titleKey);
+        $titleScore = $this->matchScoreForKeys($lessonKey, $titleKey);
+        $score = $titleScore;
 
         if ($score <= 0) {
             return 0;
@@ -645,7 +647,50 @@ class CourseSpreadsheetImporter
             $score -= 35;
         }
 
-        return $score;
+        $durationScore = $this->lessonDurationMatchPercent($lesson, $lessonData);
+
+        if ($durationScore !== null) {
+            if ($titleScore < 96 && $durationScore < 75) {
+                return 0;
+            }
+
+            if ($titleScore < 98 && $durationScore < 50) {
+                return 0;
+            }
+
+            $score = ($score * 0.82) + ($durationScore * 0.18);
+
+            if ($durationScore >= 90) {
+                $score += 6;
+            } elseif ($durationScore < 60) {
+                $score -= 20;
+            }
+        }
+
+        return round($score, 4);
+    }
+
+    protected function lessonDurationMatchPercent(Lesson $lesson, array $lessonData): ?float
+    {
+        $expectedMinutes = max(0, (int) ($lessonData['minutes'] ?? 0));
+        $actualSeconds = max(0, (int) $lesson->duration_seconds);
+
+        if ($expectedMinutes <= 0 || $actualSeconds <= 0) {
+            return null;
+        }
+
+        $expectedSeconds = $expectedMinutes * 60;
+        $shorter = min($expectedSeconds, $actualSeconds);
+        $longer = max($expectedSeconds, $actualSeconds);
+
+        return round(($shorter / $longer) * 100, 4);
+    }
+
+    protected function lessonDurationMatchesImport(Lesson $lesson, array $lessonData): bool
+    {
+        $score = $this->lessonDurationMatchPercent($lesson, $lessonData);
+
+        return $score !== null && $score >= 75;
     }
 
     protected function lessonHasReadyMedia(Lesson $lesson): bool

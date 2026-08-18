@@ -23,6 +23,7 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
@@ -133,6 +134,17 @@ class LessonResource extends Resource
                 ->numeric()
                 ->default(0)
                 ->required(),
+            Select::make('library_video_lesson_id')
+                ->label('Usar vídeo da biblioteca')
+                ->options(fn (): array => self::libraryVideoOptions())
+                ->getSearchResultsUsing(fn (?string $search): array => self::libraryVideoOptions($search))
+                ->getOptionLabelUsing(fn ($value): ?string => self::libraryVideoOptionLabel($value))
+                ->searchable()
+                ->preload()
+                ->live()
+                ->dehydrated(false)
+                ->helperText('Opcional. Escolha uma aula já existente para preencher os dados do vídeo manualmente.')
+                ->afterStateUpdated(fn ($state, Set $set) => self::applyLibraryVideoToForm($state, $set)),
             TextInput::make('sort_order')
                 ->label('Ordem')
                 ->numeric()
@@ -520,6 +532,83 @@ class LessonResource extends Resource
             'create' => CreateLesson::route('/create'),
             'edit' => EditLesson::route('/{record}/edit'),
         ];
+    }
+
+    public static function libraryVideoOptions(?string $search = null): array
+    {
+        return self::libraryVideoQuery($search)
+            ->limit(50)
+            ->get(['id', 'title', 'duration_seconds', 'panda_video_id'])
+            ->mapWithKeys(fn (Lesson $lesson): array => [
+                $lesson->id => self::libraryVideoLabel($lesson),
+            ])
+            ->all();
+    }
+
+    public static function libraryVideoOptionLabel(mixed $value): ?string
+    {
+        if (blank($value)) {
+            return null;
+        }
+
+        $lesson = self::libraryVideoQuery()
+            ->whereKey($value)
+            ->first(['id', 'title', 'duration_seconds', 'panda_video_id']);
+
+        return $lesson ? self::libraryVideoLabel($lesson) : null;
+    }
+
+    public static function applyLibraryVideoToForm(mixed $lessonId, Set $set): void
+    {
+        if (blank($lessonId)) {
+            return;
+        }
+
+        $lesson = self::libraryVideoQuery()
+            ->whereKey($lessonId)
+            ->first();
+
+        if (! $lesson) {
+            return;
+        }
+
+        $set('type', 'video');
+        $set('thumbnail_url', $lesson->thumbnail_url);
+        $set('duration_seconds', (int) $lesson->duration_seconds);
+        $set('panda_video_id', $lesson->panda_video_id);
+        $set('panda_embed_url', $lesson->panda_embed_url);
+        $set('panda_player_url', $lesson->panda_player_url);
+        $set('panda_status', $lesson->panda_status);
+        $set('source_status', 'media_ready');
+    }
+
+    protected static function libraryVideoQuery(?string $search = null): \Illuminate\Database\Eloquent\Builder
+    {
+        $search = trim((string) $search);
+
+        return Lesson::query()
+            ->where(function ($query): void {
+                $query
+                    ->whereNotNull('panda_video_id')
+                    ->orWhereNotNull('panda_embed_url')
+                    ->orWhereNotNull('panda_player_url');
+            })
+            ->when($search !== '', fn ($query) => $query->where(function ($query) use ($search): void {
+                $query
+                    ->where('title', 'like', '%'.$search.'%')
+                    ->orWhere('panda_video_id', 'like', '%'.$search.'%');
+            }))
+            ->orderBy('title')
+            ->orderBy('id');
+    }
+
+    protected static function libraryVideoLabel(Lesson $lesson): string
+    {
+        $minutes = (int) ceil(((int) $lesson->duration_seconds) / 60);
+        $duration = $minutes > 0 ? $minutes.' min' : 'sem duração';
+        $panda = filled($lesson->panda_video_id) ? ' · Panda '.$lesson->panda_video_id : '';
+
+        return Str::limit($lesson->title, 90).' · '.$duration.$panda;
     }
 
     public static function moduleFilterOptions(mixed $courseId = null): array
