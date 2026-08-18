@@ -59,6 +59,28 @@ class CourseCatalogFoundationTest extends TestCase
         $this->assertSame(3, $lesson->duration_minutes);
     }
 
+    public function test_admin_can_open_student_catalog_with_courses_grouped_by_sphere(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $sphere = CourseSphere::factory()->create([
+            'name' => 'Municipal',
+            'is_active' => true,
+        ]);
+
+        Course::factory()->create([
+            'name' => 'Curso Municipal',
+            'sphere_id' => $sphere->id,
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee('Municipal')
+            ->assertSee('Curso Municipal');
+    }
+
     public function test_new_courses_receive_start_here_module_and_instruction_track(): void
     {
         $course = Course::factory()->create(['status' => 'published']);
@@ -862,9 +884,8 @@ class CourseCatalogFoundationTest extends TestCase
             'id' => $track->id,
             'course_module_id' => $module->id,
         ]);
-        $this->assertDatabaseHas('study_tracks', [
+        $this->assertDatabaseMissing('study_tracks', [
             'id' => $studyTrack->id,
-            'course_id' => null,
         ]);
         $this->assertDatabaseHas('lessons', [
             'id' => $lesson->id,

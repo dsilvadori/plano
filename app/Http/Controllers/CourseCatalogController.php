@@ -20,6 +20,7 @@ use App\Services\PandaVideoClient;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Response;
 use Illuminate\Support\Arr;
@@ -354,7 +355,7 @@ class CourseCatalogController extends Controller
         }
     }
 
-    protected function publishedCourses(?Builder $query = null): Builder
+    protected function publishedCourses(Builder|Relation|null $query = null): Builder|Relation
     {
         return ($query ?? Course::query())
             ->where('is_active', true)

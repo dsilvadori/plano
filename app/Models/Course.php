@@ -24,7 +24,7 @@ class Course extends Model
             $course->students()->detach();
             $course->lessons()->update(['course_id' => null]);
             CourseModule::query()->where('course_id', $course->id)->update(['course_id' => null]);
-            StudyTrack::query()->where('course_id', $course->id)->update(['course_id' => null]);
+            StudyTrack::query()->where('course_id', $course->id)->delete();
         });
 
         static::created(function (Course $course): void {
