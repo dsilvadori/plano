@@ -3,6 +3,9 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\Lessons\LessonResource;
+use App\Filament\Resources\CourseModules\Tables\CourseModulesTable;
+use App\Filament\Resources\CourseModuleTracks\CourseModuleTrackResource;
+use App\Filament\Resources\StudyTracks\Tables\StudyTracksTable;
 use App\Models\AiArtifact;
 use App\Models\Course;
 use App\Models\CourseModule;
@@ -250,6 +253,73 @@ class CourseCatalogFoundationTest extends TestCase
             LessonResource::trackFilterOptions($secondCourse->id),
         );
         $this->assertSame([$firstTrack->id => 'Português / Classes'], LessonResource::trackFilterOptions(null, $firstModule->id));
+    }
+
+    public function test_module_and_track_admin_filter_options_follow_selected_course(): void
+    {
+        $firstCourse = Course::factory()->create(['status' => 'published']);
+        $secondCourse = Course::factory()->create(['status' => 'published']);
+        $firstModule = CourseModule::factory()->create(['name' => 'Português']);
+        $secondModule = CourseModule::factory()->create(['name' => 'Matemática']);
+        $firstTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $firstModule->id,
+            'name' => 'Classes',
+            'slug' => 'classes',
+            'status' => 'published',
+        ]);
+        $secondTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $secondModule->id,
+            'name' => 'Frações',
+            'slug' => 'fracoes',
+            'status' => 'published',
+        ]);
+
+        $firstModule->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondModule->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+        $firstTrack->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondTrack->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+
+        $startHereModule = CourseModule::query()->where('name', 'Comece por aqui')->firstOrFail();
+        $instructionsTrack = CourseModuleTrack::query()->where('slug', 'instrucoes')->firstOrFail();
+
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $firstModule->id => 'Português'],
+            CourseModulesTable::moduleFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $secondModule->id => 'Matemática'],
+            CourseModulesTable::moduleFilterOptions($secondCourse->id),
+        );
+        $this->assertSame(
+            [
+                $instructionsTrack->id => 'Comece por aqui / Instruções',
+                $firstTrack->id => 'Português / Classes',
+            ],
+            CourseModulesTable::trackFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [
+                $instructionsTrack->id => 'Comece por aqui / Instruções',
+                $secondTrack->id => 'Matemática / Frações',
+            ],
+            CourseModulesTable::trackFilterOptions($secondCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $firstModule->id => 'Português'],
+            CourseModuleTrackResource::moduleFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $secondModule->id => 'Matemática'],
+            CourseModuleTrackResource::moduleFilterOptions($secondCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $firstModule->id => 'Português'],
+            StudyTracksTable::moduleFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $secondModule->id => 'Matemática'],
+            StudyTracksTable::moduleFilterOptions($secondCourse->id),
+        );
     }
 
     public function test_course_lists_lessons_from_modules_linked_through_study_track(): void

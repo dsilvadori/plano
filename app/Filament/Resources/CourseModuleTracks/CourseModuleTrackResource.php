@@ -5,6 +5,7 @@ namespace App\Filament\Resources\CourseModuleTracks;
 use App\Filament\Resources\CourseModuleTracks\Pages\CreateCourseModuleTrack;
 use App\Filament\Resources\CourseModuleTracks\Pages\EditCourseModuleTrack;
 use App\Filament\Resources\CourseModuleTracks\Pages\ListCourseModuleTracks;
+use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Support\FilamentThumbnailUpload;
@@ -27,6 +28,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\ImageColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Collection;
@@ -146,13 +148,38 @@ class CourseModuleTrackResource extends Resource
                 TextColumn::make('panda_folder_id')->label('Pasta Panda')->toggleable(),
             ])
             ->filters([
+                SelectFilter::make('course_id')
+                    ->label('Curso')
+                    ->options(fn (): array => Course::query()
+                        ->orderBy('name')
+                        ->pluck('name', 'id')
+                        ->all())
+                    ->searchable()
+                    ->preload()
+                    ->query(fn ($query, array $data) => filled($data['value'] ?? null)
+                        ? $query->where(function ($query) use ($data): void {
+                            $query->whereHas('courses', fn ($query) => $query->whereKey($data['value']))
+                                ->orWhereHas('module', fn ($query) => $query
+                                    ->where('course_id', $data['value'])
+                                    ->orWhereHas('courses', fn ($query) => $query->whereKey($data['value']))
+                                    ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $data['value'])));
+                        })
+                        : $query),
+                SelectFilter::make('course_module_id')
+                    ->label('Módulo')
+                    ->options(fn ($livewire): array => self::moduleFilterOptions(
+                        self::selectedFilterValue($livewire, 'course_id'),
+                    ))
+                    ->searchable()
+                    ->preload(),
                 SelectFilter::make('status')
                     ->options([
                         'draft' => 'Rascunho',
                         'published' => 'Publicado',
                         'archived' => 'Arquivado',
                     ]),
-            ])
+            ], layout: FiltersLayout::AboveContent)
+            ->filtersFormColumns(3)
             ->recordActions([
                 EditAction::make(),
             ])
@@ -173,6 +200,25 @@ class CourseModuleTrackResource extends Resource
                     DeleteBulkAction::make(),
                 ]),
             ]);
+    }
+
+    public static function moduleFilterOptions(mixed $courseId = null): array
+    {
+        return CourseModule::query()
+            ->when(filled($courseId), fn ($query) => $query->where(function ($query) use ($courseId): void {
+                $query->where('course_id', $courseId)
+                    ->orWhereHas('courses', fn ($query) => $query->whereKey($courseId))
+                    ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $courseId))
+                    ->orWhereHas('tracks.courses', fn ($query) => $query->whereKey($courseId));
+            }))
+            ->orderBy('name')
+            ->pluck('name', 'id')
+            ->all();
+    }
+
+    protected static function selectedFilterValue(mixed $livewire, string $filter): mixed
+    {
+        return data_get($livewire, "tableFilters.{$filter}.value");
     }
 
     public static function getPages(): array

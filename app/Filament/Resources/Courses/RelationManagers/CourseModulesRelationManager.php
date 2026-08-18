@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Courses\RelationManagers;
 
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
 use App\Services\ActiveStudyPlanRefresher;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
@@ -16,6 +17,7 @@ use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 
@@ -125,7 +127,30 @@ class CourseModulesRelationManager extends RelationManager
                 IconColumn::make('is_active')->label('Ativo')->boolean(),
             ])
             ->filters([
+                SelectFilter::make('course_module_track_id')
+                    ->label('Trilha')
+                    ->options(fn (): array => CourseModuleTrack::query()
+                        ->where(function ($query): void {
+                            $query->whereHas('courses', fn ($query) => $query->whereKey($this->getOwnerRecord()->getKey()))
+                                ->orWhereHas('module', fn ($query) => $query
+                                    ->where('course_id', $this->getOwnerRecord()->getKey())
+                                    ->orWhereHas('courses', fn ($query) => $query->whereKey($this->getOwnerRecord()->getKey())));
+                        })
+                        ->with('module:id,name')
+                        ->orderBy('name')
+                        ->get(['id', 'course_module_id', 'name'])
+                        ->mapWithKeys(fn (CourseModuleTrack $track): array => [
+                            $track->id => collect([$track->module?->name, $track->name])->filter()->join(' / '),
+                        ])
+                        ->sort()
+                        ->all())
+                    ->searchable()
+                    ->preload()
+                    ->query(fn ($query, array $data) => filled($data['value'] ?? null)
+                        ? $query->whereHas('tracks', fn ($query) => $query->whereKey($data['value']))
+                        : $query),
                 SelectFilter::make('type')
+                    ->label('Tipo')
                     ->options([
                         'basic' => 'Básica',
                         'specific' => 'Específica',
@@ -134,7 +159,8 @@ class CourseModulesRelationManager extends RelationManager
                         'questions' => 'Questões',
                         'other' => 'Outro/Legado',
                     ]),
-            ])
+            ], layout: FiltersLayout::AboveContent)
+            ->filtersFormColumns(2)
             ->headerActions([
                 CreateAction::make()
                     ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),

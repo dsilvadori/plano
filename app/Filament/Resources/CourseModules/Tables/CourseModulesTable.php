@@ -2,11 +2,15 @@
 
 namespace App\Filament\Resources\CourseModules\Tables;
 
+use App\Models\Course;
+use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 
@@ -66,7 +70,21 @@ class CourseModulesTable
                 IconColumn::make('is_active')->label('Ativo')->boolean(),
             ])
             ->filters([
+                SelectFilter::make('course_id')
+                    ->label('Curso')
+                    ->options(fn (): array => self::courseFilterOptions())
+                    ->searchable()
+                    ->preload()
+                    ->query(fn ($query, array $data) => filled($data['value'] ?? null)
+                        ? $query->where(function ($query) use ($data): void {
+                            $query->where('course_id', $data['value'])
+                                ->orWhereHas('courses', fn ($query) => $query->whereKey($data['value']))
+                                ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $data['value']))
+                                ->orWhereHas('tracks.courses', fn ($query) => $query->whereKey($data['value']));
+                        })
+                        : $query),
                 SelectFilter::make('type')
+                    ->label('Tipo')
                     ->options([
                         'basic' => 'Básica',
                         'specific' => 'Específica',
@@ -75,7 +93,18 @@ class CourseModulesTable
                         'questions' => 'Questões',
                         'other' => 'Outro/Legado',
                     ]),
-            ])
+                SelectFilter::make('course_module_track_id')
+                    ->label('Trilha')
+                    ->options(fn ($livewire): array => self::trackFilterOptions(
+                        self::selectedFilterValue($livewire, 'course_id'),
+                    ))
+                    ->searchable()
+                    ->preload()
+                    ->query(fn ($query, array $data) => filled($data['value'] ?? null)
+                        ? $query->whereHas('tracks', fn ($query) => $query->whereKey($data['value']))
+                        : $query),
+            ], layout: FiltersLayout::AboveContent)
+            ->filtersFormColumns(3)
             ->recordActions([
                 EditAction::make(),
             ])
@@ -84,5 +113,52 @@ class CourseModulesTable
                     DeleteBulkAction::make(),
                 ]),
             ]);
+    }
+
+    public static function courseFilterOptions(): array
+    {
+        return Course::query()
+            ->orderBy('name')
+            ->pluck('name', 'id')
+            ->all();
+    }
+
+    public static function moduleFilterOptions(mixed $courseId = null): array
+    {
+        return CourseModule::query()
+            ->when(filled($courseId), fn ($query) => $query->where(function ($query) use ($courseId): void {
+                $query->where('course_id', $courseId)
+                    ->orWhereHas('courses', fn ($query) => $query->whereKey($courseId))
+                    ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $courseId))
+                    ->orWhereHas('tracks.courses', fn ($query) => $query->whereKey($courseId));
+            }))
+            ->orderBy('name')
+            ->pluck('name', 'id')
+            ->all();
+    }
+
+    public static function trackFilterOptions(mixed $courseId = null): array
+    {
+        return CourseModuleTrack::query()
+            ->with('module:id,name')
+            ->when(filled($courseId), fn ($query) => $query->where(function ($query) use ($courseId): void {
+                $query->whereHas('courses', fn ($query) => $query->whereKey($courseId))
+                    ->orWhereHas('module', fn ($query) => $query
+                        ->where('course_id', $courseId)
+                        ->orWhereHas('courses', fn ($query) => $query->whereKey($courseId))
+                        ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $courseId)));
+            }))
+            ->orderBy('name')
+            ->get(['id', 'course_module_id', 'name'])
+            ->mapWithKeys(fn (CourseModuleTrack $track): array => [
+                $track->id => collect([$track->module?->name, $track->name])->filter()->join(' / '),
+            ])
+            ->sort()
+            ->all();
+    }
+
+    protected static function selectedFilterValue(mixed $livewire, string $filter): mixed
+    {
+        return data_get($livewire, "tableFilters.{$filter}.value");
     }
 }
