@@ -284,13 +284,7 @@ class StudyPlanBuilder extends Component
 
     protected function shouldSkipModule(CourseModule $module): bool
     {
-        $normalizedName = str($module->name)->lower()->ascii()->value();
-
-        return str_contains($normalizedName, 'apresentacao')
-            || str_contains($normalizedName, 'boas-vindas')
-            || str_contains($normalizedName, 'boas vindas')
-            || str_contains($normalizedName, 'bem-vindo')
-            || str_contains($normalizedName, 'bem vindo');
+        return $module->shouldBeExcludedFromStudyPlan();
     }
 
     protected function syncExamDateFromCourse(): void

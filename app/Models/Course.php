@@ -28,6 +28,8 @@ class Course extends Model
         });
 
         static::created(function (Course $course): void {
+            self::ensureStartHereModuleIsAttached($course);
+
             $testStudent = User::query()
                 ->where('email', 'aluno@teste.com')
                 ->first();
@@ -43,6 +45,39 @@ class Course extends Model
                 ],
             ]);
         });
+    }
+
+    public static function ensureStartHereModuleIsAttached(Course $course): void
+    {
+        $module = CourseModule::query()->firstOrCreate([
+            'name' => 'Comece por aqui',
+        ], [
+            'description' => 'Orientações iniciais do curso, com instruções em vídeo, texto e links úteis para os alunos.',
+            'type' => 'complementary',
+            'workload_minutes' => 0,
+            'sort_order' => 0,
+            'metadata' => ['source' => 'system_start_here'],
+            'is_active' => true,
+        ]);
+
+        $track = CourseModuleTrack::query()->firstOrCreate([
+            'course_module_id' => $module->id,
+            'slug' => 'instrucoes',
+        ], [
+            'name' => 'Instruções',
+            'description' => 'Aulas e materiais de orientação para começar o curso.',
+            'sort_order' => 0,
+            'status' => 'published',
+            'metadata' => ['source' => 'system_start_here'],
+        ]);
+
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 0],
+        ]);
+
+        $track->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 0],
+        ]);
     }
 
     protected $fillable = [

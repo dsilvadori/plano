@@ -202,6 +202,24 @@ class CourseModule extends Model
         return $fallbackLessons;
     }
 
+    public function shouldBeExcludedFromStudyPlan(): bool
+    {
+        if (($this->metadata['source'] ?? null) === 'system_start_here') {
+            return true;
+        }
+
+        $normalizedName = Str::of($this->name)->lower()->ascii()->value();
+
+        return Str::contains($normalizedName, [
+            'apresentacao',
+            'boas-vindas',
+            'boas vindas',
+            'bem-vindo',
+            'bem vindo',
+            'comece por aqui',
+        ]);
+    }
+
     public function getLessonsCountAttribute(): int
     {
         return count($this->planning_lessons);

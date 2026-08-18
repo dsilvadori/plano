@@ -59,6 +59,20 @@ class CourseCatalogFoundationTest extends TestCase
         $this->assertSame(3, $lesson->duration_minutes);
     }
 
+    public function test_new_courses_receive_start_here_module_and_instruction_track(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+
+        $module = CourseModule::query()->where('name', 'Comece por aqui')->firstOrFail();
+        $track = CourseModuleTrack::query()
+            ->where('course_module_id', $module->id)
+            ->where('slug', 'instrucoes')
+            ->firstOrFail();
+
+        $this->assertTrue($module->courses()->whereKey($course->id)->exists());
+        $this->assertTrue($track->courses()->whereKey($course->id)->exists());
+    }
+
     public function test_course_lists_all_linked_lessons_and_counts_media(): void
     {
         $course = Course::factory()->create(['status' => 'published']);
@@ -174,19 +188,45 @@ class CourseCatalogFoundationTest extends TestCase
         $firstTrack->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
         $secondTrack->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
 
+        $startHereModule = CourseModule::query()->where('name', 'Comece por aqui')->firstOrFail();
+        $instructionsTrack = CourseModuleTrack::query()->where('slug', 'instrucoes')->firstOrFail();
+
         $this->assertSame(
-            [$secondModule->id => 'Matemática', $firstModule->id => 'Português'],
+            [
+                $startHereModule->id => 'Comece por aqui',
+                $secondModule->id => 'Matemática',
+                $firstModule->id => 'Português',
+            ],
             LessonResource::moduleFilterOptions(),
         );
-        $this->assertSame([$firstModule->id => 'Português'], LessonResource::moduleFilterOptions($firstCourse->id));
-        $this->assertSame([$secondModule->id => 'Matemática'], LessonResource::moduleFilterOptions($secondCourse->id));
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $firstModule->id => 'Português'],
+            LessonResource::moduleFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $secondModule->id => 'Matemática'],
+            LessonResource::moduleFilterOptions($secondCourse->id),
+        );
 
         $allTrackOptions = LessonResource::trackFilterOptions();
 
+        $this->assertArrayHasKey($instructionsTrack->id, $allTrackOptions);
         $this->assertArrayHasKey($firstTrack->id, $allTrackOptions);
         $this->assertArrayHasKey($secondTrack->id, $allTrackOptions);
-        $this->assertSame([$firstTrack->id => 'Português / Classes'], LessonResource::trackFilterOptions($firstCourse->id));
-        $this->assertSame([$secondTrack->id => 'Matemática / Frações'], LessonResource::trackFilterOptions($secondCourse->id));
+        $this->assertSame(
+            [
+                $instructionsTrack->id => 'Comece por aqui / Instruções',
+                $firstTrack->id => 'Português / Classes',
+            ],
+            LessonResource::trackFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [
+                $instructionsTrack->id => 'Comece por aqui / Instruções',
+                $secondTrack->id => 'Matemática / Frações',
+            ],
+            LessonResource::trackFilterOptions($secondCourse->id),
+        );
         $this->assertSame([$firstTrack->id => 'Português / Classes'], LessonResource::trackFilterOptions(null, $firstModule->id));
     }
 

@@ -61,6 +61,47 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertTrue(in_array($saturdayItems->last()->type, ['questions', 'review'], true));
     }
 
+    public function test_start_here_module_is_not_added_to_study_plan(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $startHereModule = CourseModule::query()
+            ->where('name', 'Comece por aqui')
+            ->firstOrFail();
+        $startHereModule->forceFill([
+            'workload_minutes' => 120,
+            'lessons' => [
+                ['name' => 'Como usar a plataforma', 'minutes' => 60],
+                ['name' => 'Links importantes', 'minutes' => 60],
+            ],
+        ])->save();
+
+        $regularModule = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            now()->next('monday')->toDateString(),
+            now()->next('monday')->toDateString(),
+            ['monday'],
+            ['monday' => 180],
+            'balanced',
+        );
+
+        $this->assertSame(60, $plan->total_required_minutes);
+        $this->assertFalse($plan->items()->where('course_module_id', $startHereModule->id)->exists());
+        $this->assertTrue($plan->items()->where('course_module_id', $regularModule->id)->exists());
+    }
+
     public function test_generator_publishes_ready_lessons_and_attaches_them_to_plan_items(): void
     {
         $course = Course::factory()->create(['status' => 'published']);

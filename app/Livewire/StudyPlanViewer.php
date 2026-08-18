@@ -657,6 +657,7 @@ class StudyPlanViewer extends Component
                 ->modules()
                 ->where('course_modules.is_active', true)
                 ->get()
+                ->reject(fn (CourseModule $module): bool => $module->shouldBeExcludedFromStudyPlan())
                 ->values();
         }
 
@@ -665,7 +666,9 @@ class StudyPlanViewer extends Component
             ->where('is_active', true)
             ->orderBy('sort_order')
             ->orderBy('name')
-            ->get();
+            ->get()
+            ->reject(fn (CourseModule $module): bool => $module->shouldBeExcludedFromStudyPlan())
+            ->values();
     }
 
     protected function blankManualDayRow(): array

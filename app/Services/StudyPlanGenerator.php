@@ -632,15 +632,7 @@ class StudyPlanGenerator
 
     protected function shouldSkipModule(CourseModule $module): bool
     {
-        $normalizedName = Str::of($module->name)->lower()->ascii()->value();
-
-        return Str::contains($normalizedName, [
-            'apresentacao',
-            'boas-vindas',
-            'boas vindas',
-            'bem-vindo',
-            'bem vindo',
-        ]);
+        return $module->shouldBeExcludedFromStudyPlan();
     }
 
     protected function calculateAvailableMinutes(Carbon $start, Carbon $exam, array $availableDays, array $availableMinutesByDay): int
