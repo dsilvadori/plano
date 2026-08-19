@@ -24,6 +24,7 @@ class ThumbnailController extends Controller
     protected function isAllowedPath(string $path): bool
     {
         return str_starts_with($path, 'course-thumbnails/')
-            || str_starts_with($path, 'track-thumbnails/');
+            || str_starts_with($path, 'track-thumbnails/')
+            || str_starts_with($path, 'teacher-thumbnails/');
     }
 }

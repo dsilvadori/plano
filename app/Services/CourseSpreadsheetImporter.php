@@ -7,6 +7,7 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
+use App\Models\Teacher;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -302,14 +303,17 @@ class CourseSpreadsheetImporter
                     'course_module_id' => $module->id,
                     'slug' => $slug,
                 ]);
+            $teacherName = filled($trackData['teacher_name'] ?? null)
+                ? trim((string) $trackData['teacher_name'])
+                : null;
+            $teacher = $teacherName ? $this->resolveTeacher($teacherName) : null;
 
             $track->fill([
                 'course_module_id' => $module->id,
                 'name' => $trackName,
                 'slug' => $track->exists ? $track->slug : $slug,
-                'teacher_name' => filled($trackData['teacher_name'] ?? null)
-                    ? trim((string) $trackData['teacher_name'])
-                    : $track->teacher_name,
+                'teacher_id' => $teacher?->id ?: $track->teacher_id,
+                'teacher_name' => $teacherName ?: $track->teacher_name,
                 'thumbnail_url' => $trackData['thumbnail_url'] ?? $track->thumbnail_url,
                 'sort_order' => $sortOrder,
                 'status' => $trackData['status'] ?? 'published',
@@ -325,6 +329,25 @@ class CourseSpreadsheetImporter
 
             $this->importLessons($course, $module, $track, $trackData['lessons'] ?? []);
         }
+    }
+
+    protected function resolveTeacher(string $name): Teacher
+    {
+        $normalizedName = $this->normalizeName($name);
+
+        $teacher = Teacher::query()
+            ->orderBy('id')
+            ->get()
+            ->first(fn (Teacher $teacher): bool => $this->normalizeName($teacher->name) === $normalizedName);
+
+        if ($teacher) {
+            return $teacher;
+        }
+
+        return Teacher::query()->create([
+            'name' => $name,
+            'is_active' => true,
+        ]);
     }
 
     protected function importLessons(Course $course, CourseModule $module, CourseModuleTrack $track, array $lessons): void

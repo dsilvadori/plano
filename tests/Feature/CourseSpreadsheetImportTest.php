@@ -8,6 +8,7 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
+use App\Models\Teacher;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -245,6 +246,14 @@ class CourseSpreadsheetImportTest extends TestCase
             'name' => 'Classes de palavras',
             'teacher_name' => 'Dorival Conte Jr.',
         ]);
+        $teacher = Teacher::query()->where('name', 'Dorival Conte Jr.')->first();
+        $this->assertNotNull($teacher);
+        $this->assertTrue(
+            CourseModuleTrack::query()
+                ->where('name', 'Classes de palavras')
+                ->where('teacher_id', $teacher->id)
+                ->exists(),
+        );
         $this->assertDatabaseHas('course_module_tracks', [
             'name' => 'Legislação',
             'teacher_name' => null,
@@ -289,6 +298,9 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertDatabaseHas('course_module_tracks', [
             'name' => 'Classes de palavras',
             'teacher_name' => 'Prof. Atualizado',
+        ]);
+        $this->assertDatabaseHas('teachers', [
+            'name' => 'Prof. Atualizado',
         ]);
     }
 

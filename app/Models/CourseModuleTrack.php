@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Support\Str;
 
 class CourseModuleTrack extends Model
 {
@@ -27,6 +28,7 @@ class CourseModuleTrack extends Model
 
     protected $fillable = [
         'course_module_id',
+        'teacher_id',
         'name',
         'slug',
         'description',
@@ -47,6 +49,11 @@ class CourseModuleTrack extends Model
     public function module(): BelongsTo
     {
         return $this->belongsTo(CourseModule::class, 'course_module_id');
+    }
+
+    public function teacher(): BelongsTo
+    {
+        return $this->belongsTo(Teacher::class);
     }
 
     public function courses(): BelongsToMany
@@ -74,7 +81,49 @@ class CourseModuleTrack extends Model
 
     public function getThumbnailDisplayUrlAttribute(): string
     {
+        $teacher = $this->teacher ?: $this->teacherFromText();
+
+        if ($teacher && (filled($teacher->thumbnail_path) || filled($teacher->thumbnail_url))) {
+            return $teacher->thumbnail_display_url;
+        }
+
         return ThumbnailUrl::fromPathOrUrl($this->thumbnail_path, $this->thumbnail_url);
+    }
+
+    public function getTeacherDisplayNameAttribute(): ?string
+    {
+        $name = $this->teacher?->name ?: $this->teacherFromText()?->name ?: $this->teacher_name;
+
+        return filled($name) ? $name : null;
+    }
+
+    protected function teacherFromText(): ?Teacher
+    {
+        if (blank($this->teacher_name)) {
+            return null;
+        }
+
+        $normalizedName = $this->normalizeTeacherName($this->teacher_name);
+
+        if ($normalizedName === '') {
+            return null;
+        }
+
+        return Teacher::query()
+            ->where('is_active', true)
+            ->get()
+            ->first(fn (Teacher $teacher): bool => $this->normalizeTeacherName($teacher->name) === $normalizedName);
+    }
+
+    protected function normalizeTeacherName(string $name): string
+    {
+        return Str::of($name)
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/\b(professor|professora|prof|profa|doutor|doutora|dr|dra)\b\.?/u', '')
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
+            ->value();
     }
 
     public function getThumbnailAspectRatioAttribute(): string

@@ -155,8 +155,8 @@
                                             </div>
                                             <div class="flex flex-1 flex-col p-4">
                                                 <h4 class="text-sm font-semibold leading-5 text-white">{{ $track->name }}</h4>
-                                                @if (filled($track->teacher_name))
-                                                    <p class="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{{ $track->teacher_name }}</p>
+                                                @if (filled($track->teacher_display_name))
+                                                    <p class="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{{ $track->teacher_display_name }}</p>
                                                 @endif
 
                                                 <div class="mt-3 flex flex-wrap gap-3 text-xs font-semibold text-slate-300">

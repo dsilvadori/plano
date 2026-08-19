@@ -177,10 +177,12 @@ class CourseCatalogController extends Controller
                         ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
                         ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
             })
-            ->with(['lessons' => fn ($lessonQuery) => $lessonQuery
-                ->where('status', '!=', 'archived')
-                ->orderBy('sort_order')
-                ->orderBy('title'),
+            ->with([
+                'teacher',
+                'lessons' => fn ($lessonQuery) => $lessonQuery
+                    ->where('status', '!=', 'archived')
+                    ->orderBy('sort_order')
+                    ->orderBy('title'),
             ])
             ->orderBy('sort_order')
             ->orderBy('name'),
@@ -655,10 +657,12 @@ class CourseCatalogController extends Controller
                             ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
                             ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
                 })
-                ->with(['lessons' => fn ($lessonQuery) => $lessonQuery
-                    ->where('status', '!=', 'archived')
-                    ->orderBy('sort_order')
-                    ->orderBy('title'),
+                ->with([
+                    'teacher',
+                    'lessons' => fn ($lessonQuery) => $lessonQuery
+                        ->where('status', '!=', 'archived')
+                        ->orderBy('sort_order')
+                        ->orderBy('title'),
                 ])
                 ->orderBy('sort_order')
                 ->orderBy('name'),

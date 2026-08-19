@@ -8,6 +8,7 @@ use App\Filament\Resources\CourseModuleTracks\Pages\ListCourseModuleTracks;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
+use App\Models\Teacher;
 use App\Support\FilamentThumbnailUpload;
 use App\Support\ThumbnailUrl;
 use BackedEnum;
@@ -64,9 +65,27 @@ class CourseModuleTrackResource extends Resource
             TextInput::make('slug')
                 ->label('Slug')
                 ->required(),
+            Select::make('teacher_id')
+                ->label('Professor cadastrado')
+                ->options(fn (): array => Teacher::query()
+                    ->where('is_active', true)
+                    ->orderBy('name')
+                    ->pluck('name', 'id')
+                    ->all())
+                ->searchable()
+                ->preload()
+                ->live()
+                ->afterStateUpdated(function ($state, Set $set): void {
+                    $teacherName = filled($state) ? Teacher::query()->whereKey($state)->value('name') : null;
+
+                    if (filled($teacherName)) {
+                        $set('teacher_name', $teacherName);
+                    }
+                }),
             TextInput::make('teacher_name')
-                ->label('Professor')
-                ->maxLength(255),
+                ->label('Professor em texto')
+                ->maxLength(255)
+                ->helperText('Fallback para importações e trilhas antigas sem professor cadastrado.'),
             Textarea::make('description')
                 ->label('Descrição')
                 ->rows(3)
@@ -140,10 +159,12 @@ class CourseModuleTrackResource extends Resource
             ->columns([
                 ImageColumn::make('thumbnail_display_url')
                     ->label('Thumb')
+                    ->getStateUsing(fn (CourseModuleTrack $record): string => $record->thumbnail_display_url)
                     ->size(56)
                     ->square(),
                 TextColumn::make('name')->label('Trilha')->searchable()->sortable(),
-                TextColumn::make('teacher_name')->label('Professor')->searchable()->toggleable(),
+                TextColumn::make('teacher.name')->label('Professor')->searchable()->toggleable(),
+                TextColumn::make('teacher_name')->label('Professor em texto')->searchable()->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('module.name')->label('Módulo')->searchable()->sortable(),
                 TextColumn::make('courses_count')->label('Cursos')->counts('courses'),
                 TextColumn::make('lessons_count')->label('Aulas')->counts('lessons'),

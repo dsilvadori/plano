@@ -17,6 +17,7 @@ use App\Models\LessonProgress;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
+use App\Models\Teacher;
 use App\Models\User;
 use App\Services\PandaVideoClient;
 use App\Services\StudyPlanGenerator;
@@ -478,11 +479,17 @@ class CourseCatalogFoundationTest extends TestCase
     public function test_uploaded_thumbnail_is_served_by_application_route(): void
     {
         Storage::disk('public')->put('course-thumbnails/curso-upload.svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+        Storage::disk('public')->put('teacher-thumbnails/professor-upload.svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
 
         $student = User::factory()->create(['role' => 'student']);
 
         $this->actingAs($student)
             ->get('/media/thumbnails/course-thumbnails/curso-upload.svg')
+            ->assertOk()
+            ->assertHeader('cache-control', 'max-age=31536000, public');
+
+        $this->actingAs($student)
+            ->get('/media/thumbnails/teacher-thumbnails/professor-upload.svg')
             ->assertOk()
             ->assertHeader('cache-control', 'max-age=31536000, public');
     }
@@ -917,12 +924,17 @@ class CourseCatalogFoundationTest extends TestCase
             'name' => 'Português',
             'is_active' => true,
         ]);
+        $teacher = Teacher::factory()->create([
+            'name' => 'Professora Dorival Conte Jr.',
+            'thumbnail_path' => 'teacher-thumbnails/dorival.webp',
+        ]);
 
         $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
 
         foreach (['Classes de palavras', 'Pontuação'] as $index => $trackName) {
             CourseModuleTrack::query()->create([
                 'course_module_id' => $module->id,
+                'teacher_id' => $index === 0 ? $teacher->id : null,
                 'name' => $trackName,
                 'slug' => str($trackName)->slug()->toString(),
                 'teacher_name' => $index === 0 ? 'Dorival Conte Jr.' : null,
@@ -941,7 +953,8 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('Ver aulas')
             ->assertSee('Classes de palavras')
             ->assertSee('Pontuação')
-            ->assertSee('Dorival Conte Jr.')
+            ->assertSee('Professora Dorival Conte Jr.')
+            ->assertSee(url('/media/thumbnails/teacher-thumbnails/dorival.webp'), false)
             ->assertDontSee('Professor: Dorival Conte Jr.')
             ->assertDontSee('Professor não informado')
             ->assertDontSee('Acesse as aulas desta trilha.')
@@ -957,7 +970,8 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('course-carousel-track')
             ->assertSee('Classes de palavras')
             ->assertSee('Pontuação')
-            ->assertSee('Dorival Conte Jr.')
+            ->assertSee('Professora Dorival Conte Jr.')
+            ->assertSee(url('/media/thumbnails/teacher-thumbnails/dorival.webp'), false)
             ->assertDontSee('Professor: Dorival Conte Jr.')
             ->assertDontSee('Professor não informado')
             ->assertDontSee('Acesse as aulas desta trilha.')
@@ -1020,6 +1034,29 @@ class CourseCatalogFoundationTest extends TestCase
 
         $this->assertNotNull($lesson);
         $this->assertNull($lesson->course_id);
+    }
+
+    public function test_track_uses_registered_teacher_thumbnail_when_only_teacher_text_matches(): void
+    {
+        Teacher::factory()->create([
+            'name' => 'Professor Dorival Conte Jr.',
+            'thumbnail_path' => 'teacher-thumbnails/dorival.webp',
+        ]);
+
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => CourseModule::factory()->create()->id,
+            'name' => 'Análise sintática',
+            'slug' => 'analise-sintatica',
+            'teacher_name' => 'Prof. Dorival Conte Jr.',
+            'thumbnail_url' => null,
+            'status' => 'published',
+        ]);
+
+        $this->assertSame(
+            url('/media/thumbnails/teacher-thumbnails/dorival.webp'),
+            $track->thumbnail_display_url,
+        );
+        $this->assertSame('Professor Dorival Conte Jr.', $track->teacher_display_name);
     }
 
     public function test_deleting_course_preserves_modules_tracks_and_lessons(): void
