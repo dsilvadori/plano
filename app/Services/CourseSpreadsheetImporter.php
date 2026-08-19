@@ -339,12 +339,12 @@ class CourseSpreadsheetImporter
 
     protected function resolveTeacher(string $name): Teacher
     {
-        $normalizedName = $this->normalizeName($name);
+        $normalizedName = $this->normalizeTeacherName($name);
 
         $teacher = Teacher::query()
             ->orderBy('id')
             ->get()
-            ->first(fn (Teacher $teacher): bool => $this->normalizeName($teacher->name) === $normalizedName);
+            ->first(fn (Teacher $teacher): bool => $this->normalizeTeacherName($teacher->name) === $normalizedName);
 
         if ($teacher) {
             return $teacher;
@@ -354,6 +354,17 @@ class CourseSpreadsheetImporter
             'name' => $name,
             'is_active' => true,
         ]);
+    }
+
+    protected function normalizeTeacherName(string $name): string
+    {
+        return Str::of($name)
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/\b(professor|professora|prof|profa|doutor|doutora|dr|dra)\b\.?/u', '')
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
+            ->value();
     }
 
     protected function importLessons(Course $course, CourseModule $module, CourseModuleTrack $track, array $lessons): void

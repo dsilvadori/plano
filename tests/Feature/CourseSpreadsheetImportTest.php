@@ -311,6 +311,37 @@ class CourseSpreadsheetImportTest extends TestCase
         ]);
     }
 
+    public function test_csv_import_reuses_registered_teacher_when_normalized_name_matches(): void
+    {
+        $teacher = Teacher::factory()->create([
+            'name' => 'Professor Dorival Conte Jr.',
+            'thumbnail_path' => 'teacher-thumbnails/dorival.webp',
+        ]);
+        $path = tempnam(sys_get_temp_dir(), 'course-import-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,teacher_name,lesson_title,lesson_minutes,lesson_status',
+            'Curso CSV,Português,basic,1,Classes de palavras,Prof. Dorival Conte Jr.,Classes de palavras,30,published',
+        ]));
+
+        try {
+            app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertSame(1, Teacher::query()->count());
+        $this->assertTrue(
+            CourseModuleTrack::query()
+                ->where('name', 'Classes de palavras')
+                ->where('teacher_id', $teacher->id)
+                ->exists(),
+        );
+        $this->assertSame(
+            url('/media/thumbnails/teacher-thumbnails/dorival.webp'),
+            CourseModuleTrack::query()->where('name', 'Classes de palavras')->firstOrFail()->thumbnail_display_url,
+        );
+    }
+
     public function test_reimport_preserves_removed_spreadsheet_lessons_for_manual_review(): void
     {
         $firstPath = tempnam(sys_get_temp_dir(), 'course-import-first-').'.csv';
