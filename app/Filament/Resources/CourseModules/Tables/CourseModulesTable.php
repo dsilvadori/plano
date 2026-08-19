@@ -19,6 +19,8 @@ class CourseModulesTable
     public static function configure(Table $table): Table
     {
         return $table
+            ->defaultSort('sort_order')
+            ->reorderable('sort_order')
             ->columns([
                 TextColumn::make('courses.name')
                     ->label('Cursos')

@@ -156,6 +156,8 @@ class CourseModuleTrackResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
+            ->defaultSort('sort_order')
+            ->reorderable('sort_order')
             ->columns([
                 ImageColumn::make('thumbnail_display_url')
                     ->label('Thumb')
