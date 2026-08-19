@@ -402,8 +402,6 @@ class CourseSpreadsheetImporter
                 || filled($lesson->panda_video_id)
                 || filled($lesson->panda_embed_url)
                 || filled($lesson->panda_player_url);
-            $requestedStatus = filled($lessonData['status'] ?? null) ? (string) $lessonData['status'] : null;
-            $hasExplicitStatus = (bool) ($lessonData['status_explicit'] ?? false);
             $previousMetadata = is_array($lesson->metadata) ? $lesson->metadata : [];
 
             $lesson->fill([
@@ -419,14 +417,12 @@ class CourseSpreadsheetImporter
                 'thumbnail_url' => $lessonData['thumbnail_url'] ?? $lesson->thumbnail_url,
                 'duration_seconds' => $minutes * 60,
                 'sort_order' => $sortOrder,
-                'status' => $hasReadyMedia && ! $hasExplicitStatus
-                    ? 'published'
-                    : ($requestedStatus ? $this->normalizeLessonStatus($requestedStatus) : ($lesson->status ?: 'draft')),
+                'status' => $this->spreadsheetLessonStatus($hasReadyMedia),
                 'panda_video_id' => $pandaVideoId ?: $lesson->panda_video_id,
                 'panda_embed_url' => $lessonData['panda_embed_url'] ?? $lesson->panda_embed_url,
                 'panda_player_url' => $lessonData['panda_player_url'] ?? $lesson->panda_player_url,
                 'google_doc_url' => $lessonData['google_doc_url'] ?? $lesson->google_doc_url,
-                'source_status' => $hasReadyMedia ? 'media_ready' : ($lesson->source_status ?: 'awaiting_media'),
+                'source_status' => $this->spreadsheetLessonSourceStatus($hasReadyMedia),
                 'metadata' => array_merge($previousMetadata, [
                     'source' => 'spreadsheet',
                     'matched_existing_lesson' => $lessonExists,
@@ -456,6 +452,16 @@ class CourseSpreadsheetImporter
             $usedLessonIds[] = $lesson->id;
             $this->rememberReusableLessonCandidate($lesson->fresh());
         }
+    }
+
+    protected function spreadsheetLessonStatus(bool $hasReadyMedia): string
+    {
+        return $hasReadyMedia ? 'published' : 'draft';
+    }
+
+    protected function spreadsheetLessonSourceStatus(bool $hasReadyMedia): string
+    {
+        return $hasReadyMedia ? 'media_ready' : 'awaiting_media';
     }
 
     protected function resolveLessonModuleId(Lesson $lesson, CourseModule $module): int|string|null

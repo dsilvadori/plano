@@ -277,7 +277,10 @@ class CourseSpreadsheetImportTest extends TestCase
             'course_id' => null,
             'title' => 'Lei Orgânica',
             'duration_seconds' => 2700,
-            'status' => 'draft',
+            'panda_video_id' => 'video_3',
+            'panda_embed_url' => 'https://player.example.com/video_3',
+            'status' => 'published',
+            'source_status' => 'media_ready',
         ]);
     }
 
@@ -552,6 +555,60 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
         $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
         $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($module->id)->exists());
+    }
+
+    public function test_spreadsheet_import_keeps_lesson_unpublished_when_media_is_missing(): void
+    {
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Aula sem mídia',
+            'slug' => 'aula-sem-midia',
+            'description' => 'Aula antiga publicada sem mídia.',
+            'type' => 'video',
+            'duration_seconds' => 900,
+            'sort_order' => 1,
+            'source_status' => 'media_ready',
+            'status' => 'published',
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-missing-media-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Sem Mídia,Português,basic,1,Classes de palavras,Aula sem mídia,15',
+        ]));
+
+        try {
+            app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $existingLesson->refresh();
+
+        $this->assertSame('draft', $existingLesson->status);
+        $this->assertSame('awaiting_media', $existingLesson->source_status);
+    }
+
+    public function test_spreadsheet_import_publishes_lesson_automatically_when_media_is_present(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'course-import-ready-media-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes,lesson_status,panda_video_id,panda_embed_url',
+            'Curso Com Mídia,Português,basic,1,Classes de palavras,Aula com mídia,15,draft,panda-aula-com-midia,https://player.example.com/aula-com-midia',
+        ]));
+
+        try {
+            app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $lesson = Lesson::query()->where('title', 'Aula com mídia')->firstOrFail();
+
+        $this->assertSame('published', $lesson->status);
+        $this->assertSame('media_ready', $lesson->source_status);
     }
 
     public function test_spreadsheet_import_links_lessons_by_approximate_name_ignoring_numbering(): void

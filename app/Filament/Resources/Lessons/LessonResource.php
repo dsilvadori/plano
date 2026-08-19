@@ -110,7 +110,7 @@ class LessonResource extends Resource
                 ->label('Status da mídia')
                 ->options([
                     'structure_only' => 'Somente estrutura',
-                    'awaiting_media' => 'Aguardando mídia',
+                    'awaiting_media' => 'Mídia pendente',
                     'upload_queued' => 'Upload na fila',
                     'uploading' => 'Enviando ao Panda',
                     'panda_processing' => 'Processando no Panda',
@@ -221,7 +221,7 @@ class LessonResource extends Resource
                     ->toggleable()
                     ->formatStateUsing(fn (?string $state): string => match ($state) {
                         'structure_only' => 'Somente estrutura',
-                        'awaiting_media' => 'Aguardando mídia',
+                        'awaiting_media' => 'Mídia pendente',
                         'upload_queued' => 'Upload na fila',
                         'uploading' => 'Enviando ao Panda',
                         'panda_processing' => 'Processando no Panda',
@@ -353,7 +353,7 @@ class LessonResource extends Resource
                     ->label('Mídia')
                     ->options([
                         'structure_only' => 'Somente estrutura',
-                        'awaiting_media' => 'Aguardando mídia',
+                        'awaiting_media' => 'Mídia pendente',
                         'upload_queued' => 'Upload na fila',
                         'uploading' => 'Enviando ao Panda',
                         'panda_processing' => 'Processando no Panda',

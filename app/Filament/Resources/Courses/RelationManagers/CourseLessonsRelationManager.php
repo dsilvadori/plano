@@ -47,7 +47,7 @@ class CourseLessonsRelationManager extends RelationManager
                     ->badge()
                     ->formatStateUsing(fn (?string $state): string => match ($state) {
                         'structure_only' => 'Somente estrutura',
-                        'awaiting_media' => 'Aguardando mídia',
+                        'awaiting_media' => 'Mídia pendente',
                         'upload_queued' => 'Upload na fila',
                         'uploading' => 'Enviando ao Panda',
                         'panda_processing' => 'Processando no Panda',
@@ -79,7 +79,7 @@ class CourseLessonsRelationManager extends RelationManager
                     ->label('Mídia')
                     ->options([
                         'structure_only' => 'Somente estrutura',
-                        'awaiting_media' => 'Aguardando mídia',
+                        'awaiting_media' => 'Mídia pendente',
                         'upload_queued' => 'Upload na fila',
                         'uploading' => 'Enviando ao Panda',
                         'panda_processing' => 'Processando no Panda',
