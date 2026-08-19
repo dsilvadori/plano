@@ -11,6 +11,7 @@ use App\Models\EducationLevel;
 use App\Models\Lesson;
 use App\Models\LessonProgress;
 use App\Models\QuestionBank;
+use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\User;
 use App\Services\LessonSummaryPdfGenerator;
@@ -99,6 +100,7 @@ class CourseCatalogController extends Controller
             'coursesBySphere' => $coursesBySphere,
             'educationLevels' => $educationLevels,
             'courseProgress' => $courseProgress,
+            'activePlansByCourse' => $this->activePlansByCourse($user),
         ]);
     }
 
@@ -118,6 +120,7 @@ class CourseCatalogController extends Controller
         return view('dashboard.courses.mine', [
             'courses' => $courses,
             'courseProgress' => $this->progressForCourses($courses, $user),
+            'activePlansByCourse' => $this->activePlansByCourse($user),
         ]);
     }
 
@@ -155,6 +158,7 @@ class CourseCatalogController extends Controller
             'inProgressLessonIds' => $this->inProgressLessonIdsForCourse($course, $user),
             'continueLesson' => $hasAccess ? $this->continueLessonForCourse($course, $user) : null,
             'trackEntryLessons' => $hasAccess ? $this->trackEntryLessonsForCourse($course, $user) : collect(),
+            'activePlan' => $hasAccess ? $this->activePlanForCourse($user, $course) : null,
         ]);
     }
 
@@ -456,6 +460,22 @@ class CourseCatalogController extends Controller
                 ]];
             })
             ->all();
+    }
+
+    protected function activePlansByCourse(User $user): Collection
+    {
+        return $user->studyPlans()
+            ->where('status', 'active')
+            ->latest('id')
+            ->get()
+            ->whereNotNull('course_id')
+            ->unique('course_id')
+            ->keyBy('course_id');
+    }
+
+    protected function activePlanForCourse(User $user, Course $course): ?StudyPlan
+    {
+        return $this->activePlansByCourse($user)->get($course->id);
     }
 
     protected function progressForCourse(Course $course, User $user): array

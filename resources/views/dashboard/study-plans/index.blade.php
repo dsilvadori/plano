@@ -6,9 +6,11 @@
                 <h1 class="mt-2 text-3xl font-semibold text-white">Planos de estudo salvos.</h1>
                 <p class="mt-3 max-w-2xl text-sm text-slate-300">Acompanhe seus ciclos ativos e retome o plano certo sem poluir o menu lateral.</p>
             </div>
-            <a href="{{ route('study-plans.create') }}" class="rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
-                Criar plano
-            </a>
+            @if ($canCreatePlan)
+                <a href="{{ route('study-plans.create') }}" class="rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
+                    Criar plano
+                </a>
+            @endif
         </div>
     </x-slot>
 
@@ -30,7 +32,7 @@
                     </div>
 
                     <div class="mt-5 flex flex-wrap gap-3">
-                        <a href="{{ route('study-plans.show', $plan) }}" class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-100">Abrir plano</a>
+                        <a href="{{ route('study-plans.show', $plan) }}" class="rounded-2xl bg-amber-300 px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">Continuar plano</a>
                         <a href="{{ route('study-plans.edit', $plan) }}" class="rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">Editar</a>
                     </div>
                 </div>

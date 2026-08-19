@@ -24,7 +24,7 @@
 
                 <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
                     @foreach ($featuredCourses as $course)
-                        @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
+                        @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null, 'activePlan' => $activePlansByCourse->get($course->id)])
                     @endforeach
                 </div>
             </section>
@@ -38,7 +38,7 @@
 
             <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
                 @forelse ($latestCourses as $course)
-                    @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
+                    @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null, 'activePlan' => $activePlansByCourse->get($course->id)])
                 @empty
                     <div class="card-subtle">
                         <p class="text-sm text-slate-300">Nenhum curso publicado no momento.</p>
@@ -58,7 +58,7 @@
 
                         <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
                             @foreach ($sphere->courses as $course)
-                                @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null])
+                                @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null, 'activePlan' => $activePlansByCourse->get($course->id)])
                             @endforeach
                         </div>
                     </div>

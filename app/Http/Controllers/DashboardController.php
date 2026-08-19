@@ -26,10 +26,17 @@ class DashboardController extends Controller
             ->get();
 
         $activePlan = $activePlans->first();
+        $activePlansByCourse = $activePlans
+            ->whereNotNull('course_id')
+            ->unique('course_id')
+            ->keyBy('course_id');
 
         $today = now()->toDateString();
         $nextTasks = $activePlan?->items()->whereDate('scheduled_date', '>=', $today)->whereNull('completed_at')->limit(5)->get() ?? collect();
         $availableCourseIds = $user->availableCoursesQuery()->pluck('courses.id');
+        $canCreatePlan = $availableCourseIds
+            ->diff($activePlansByCourse->keys())
+            ->isNotEmpty();
         $featuredOnlineCourses = Course::query()
             ->where('is_active', true)
             ->where('status', 'published')
@@ -51,6 +58,8 @@ class DashboardController extends Controller
             'courseProgress' => $courseProgress,
             'activePlan' => $activePlan,
             'activePlans' => $activePlans,
+            'activePlansByCourse' => $activePlansByCourse,
+            'canCreatePlan' => $canCreatePlan,
             'nextTasks' => $nextTasks,
             'weekStart' => now()->startOfWeek(CarbonInterface::MONDAY),
             'weekEnd' => now()->endOfWeek(CarbonInterface::SUNDAY),

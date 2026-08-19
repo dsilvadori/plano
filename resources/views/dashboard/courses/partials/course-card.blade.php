@@ -1,6 +1,7 @@
 @php
     $hasAccess = $hasAccess ?? false;
     $progress = $progress ?? null;
+    $activePlan = $activePlan ?? null;
     $progressPercentage = (int) ($progress['percentage'] ?? 0);
     $thumbnail = $course->thumbnail_display_url;
 @endphp
@@ -49,9 +50,20 @@
 
         <div class="mt-auto pt-5">
             @if ($hasAccess)
-                <a href="{{ route('courses.show', $course->slug) }}" class="inline-flex w-full justify-center rounded-2xl bg-amber-300 px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
-                    {{ $progressPercentage > 0 ? 'Continuar curso' : 'Acessar curso' }}
-                </a>
+                <div class="grid gap-2">
+                    @if ($activePlan)
+                        <a href="{{ route('study-plans.show', $activePlan) }}" class="inline-flex w-full justify-center rounded-2xl bg-amber-300 px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
+                            Acessar plano
+                        </a>
+                        <a href="{{ route('courses.show', $course->slug) }}" class="inline-flex w-full justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-400/20">
+                            Ver curso
+                        </a>
+                    @else
+                        <a href="{{ route('courses.show', $course->slug) }}" class="inline-flex w-full justify-center rounded-2xl bg-amber-300 px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
+                            {{ $progressPercentage > 0 ? 'Continuar curso' : 'Acessar curso' }}
+                        </a>
+                    @endif
+                </div>
             @elseif ($course->checkout_url)
                 <a href="{{ $course->checkout_url }}" target="_blank" rel="noopener noreferrer" class="inline-flex w-full justify-center rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-200">
                     Comprar acesso

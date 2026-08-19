@@ -20,10 +20,19 @@
                     <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100">{{ $course->modules_count }} módulo(s)</span>
                     <span class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100">{{ $course->lessons_count }} aula(s)</span>
                 </div>
-                @if ($hasAccess && $continueLesson)
-                    <a href="{{ route('courses.lessons.show', [$course->slug, $continueLesson]) }}" class="mt-6 inline-flex rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
-                        {{ $progressPercentage > 0 ? 'Continuar aula' : 'Começar curso' }}
-                    </a>
+                @if ($hasAccess)
+                    <div class="mt-6 flex flex-wrap gap-3">
+                        @if ($activePlan)
+                            <a href="{{ route('study-plans.show', $activePlan) }}" class="inline-flex rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
+                                Acessar plano
+                            </a>
+                        @endif
+                        @if ($continueLesson)
+                            <a href="{{ route('courses.lessons.show', [$course->slug, $continueLesson]) }}" class="inline-flex rounded-2xl border border-sky-400/20 bg-sky-400/10 px-5 py-3 text-sm font-semibold text-sky-100">
+                                {{ $progressPercentage > 0 ? 'Continuar aula' : 'Começar curso' }}
+                            </a>
+                        @endif
+                    </div>
                 @endif
             </div>
             <div class="course-thumbnail-frame overflow-hidden rounded-3xl border border-white/10 p-3 shadow-2xl shadow-slate-950/30">

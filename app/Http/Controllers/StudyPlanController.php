@@ -25,11 +25,22 @@ class StudyPlanController extends Controller
 
         abort_unless($user?->canAccessStudentArea(), 403);
 
+        $plans = $user->studyPlans()
+            ->with(['course', 'items'])
+            ->latest()
+            ->get();
+        $plannedCourseIds = $plans
+            ->where('status', 'active')
+            ->pluck('course_id')
+            ->filter()
+            ->unique();
+        $canCreatePlan = $user->availableCoursesQuery()
+            ->whereNotIn('courses.id', $plannedCourseIds)
+            ->exists();
+
         return view('dashboard.study-plans.index', [
-            'plans' => $user->studyPlans()
-                ->with(['course', 'items'])
-                ->latest()
-                ->get(),
+            'plans' => $plans,
+            'canCreatePlan' => $canCreatePlan,
         ]);
     }
 
