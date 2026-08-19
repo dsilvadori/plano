@@ -449,7 +449,12 @@ class StudyPlanViewer extends Component
                 $lessonsByItem[$item->id] = $linkedLessons;
             });
 
-        return $lessonsByItem;
+        return collect($lessonsByItem)
+            ->map(fn (array $lessons): array => collect($lessons)
+                ->map(fn (array $lesson): array => $this->withResolvedLessonUrl($lesson))
+                ->values()
+                ->all())
+            ->all();
     }
 
     protected function buildItemQuestionLinks(Collection $questionItems): array
@@ -621,6 +626,10 @@ class StudyPlanViewer extends Component
                 $lessonStates[$moduleId] = $selection['state'];
                 $itemLessons = $selection['lessons'];
 
+                if ($itemLessons === []) {
+                    $itemLessons = $this->lessonSelectionsFromDescription($module, $item);
+                }
+
                 if ($itemLessons !== []) {
                     $lessonsByItem[$item->id] = [
                         'lesson_index' => $firstLessonIndex,
@@ -671,6 +680,7 @@ class StudyPlanViewer extends Component
                 'name' => $lessonName,
                 'minutes' => $displayMinutes,
                 'minutes_label' => $this->formatLessonMinutes($displayMinutes),
+                'lesson_id' => $lesson['lesson_id'] ?? null,
             ];
 
             $minutes += $displayMinutes;
@@ -692,6 +702,55 @@ class StudyPlanViewer extends Component
             'lessons' => $itemLessons,
             'state' => $state,
         ];
+    }
+
+    protected function lessonSelectionsFromDescription(CourseModule $module, StudyPlanItem $item): array
+    {
+        $lessonNames = $this->plannedLessonNamesFromDescription((string) $item->description);
+
+        if ($lessonNames === []) {
+            return [];
+        }
+
+        $availableLessons = collect($this->planningLessonsForModule($module));
+        $fallbackMinutes = count($lessonNames) > 0
+            ? max(1, (int) floor(((int) $item->estimated_minutes) / count($lessonNames)))
+            : max(1, (int) $item->estimated_minutes);
+
+        return collect($lessonNames)
+            ->map(function (string $lessonName) use ($availableLessons, $fallbackMinutes): array {
+                $matchedLesson = $availableLessons->first(function (array $lesson) use ($lessonName): bool {
+                    return $this->normalizeLessonName((string) ($lesson['name'] ?? '')) === $this->normalizeLessonName($lessonName);
+                });
+                $minutes = max(1, (int) ($matchedLesson['minutes'] ?? $fallbackMinutes));
+
+                return [
+                    'name' => $lessonName,
+                    'minutes' => $minutes,
+                    'minutes_label' => $this->formatLessonMinutes($minutes),
+                    'lesson_id' => $matchedLesson['lesson_id'] ?? null,
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    protected function withResolvedLessonUrl(array $lesson): array
+    {
+        if (! empty($lesson['url'])) {
+            return $lesson;
+        }
+
+        $lessonId = (int) ($lesson['lesson_id'] ?? 0);
+
+        if ($lessonId <= 0 || ! $this->studyPlan->course) {
+            return $lesson;
+        }
+
+        return array_merge($lesson, [
+            'url' => route('courses.lessons.show', [$this->studyPlan->course->slug, $lessonId]),
+            'is_online' => true,
+        ]);
     }
 
     protected function orderedPlanItems(): \Illuminate\Support\Collection
@@ -913,6 +972,7 @@ class StudyPlanViewer extends Component
                 return $lessons
                     ->map(function ($lesson, int $index) use ($track): array {
                         return [
+                            'lesson_id' => $lesson->id,
                             'name' => trim((string) $lesson->title) ?: ($track->name.' - Aula '.($index + 1)),
                             'minutes' => max(1, (int) $lesson->duration_minutes),
                             'track_name' => (string) $track->name,
