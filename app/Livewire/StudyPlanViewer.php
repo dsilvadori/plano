@@ -419,7 +419,7 @@ class StudyPlanViewer extends Component
                         'name' => $lesson->title,
                         'minutes' => $lesson->duration_minutes,
                         'minutes_label' => $this->formatLessonMinutes($lesson->duration_minutes),
-                        'url' => route('courses.lessons.show', [$this->studyPlan->course->slug, $lesson]),
+                        'url' => route('study-plans.items.lessons.show', [$this->studyPlan, $item, $lesson]),
                         'is_online' => true,
                     ])
                     ->values()

@@ -1216,7 +1216,7 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('study-plans.show', $plan))
             ->assertOk()
             ->assertSee('Classes de palavras')
-            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lesson]), false);
     }
 
     public function test_completing_linked_lesson_marks_plan_item_when_all_lessons_are_done(): void
@@ -1345,13 +1345,104 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('study-plans.show', $plan))
             ->assertOk()
-            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lesson]), false);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.items.lessons.show', [$plan, $item, $lesson]))
+            ->assertRedirect(route('courses.lessons.show', [$course->slug, $lesson]));
+
+        $this->actingAs($student)
+            ->followingRedirects()
+            ->get(route('study-plans.items.lessons.show', [$plan, $item, $lesson]))
+            ->assertOk()
+            ->assertSee('Classe de palavras sem trilha')
+            ->assertSee('Trilha do plano');
+    }
+
+    public function test_active_plan_lesson_link_opens_even_when_lesson_is_archived_in_catalog(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com aula antiga no plano',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::withoutEvents(fn () => Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Aula antiga ainda no plano',
+            'duration_seconds' => 900,
+            'status' => 'archived',
+        ]));
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-06-29',
+            'title' => 'Bloco 1: Português',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $item->lessons()->attach($lesson, ['sort_order' => 1]);
 
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
-            ->assertSee('Classe de palavras sem trilha')
+            ->assertSee('Aula antiga ainda no plano')
             ->assertSee('Trilha do plano');
+    }
+
+    public function test_plan_lesson_route_uses_plan_course_even_when_lesson_has_another_course(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $planCourse = Course::factory()->create([
+            'name' => 'Curso do plano',
+            'slug' => 'curso-do-plano',
+            'status' => 'published',
+        ]);
+        $otherCourse = Course::factory()->create([
+            'name' => 'Curso original da aula',
+            'slug' => 'curso-original-da-aula',
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $otherCourse->id,
+            'title' => 'Aula reaproveitada',
+            'status' => 'published',
+        ]);
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $planCourse->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'scheduled_date' => '2026-06-29',
+            'title' => 'Bloco 1: Aula reaproveitada',
+        ]);
+
+        $student->courses()->attach($planCourse, ['source' => 'manual']);
+        $item->lessons()->attach($lesson, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lesson]), false)
+            ->assertDontSee(route('courses.lessons.show', [$otherCourse->slug, $lesson]), false);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.items.lessons.show', [$plan, $item, $lesson]))
+            ->assertRedirect(route('courses.lessons.show', [$planCourse->slug, $lesson]));
     }
 
     public function test_lesson_page_shows_track_sidebar_without_plan_and_hides_spreadsheet_import_description(): void

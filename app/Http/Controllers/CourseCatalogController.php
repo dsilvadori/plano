@@ -26,6 +26,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -231,9 +232,35 @@ class CourseCatalogController extends Controller
         $user = request()->user();
 
         abort_unless($user->canAccessStudentArea(), 403);
-        abort_unless($course->is_active && $course->status === 'published', 404);
-        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
-        abort_unless($this->userCanAccessCourse($user, $course), 403);
+
+        $hasActivePlanLessonAccess = $this->userHasActivePlanLessonAccess($user, $course, $lesson);
+        $courseIsPublished = $course->is_active && $course->status === 'published';
+
+        abort_unless($courseIsPublished || $hasActivePlanLessonAccess, 404);
+
+        $lessonIsViewable = ($lesson->status !== 'archived' || $hasActivePlanLessonAccess)
+            && ($this->lessonBelongsToCourse($lesson, $course) || $hasActivePlanLessonAccess);
+
+        if (! $lessonIsViewable) {
+            Log::warning('course_lesson_not_found_for_student_area', [
+                'user_id' => $user->id,
+                'course_id' => $course->id,
+                'course_slug' => $course->slug,
+                'course_status' => $course->status,
+                'course_is_active' => $course->is_active,
+                'lesson_id' => $lesson->id,
+                'lesson_status' => $lesson->status,
+                'lesson_course_id' => $lesson->course_id,
+                'lesson_module_id' => $lesson->course_module_id,
+                'lesson_track_id' => $lesson->course_module_track_id,
+                'has_active_plan_lesson_access' => $hasActivePlanLessonAccess,
+                'belongs_to_course' => $this->lessonBelongsToCourse($lesson, $course),
+            ]);
+
+            abort(404);
+        }
+
+        abort_unless($this->userCanAccessCourse($user, $course) || $hasActivePlanLessonAccess, 403);
 
         $lesson->load(['course', 'module']);
 
@@ -618,6 +645,16 @@ class CourseCatalogController extends Controller
                     ->orWhereHas('module.courses', fn (Builder $query) => $query->whereKey($course->id))
                     ->orWhereHas('module', fn (Builder $query) => $query->where('course_id', $course->id));
             })
+            ->exists();
+    }
+
+    protected function userHasActivePlanLessonAccess(User $user, Course $course, Lesson $lesson): bool
+    {
+        return $lesson->studyPlanItems()
+            ->whereHas('studyPlan', fn (Builder $query) => $query
+                ->where('user_id', $user->id)
+                ->where('course_id', $course->id)
+                ->where('status', 'active'))
             ->exists();
     }
 

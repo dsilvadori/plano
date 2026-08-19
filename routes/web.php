@@ -64,6 +64,10 @@ Route::middleware('auth')->group(function () {
         ->can('view', 'studyPlan')
         ->missing(fn () => auth()->user()?->isAdmin() ? redirect('/admin') : redirect()->route('dashboard'))
         ->name('study-plans.items.toggle');
+    Route::get('/dashboard/plano/{studyPlan}/items/{item}/aulas/{lesson}', [StudyPlanController::class, 'lesson'])
+        ->can('view', 'studyPlan')
+        ->missing(fn () => auth()->user()?->isAdmin() ? redirect('/admin') : redirect()->route('dashboard'))
+        ->name('study-plans.items.lessons.show');
     Route::delete('/dashboard/plano/{studyPlan}', [StudyPlanController::class, 'destroy'])
         ->can('delete', 'studyPlan')
         ->missing(fn () => auth()->user()?->isAdmin() ? redirect('/admin') : redirect()->route('dashboard'))

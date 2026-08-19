@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\Lesson;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Services\StudyPlanGenerator;
@@ -146,6 +147,17 @@ class StudyPlanController extends Controller
         $item->toggleCompleted();
 
         return back();
+    }
+
+    public function lesson(StudyPlan $studyPlan, StudyPlanItem $item, Lesson $lesson): RedirectResponse
+    {
+        $this->authorize('view', $studyPlan);
+        abort_unless($item->study_plan_id === $studyPlan->id, 404);
+        abort_unless($item->lessons()->whereKey($lesson->id)->exists(), 404);
+
+        abort_unless($studyPlan->course, 404);
+
+        return redirect()->route('courses.lessons.show', [$studyPlan->course->slug, $lesson]);
     }
 
     public function destroy(StudyPlan $studyPlan): RedirectResponse
