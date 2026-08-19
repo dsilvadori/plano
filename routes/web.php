@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Admin\UserImpersonationController;
 use App\Http\Controllers\CourseCatalogController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ProfileController;
@@ -22,6 +23,11 @@ Route::get('/', function () {
 Route::post('/webhooks/tutory', TutoryWebhookController::class)->name('webhooks.tutory');
 
 Route::middleware('auth')->group(function () {
+    Route::post('/admin/users/{user}/impersonate', [UserImpersonationController::class, 'start'])
+        ->name('admin.users.impersonate');
+    Route::post('/admin/impersonation/stop', [UserImpersonationController::class, 'stop'])
+        ->name('admin.impersonation.stop');
+
     Route::get('/media/thumbnails/{path}', ThumbnailController::class)
         ->where('path', '.*')
         ->name('media.thumbnails.show');

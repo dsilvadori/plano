@@ -7,6 +7,7 @@ use App\Models\Course;
 use App\Models\User;
 use App\Models\WebhookEvent;
 use App\Notifications\SetPasswordNotification;
+use App\Services\UserImpersonation;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
@@ -175,6 +176,49 @@ class AdminAccessTest extends TestCase
             ->assertSee('Administrador')
             ->assertSee('Aluno')
             ->assertSee('Assinante');
+    }
+
+    public function test_admin_can_impersonate_a_user_and_return_to_admin_account(): void
+    {
+        $admin = User::factory()->admin()->create([
+            'name' => 'Admin Diagnóstico',
+        ]);
+
+        $student = User::factory()->create([
+            'name' => 'Aluno com Falha',
+            'role' => 'student',
+        ]);
+
+        $this->actingAs($admin)
+            ->post(route('admin.users.impersonate', $student))
+            ->assertRedirect(route('dashboard'))
+            ->assertSessionHas(UserImpersonation::SESSION_KEY, $admin->id)
+            ->assertSessionHas(UserImpersonation::SESSION_NAME_KEY, 'Admin Diagnóstico');
+
+        $this->assertAuthenticatedAs($student);
+
+        $this->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee('Aluno com Falha')
+            ->assertSee('Visualizando como aluno')
+            ->assertSee('Voltar ao admin');
+
+        $this->post(route('admin.impersonation.stop'))
+            ->assertRedirect('/admin/users')
+            ->assertSessionMissing(UserImpersonation::SESSION_KEY)
+            ->assertSessionMissing(UserImpersonation::SESSION_NAME_KEY);
+
+        $this->assertAuthenticatedAs($admin);
+    }
+
+    public function test_student_cannot_impersonate_another_user(): void
+    {
+        $student = User::factory()->create();
+        $otherStudent = User::factory()->create();
+
+        $this->actingAs($student)
+            ->post(route('admin.users.impersonate', $otherStudent))
+            ->assertForbidden();
     }
 
     public function test_admin_webhooks_page_is_read_only(): void
