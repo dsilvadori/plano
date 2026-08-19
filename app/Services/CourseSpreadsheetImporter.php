@@ -456,7 +456,7 @@ class CourseSpreadsheetImporter
 
     protected function spreadsheetLessonStatus(bool $hasReadyMedia): string
     {
-        return $hasReadyMedia ? 'published' : 'draft';
+        return 'published';
     }
 
     protected function spreadsheetLessonSourceStatus(bool $hasReadyMedia): string

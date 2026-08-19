@@ -589,7 +589,7 @@ class StudyPlanViewer extends Component
 
     protected function buildItemLessonSelections(): array
     {
-        $lessonIndexes = [];
+        $lessonStates = [];
         $lessonsByItem = [];
         $modulesById = CourseModule::query()
             ->whereIn('id', $this->studyPlan->items->pluck('course_module_id')->filter()->unique())
@@ -604,7 +604,7 @@ class StudyPlanViewer extends Component
                 ['sort_order', 'asc'],
                 ['id', 'asc'],
             ])
-            ->each(function (StudyPlanItem $item) use (&$lessonIndexes, &$lessonsByItem, $modulesById) {
+            ->each(function (StudyPlanItem $item) use (&$lessonStates, &$lessonsByItem, $modulesById) {
                 $module = $modulesById->get($item->course_module_id);
 
                 if (! in_array($item->type, ['basic', 'specific', 'complementary'], true) || ! $module) {
@@ -612,75 +612,14 @@ class StudyPlanViewer extends Component
                 }
 
                 $moduleId = $module->id;
-                $lessons = $this->planningLessonsForModule($module);
-                $plannedLessonNames = $this->plannedLessonNamesFromDescription((string) $item->description);
-
-                if ($plannedLessonNames !== []) {
-                    $itemLessons = collect($plannedLessonNames)
-                        ->map(function (string $lessonName) use ($lessons, $module): array {
-                            $matchedLesson = collect($lessons)->first(function (array $lesson) use ($lessonName): bool {
-                                return $this->normalizeLessonName((string) ($lesson['name'] ?? '')) === $this->normalizeLessonName($lessonName);
-                            });
-
-                            $minutes = (int) ($matchedLesson['minutes'] ?? 0);
-
-                            return [
-                                'name' => $lessonName,
-                                'minutes' => $minutes,
-                                'minutes_label' => $minutes > 0 ? $this->formatLessonMinutes($minutes) : '',
-                            ];
-                        })
-                        ->values()
-                        ->all();
-
-                    $firstLessonIndex = max(0, $lessonIndexes[$moduleId] ?? 0);
-                    $lessonIndexes[$moduleId] = min(count($lessons), $firstLessonIndex + count($itemLessons));
-
-                    $lessonsByItem[$item->id] = [
-                        'lesson_index' => $firstLessonIndex,
-                        'lessons' => $itemLessons,
-                    ];
-
-                    return;
-                }
-
-                $index = $lessonIndexes[$moduleId] ?? 0;
-                $firstLessonIndex = $index;
-                $minutes = 0;
-                $itemLessons = [];
-                $currentTrackName = null;
-
-                while ($index < count($lessons)) {
-                    $lessonMinutes = (int) ($lessons[$index]['minutes'] ?? 0);
-                    $lessonTrackName = trim((string) ($lessons[$index]['track_name'] ?? ''));
-
-                    if ($lessonMinutes <= 0) {
-                        $index++;
-                        continue;
-                    }
-
-                    if ($minutes > 0 && $currentTrackName !== null && $lessonTrackName !== '' && $lessonTrackName !== $currentTrackName) {
-                        break;
-                    }
-
-                    if ($currentTrackName === null && $lessonTrackName !== '') {
-                        $currentTrackName = $lessonTrackName;
-                    }
-
-                    if (($minutes + $lessonMinutes) > $item->estimated_minutes) {
-                        break;
-                    }
-
-                    $itemLessons[] = [
-                        'name' => (string) ($lessons[$index]['name'] ?? $module->name),
-                        'minutes' => $lessonMinutes,
-                        'minutes_label' => $this->formatLessonMinutes($lessonMinutes),
-                    ];
-                    $minutes += $lessonMinutes;
-                    $index++;
-                }
-
-                $lessonIndexes[$moduleId] = $index;
+                $lessonStates[$moduleId] ??= [
+                    'index' => 0,
+                    'lessons' => $this->planningLessonsForModule($module),
+                ];
+                $firstLessonIndex = (int) ($lessonStates[$moduleId]['index'] ?? 0);
+                $selection = $this->buildLessonSelectionForItem($module, (int) $item->estimated_minutes, $lessonStates[$moduleId]);
+                $lessonStates[$moduleId] = $selection['state'];
+                $itemLessons = $selection['lessons'];
 
                 if ($itemLessons !== []) {
                     $lessonsByItem[$item->id] = [
@@ -691,6 +630,68 @@ class StudyPlanViewer extends Component
             });
 
         return $lessonsByItem;
+    }
+
+    protected function buildLessonSelectionForItem(CourseModule $module, int $availableMinutes, array $state): array
+    {
+        $lessons = $state['lessons'] ?? [];
+        $index = (int) ($state['index'] ?? 0);
+        $minutes = 0;
+        $itemLessons = [];
+        $currentTrackName = null;
+
+        while ($index < count($lessons)) {
+            $lesson = $lessons[$index];
+            $lessonMinutes = (int) ($lesson['minutes'] ?? 0);
+            $lessonTrackName = trim((string) ($lesson['track_name'] ?? ''));
+
+            if ($lessonMinutes <= 0) {
+                $index++;
+                continue;
+            }
+
+            if ($minutes > 0 && $currentTrackName !== null && $lessonTrackName !== '' && $lessonTrackName !== $currentTrackName) {
+                break;
+            }
+
+            if ($currentTrackName === null && $lessonTrackName !== '') {
+                $currentTrackName = $lessonTrackName;
+            }
+
+            $remainingBlockMinutes = max(0, $availableMinutes - $minutes);
+
+            if ($remainingBlockMinutes <= 0) {
+                break;
+            }
+
+            $displayMinutes = min($lessonMinutes, $remainingBlockMinutes);
+            $lessonName = (string) ($lesson['name'] ?? $module->name);
+
+            $itemLessons[] = [
+                'name' => $lessonName,
+                'minutes' => $displayMinutes,
+                'minutes_label' => $this->formatLessonMinutes($displayMinutes),
+            ];
+
+            $minutes += $displayMinutes;
+
+            if ($displayMinutes < $lessonMinutes) {
+                $lessons[$index]['minutes'] = $lessonMinutes - $displayMinutes;
+                $lessons[$index]['name'] = 'Continuação: '.preg_replace('/^Continuação:\s*/u', '', $lessonName);
+                $state['lessons'] = $lessons;
+
+                break;
+            }
+
+            $index++;
+        }
+
+        $state['index'] = $index;
+
+        return [
+            'lessons' => $itemLessons,
+            'state' => $state,
+        ];
     }
 
     protected function orderedPlanItems(): \Illuminate\Support\Collection

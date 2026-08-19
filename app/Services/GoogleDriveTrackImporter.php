@@ -25,7 +25,7 @@ class GoogleDriveTrackImporter
         protected ?LessonCourseLinker $lessonCourseLinker = null,
     ) {}
 
-    public function importFolderSubfoldersAsTracks(?Course $course, CourseModule $module, string $folderUrlOrId, string $lessonStatus = 'draft', bool $createPandaFolders = true, bool $uploadPandaVideos = true, ?GoogleDriveImportRun $run = null): array
+    public function importFolderSubfoldersAsTracks(?Course $course, CourseModule $module, string $folderUrlOrId, string $lessonStatus = 'published', bool $createPandaFolders = true, bool $uploadPandaVideos = true, ?GoogleDriveImportRun $run = null): array
     {
         $this->importWarnings = [];
 
@@ -275,7 +275,7 @@ class GoogleDriveTrackImporter
         ];
     }
 
-    public function importFolderFilesAsLessons(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $folderUrlOrId, string $lessonStatus = 'draft', ?string $pandaFolderName = null, bool $createPandaFolder = true, bool $uploadPandaVideos = true, ?GoogleDriveImportRun $run = null): array
+    public function importFolderFilesAsLessons(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $folderUrlOrId, string $lessonStatus = 'published', ?string $pandaFolderName = null, bool $createPandaFolder = true, bool $uploadPandaVideos = true, ?GoogleDriveImportRun $run = null): array
     {
         $this->importWarnings = [];
 

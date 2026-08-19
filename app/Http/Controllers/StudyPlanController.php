@@ -141,9 +141,10 @@ class StudyPlanController extends Controller
             ->with('status', 'Reajuste concluído. Preservamos o que você já concluiu e reorganizamos automaticamente só o restante do plano a partir de hoje.');
     }
 
-    public function show(StudyPlan $studyPlan): View
+    public function show(StudyPlan $studyPlan, StudyPlanGenerator $generator): View
     {
         $this->authorize('view', $studyPlan);
+        $generator->syncPublishedLessonsForPlan($studyPlan);
 
         return view('dashboard.study-plans.show', [
             'studyPlan' => $studyPlan->load(['items.courseModule', 'items.lessons', 'course', 'studyTrack']),

@@ -25,7 +25,7 @@ class ImportGoogleDriveLessons implements ShouldQueue
         public ?int $moduleId,
         public ?int $trackId,
         public string $folderUrl,
-        public string $lessonStatus = 'draft',
+        public string $lessonStatus = 'published',
         public ?string $pandaFolderName = null,
         public bool $createPandaFolder = true,
         public bool $uploadPandaVideos = true,

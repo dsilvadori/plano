@@ -539,7 +539,7 @@ class StudyPlanGenerator
                         return;
                     }
 
-                    $this->attachOnlineLessonsToItem($item, $module, $lessonNames);
+                    $this->attachOnlineLessonsToItem($item, $module, $lessonNames, $this->trackNamesForPlanItem($module, $item));
                 });
 
             return $studyPlan->fresh(['items.courseModule', 'items.lessons', 'course', 'studyTrack', 'user']);
@@ -1277,7 +1277,7 @@ class StudyPlanGenerator
             'sort_order' => $sortOrder++,
         ]);
 
-        $this->attachOnlineLessonsToItem($item, $module, $lessonNames);
+        $this->attachOnlineLessonsToItem($item, $module, $lessonNames, $lessonBlock['track_names'] ?? []);
 
         $remainingByModule[$module->id] -= $estimatedMinutes;
         $lessonStates[$module->id] = $lessonBlock['state'];
@@ -1327,7 +1327,7 @@ class StudyPlanGenerator
         ]);
     }
 
-    protected function attachOnlineLessonsToItem(StudyPlanItem $item, CourseModule $module, array $lessonNames): void
+    protected function attachOnlineLessonsToItem(StudyPlanItem $item, CourseModule $module, array $lessonNames, array $trackNames = []): void
     {
         $normalizedLessonNames = collect($lessonNames)
             ->map(fn (string $lessonName) => $this->normalizeLessonName($lessonName))
@@ -1338,12 +1338,23 @@ class StudyPlanGenerator
             return;
         }
 
-        $onlineLessons = ($module->relationLoaded('onlineLessons')
-            ? $module->onlineLessons
-            : $module->onlineLessons()->get())
-            ->merge($module->relationLoaded('tracks')
-                ? $module->tracks->flatMap(fn ($track) => $track->relationLoaded('lessons') ? $track->lessons : $track->lessons()->get())
-                : collect())
+        $normalizedTrackNames = collect($trackNames)
+            ->map(fn ($trackName): string => $this->normalizeLessonName((string) $trackName))
+            ->filter()
+            ->values();
+        $trackLessons = $module->relationLoaded('tracks')
+            ? $module->tracks
+                ->when($normalizedTrackNames->isNotEmpty(), fn (Collection $tracks) => $tracks->filter(
+                    fn ($track): bool => $normalizedTrackNames->contains($this->normalizeLessonName((string) $track->name))
+                ))
+                ->flatMap(fn ($track) => $track->relationLoaded('lessons') ? $track->lessons : $track->lessons()->get())
+            : collect();
+
+        $onlineLessons = ($normalizedTrackNames->isNotEmpty()
+            ? $trackLessons
+            : ($module->relationLoaded('onlineLessons')
+                ? $module->onlineLessons
+                : $module->onlineLessons()->get())->merge($trackLessons))
             ->unique('id')
             ->filter(fn (Lesson $lesson): bool => $lesson->status === 'published')
             ->values();
@@ -1423,6 +1434,26 @@ class StudyPlanGenerator
         $lessonIndexes[$moduleId] = $index;
 
         return array_values(array_filter($lessonNames));
+    }
+
+    protected function trackNamesForPlanItem(CourseModule $module, StudyPlanItem $item): array
+    {
+        if (! $module->relationLoaded('tracks') || $module->tracks->isEmpty()) {
+            return [];
+        }
+
+        $titleSubject = trim((string) Str::of((string) $item->title)->afterLast(':'));
+
+        if ($titleSubject === '' || $titleSubject === $item->title) {
+            return [];
+        }
+
+        $normalizedSubject = $this->normalizeLessonName($titleSubject);
+        $trackName = $module->tracks
+            ->first(fn ($track): bool => $this->normalizeLessonName((string) $track->name) === $normalizedSubject)
+            ?->name;
+
+        return $trackName ? [(string) $trackName] : [];
     }
 
     protected function publishReadyLessonsForCourse(Course $course): void

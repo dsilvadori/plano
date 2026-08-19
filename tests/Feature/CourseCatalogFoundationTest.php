@@ -873,7 +873,7 @@ class CourseCatalogFoundationTest extends TestCase
             'course_module_id' => null,
             'course_module_track_id' => null,
             'title' => '01 - Teorias da Administração - Teoria Científica',
-            'status' => 'draft',
+            'status' => 'published',
             'source_status' => 'awaiting_media',
             'panda_video_id' => null,
             'panda_embed_url' => null,

@@ -81,7 +81,7 @@ class ListLessons extends ListRecords
                             $module,
                             $track,
                             (string) $data['panda_folder_id'],
-                            (string) ($data['lesson_status'] ?? 'draft'),
+                            (string) ($data['lesson_status'] ?? 'published'),
                         );
 
                         Notification::make()
@@ -138,7 +138,7 @@ class ListLessons extends ListRecords
                             'draft' => 'Rascunho',
                             'published' => 'Publicado',
                         ])
-                        ->default('draft')
+                        ->default('published')
                         ->required(),
                     Toggle::make('create_panda_folder')
                         ->label('Criar ou reutilizar pasta no Panda')
@@ -170,7 +170,7 @@ class ListLessons extends ListRecords
                             $moduleId,
                             $trackId,
                             (string) $data['folder_url'],
-                            (string) ($data['lesson_status'] ?? 'draft'),
+                            (string) ($data['lesson_status'] ?? 'published'),
                             filled($data['panda_folder_name'] ?? null) ? (string) $data['panda_folder_name'] : null,
                             (bool) ($data['create_panda_folder'] ?? true),
                             (bool) ($data['upload_panda_videos'] ?? true),

@@ -64,7 +64,7 @@ class EditCourseModule extends EditRecord
                         $run = $importer->importIntoModule(
                             $this->record,
                             (string) $data['panda_folder_id'],
-                            (string) ($data['lesson_status'] ?? 'draft'),
+                            (string) ($data['lesson_status'] ?? 'published'),
                             (string) ($data['module_type'] ?? $this->record->type),
                         );
                         app(ActiveStudyPlanRefresher::class)->refreshCoursesForModule($this->record);

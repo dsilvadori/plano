@@ -109,7 +109,7 @@ class StudentDashboardTest extends TestCase
             'course_id' => $course->id,
             'status' => 'active',
         ]);
-        $plan->items()->create([
+        $item = $plan->items()->create([
             'course_module_id' => $module->id,
             'scheduled_date' => now()->toDateString(),
             'week_number' => 1,
@@ -125,8 +125,12 @@ class StudentDashboardTest extends TestCase
             ->get(route('study-plans.show', $plan))
             ->assertOk()
             ->assertSee('Conceitos de Arquivologia')
+            ->assertSee('17 min')
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $archiveLesson]), false)
             ->assertDontSee('01 - Licitação')
             ->assertDontSee('Aula 01 - Conceitos de Recursos Materiais');
+
+        $this->assertTrue($item->fresh()->lessons()->whereKey($archiveLesson->id)->exists());
     }
 
     public function test_study_plan_creation_validation_messages_are_translated(): void

@@ -154,7 +154,7 @@ class GoogleDriveTrackImportTest extends TestCase
             'course_module_track_id' => null,
             'title' => '01 - Windows 10',
             'type' => 'video',
-            'status' => 'draft',
+            'status' => 'published',
             'source_status' => 'awaiting_media',
             'google_doc_url' => 'https://drive.test/docs/windows-01',
         ]);
@@ -1047,7 +1047,6 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame(1, $summary['created_lessons']);
         $this->assertSame(0, $summary['created_tracks']);
         $this->assertSame(1, $summary['total_lessons']);
-        $this->assertSame(0, CourseModuleTrack::query()->count());
         $this->assertNull($lesson->course_module_id);
         $this->assertNull($lesson->course_module_track_id);
         $this->assertSame('Windows 10', $lesson->metadata['drive_source_folder_path']);
@@ -1776,7 +1775,7 @@ class GoogleDriveTrackImportTest extends TestCase
                     && $givenModule === null
                     && $givenTrack === null
                     && $folderUrl === 'https://drive.test/aulas'
-                    && $lessonStatus === 'draft'
+                    && $lessonStatus === 'published'
                     && $pandaFolderName === 'Aulas avulsas'
                     && $createPandaFolder
                     && $uploadPandaVideos

@@ -104,7 +104,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'course_module_track_id' => null,
             'title' => $module->lessons[0]['name'],
             'duration_seconds' => $module->lessons[0]['minutes'] * 60,
-            'status' => 'draft',
+            'status' => 'published',
             'source_status' => 'awaiting_media',
         ]);
         $lesson = Lesson::query()->where('title', $module->lessons[0]['name'])->firstOrFail();
@@ -369,7 +369,7 @@ class CourseSpreadsheetImportTest extends TestCase
             @unlink($secondPath);
         }
 
-        $this->assertSame('draft', $removedLesson->fresh()->status);
+        $this->assertSame('published', $removedLesson->fresh()->status);
     }
 
     public function test_spreadsheet_import_reuses_existing_modules_and_lessons_by_name(): void
@@ -557,7 +557,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($module->id)->exists());
     }
 
-    public function test_spreadsheet_import_keeps_lesson_unpublished_when_media_is_missing(): void
+    public function test_spreadsheet_import_keeps_lesson_published_when_media_is_missing(): void
     {
         $existingLesson = Lesson::query()->create([
             'course_id' => null,
@@ -587,7 +587,7 @@ class CourseSpreadsheetImportTest extends TestCase
 
         $existingLesson->refresh();
 
-        $this->assertSame('draft', $existingLesson->status);
+        $this->assertSame('published', $existingLesson->status);
         $this->assertSame('awaiting_media', $existingLesson->source_status);
     }
 
