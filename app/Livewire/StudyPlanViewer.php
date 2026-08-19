@@ -82,7 +82,8 @@ class StudyPlanViewer extends Component
 
         if ($field === 'module_id') {
             $module = $this->editableModules()->firstWhere('id', (int) $value);
-            $firstLesson = $module?->planning_lessons[0] ?? null;
+            $moduleLessons = $module ? $this->planningLessonsForModule($module) : [];
+            $firstLesson = $moduleLessons[0] ?? null;
 
             $this->manualDayRows[$rowIndex]['lesson_index'] = $firstLesson ? '0' : '';
             $this->manualDayRows[$rowIndex]['minutes'] = $firstLesson
@@ -92,7 +93,8 @@ class StudyPlanViewer extends Component
 
         if ($field === 'lesson_index') {
             $module = $this->editableModules()->firstWhere('id', (int) ($this->manualDayRows[$rowIndex]['module_id'] ?? 0));
-            $lesson = ($value !== '' && $module) ? ($module->planning_lessons[(int) $value] ?? null) : null;
+            $moduleLessons = $module ? $this->planningLessonsForModule($module) : [];
+            $lesson = ($value !== '' && $module) ? ($moduleLessons[(int) $value] ?? null) : null;
 
             if ($lesson) {
                 $this->manualDayRows[$rowIndex]['minutes'] = StudyTime::formatMinutes((int) ($lesson['minutes'] ?? 0));
@@ -177,7 +179,7 @@ class StudyPlanViewer extends Component
                         : null;
                 }
 
-                $lessons = $module->planning_lessons;
+                $lessons = $this->planningLessonsForModule($module);
                 $lessonIndex = ($row['lesson_index'] ?? '') !== '' ? (int) $row['lesson_index'] : null;
                 $lesson = $lessonIndex !== null ? ($lessons[$lessonIndex] ?? null) : null;
                 $minutes = StudyTime::parseToMinutes($row['minutes'] ?? null);
@@ -414,7 +416,7 @@ class StudyPlanViewer extends Component
             ->where('week_number', $this->selectedWeek)
             ->filter(fn (StudyPlanItem $item): bool => $item->lessons->isNotEmpty())
             ->each(function (StudyPlanItem $item) use (&$lessonsByItem): void {
-                $lessonsByItem[$item->id] = $item->orderedLessonsForDisplay()
+                $linkedLessons = $item->orderedLessonsForDisplay()
                     ->map(fn ($lesson): array => [
                         'name' => $lesson->title,
                         'minutes' => $lesson->duration_minutes,
@@ -424,6 +426,27 @@ class StudyPlanViewer extends Component
                     ])
                     ->values()
                     ->all();
+
+                if (isset($lessonsByItem[$item->id])) {
+                    $linkedLessonsByName = collect($linkedLessons)
+                        ->keyBy(fn (array $lesson): string => $this->normalizeLessonName((string) ($lesson['name'] ?? '')));
+
+                    $lessonsByItem[$item->id] = collect($lessonsByItem[$item->id])
+                        ->map(function (array $lesson) use ($linkedLessonsByName): array {
+                            $linkedLesson = $linkedLessonsByName->get($this->normalizeLessonName((string) ($lesson['name'] ?? '')));
+
+                            return $linkedLesson ? array_merge($lesson, [
+                                'url' => $linkedLesson['url'] ?? null,
+                                'is_online' => true,
+                            ]) : $lesson;
+                        })
+                        ->values()
+                        ->all();
+
+                    return;
+                }
+
+                $lessonsByItem[$item->id] = $linkedLessons;
             });
 
         return $lessonsByItem;
@@ -573,6 +596,8 @@ class StudyPlanViewer extends Component
             ->get()
             ->keyBy('id');
 
+        $modulesById->each(fn (CourseModule $module) => $this->loadModulePlanningRelations($module));
+
         $this->studyPlan->items
             ->sortBy([
                 ['scheduled_date', 'asc'],
@@ -587,18 +612,59 @@ class StudyPlanViewer extends Component
                 }
 
                 $moduleId = $module->id;
-                $lessons = $module->planning_lessons;
+                $lessons = $this->planningLessonsForModule($module);
+                $plannedLessonNames = $this->plannedLessonNamesFromDescription((string) $item->description);
+
+                if ($plannedLessonNames !== []) {
+                    $itemLessons = collect($plannedLessonNames)
+                        ->map(function (string $lessonName) use ($lessons, $module): array {
+                            $matchedLesson = collect($lessons)->first(function (array $lesson) use ($lessonName): bool {
+                                return $this->normalizeLessonName((string) ($lesson['name'] ?? '')) === $this->normalizeLessonName($lessonName);
+                            });
+
+                            $minutes = (int) ($matchedLesson['minutes'] ?? 0);
+
+                            return [
+                                'name' => $lessonName,
+                                'minutes' => $minutes,
+                                'minutes_label' => $minutes > 0 ? $this->formatLessonMinutes($minutes) : '',
+                            ];
+                        })
+                        ->values()
+                        ->all();
+
+                    $firstLessonIndex = max(0, $lessonIndexes[$moduleId] ?? 0);
+                    $lessonIndexes[$moduleId] = min(count($lessons), $firstLessonIndex + count($itemLessons));
+
+                    $lessonsByItem[$item->id] = [
+                        'lesson_index' => $firstLessonIndex,
+                        'lessons' => $itemLessons,
+                    ];
+
+                    return;
+                }
+
                 $index = $lessonIndexes[$moduleId] ?? 0;
                 $firstLessonIndex = $index;
                 $minutes = 0;
                 $itemLessons = [];
+                $currentTrackName = null;
 
                 while ($index < count($lessons)) {
                     $lessonMinutes = (int) ($lessons[$index]['minutes'] ?? 0);
+                    $lessonTrackName = trim((string) ($lessons[$index]['track_name'] ?? ''));
 
                     if ($lessonMinutes <= 0) {
                         $index++;
                         continue;
+                    }
+
+                    if ($minutes > 0 && $currentTrackName !== null && $lessonTrackName !== '' && $lessonTrackName !== $currentTrackName) {
+                        break;
+                    }
+
+                    if ($currentTrackName === null && $lessonTrackName !== '') {
+                        $currentTrackName = $lessonTrackName;
                     }
 
                     if (($minutes + $lessonMinutes) > $item->estimated_minutes) {
@@ -657,6 +723,7 @@ class StudyPlanViewer extends Component
                 ->modules()
                 ->where('course_modules.is_active', true)
                 ->get()
+                ->each(fn (CourseModule $module) => $this->loadModulePlanningRelations($module))
                 ->reject(fn (CourseModule $module): bool => $module->shouldBeExcludedFromStudyPlan())
                 ->values();
         }
@@ -667,6 +734,7 @@ class StudyPlanViewer extends Component
             ->orderBy('sort_order')
             ->orderBy('name')
             ->get()
+            ->each(fn (CourseModule $module) => $this->loadModulePlanningRelations($module))
             ->reject(fn (CourseModule $module): bool => $module->shouldBeExcludedFromStudyPlan())
             ->values();
     }
@@ -725,8 +793,8 @@ class StudyPlanViewer extends Component
 
             $originalModule = $modules->get((int) $row['original_module_id']);
             $targetModule = $modules->get((int) $row['module_id']);
-            $originalLesson = $originalModule?->planning_lessons[(int) $row['original_lesson_index']] ?? null;
-            $targetLesson = $targetModule?->planning_lessons[(int) $row['lesson_index']] ?? null;
+            $originalLesson = $originalModule ? ($this->planningLessonsForModule($originalModule)[(int) $row['original_lesson_index']] ?? null) : null;
+            $targetLesson = $targetModule ? ($this->planningLessonsForModule($targetModule)[(int) $row['lesson_index']] ?? null) : null;
 
             if (! $originalModule || ! $targetModule || ! $originalLesson || ! $targetLesson) {
                 continue;
@@ -804,6 +872,61 @@ class StudyPlanViewer extends Component
     protected function lessonSwapLabel(CourseModule $module, array $lesson): string
     {
         return $module->name.' - '.((string) ($lesson['name'] ?? 'Aula'));
+    }
+
+    protected function loadModulePlanningRelations(CourseModule $module): void
+    {
+        $module->loadMissing('onlineLessons');
+        $module->setRelation('tracks', $module->tracks()
+            ->where('status', 'published')
+            ->where(function ($query): void {
+                $query
+                    ->whereDoesntHave('courses')
+                    ->orWhereHas('courses', fn ($query) => $query->whereKey($this->studyPlan->course_id));
+            })
+            ->with(['lessons' => fn ($query) => $query->where('lessons.status', '!=', 'archived')])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get());
+    }
+
+    protected function planningLessonsForModule(CourseModule $module): array
+    {
+        $trackLessons = $this->planningLessonsFromTracks($module);
+
+        return $trackLessons !== [] ? $trackLessons : $module->planning_lessons;
+    }
+
+    protected function planningLessonsFromTracks(CourseModule $module): array
+    {
+        $tracks = $module->relationLoaded('tracks') ? $module->tracks : collect();
+
+        return $tracks
+            ->sortBy([
+                ['sort_order', 'asc'],
+                ['name', 'asc'],
+            ])
+            ->flatMap(function ($track): Collection {
+                $lessons = $track->relationLoaded('lessons') ? $track->lessons : collect();
+
+                return $lessons
+                    ->map(function ($lesson, int $index) use ($track): array {
+                        return [
+                            'name' => trim((string) $lesson->title) ?: ($track->name.' - Aula '.($index + 1)),
+                            'minutes' => max(1, (int) $lesson->duration_minutes),
+                            'track_name' => (string) $track->name,
+                        ];
+                    })
+                    ->filter(fn (array $lesson): bool => $lesson['minutes'] > 0)
+                    ->values();
+            })
+            ->values()
+            ->all();
+    }
+
+    protected function normalizeLessonName(string $name): string
+    {
+        return LessonTitleNormalizer::matchKey(preg_replace('/^Continuação:\s*/u', '', $name) ?: $name);
     }
 
     protected function nextManualBlockNumber(): int

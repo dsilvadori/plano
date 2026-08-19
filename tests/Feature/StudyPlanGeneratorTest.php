@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
 use App\Models\User;
@@ -574,6 +575,159 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertSame([90, 90, 30, 30], $items->pluck('estimated_minutes')->all());
     }
 
+    public function test_generator_respects_track_order_and_finishes_current_track_before_next_track(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Conhecimentos Específicos',
+            'type' => 'specific',
+            'workload_minutes' => 80,
+            'sort_order' => 1,
+        ]);
+
+        $administrationTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Administração Pública',
+            'slug' => 'administracao-publica',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $biddingTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Licitação',
+            'slug' => 'licitacao',
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+
+        foreach (['Administração Pública 01', 'Administração Pública 02', 'Administração Pública 03'] as $index => $title) {
+            $lesson = Lesson::factory()->create([
+                'title' => $title,
+                'duration_seconds' => 1200,
+                'sort_order' => $index + 1,
+                'status' => 'published',
+            ]);
+            $administrationTrack->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $biddingLesson = Lesson::factory()->create([
+            'title' => 'Licitação 01',
+            'duration_seconds' => 1200,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $biddingTrack->lessons()->attach($biddingLesson->id, ['sort_order' => 1]);
+
+        $startDate = now()->startOfWeek(CarbonInterface::MONDAY);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            $startDate->copy()->addDays(3)->toDateString(),
+            $startDate->toDateString(),
+            ['monday', 'tuesday', 'wednesday', 'thursday'],
+            ['monday' => 40, 'tuesday' => 40, 'wednesday' => 40, 'thursday' => 40],
+            'balanced',
+        );
+
+        $theoryDescriptions = $plan->items()
+            ->where('type', 'specific')
+            ->orderBy('sort_order')
+            ->pluck('description')
+            ->values();
+        $theoryTitles = $plan->items()
+            ->where('type', 'specific')
+            ->orderBy('sort_order')
+            ->pluck('title')
+            ->values();
+
+        $this->assertCount(4, $theoryDescriptions);
+        $this->assertSame('Bloco 1 · Conhecimentos Específicos: Administração Pública', $theoryTitles[0]);
+        $this->assertStringNotContainsString('Conhecimentos Específicos: Conhecimentos Específicos', $theoryTitles->implode(' | '));
+        $this->assertStringContainsString('Administração Pública 01', $theoryDescriptions[0]);
+        $this->assertStringContainsString('Administração Pública 02', $theoryDescriptions[1]);
+        $this->assertStringContainsString('Administração Pública 03', $theoryDescriptions[2]);
+        $this->assertStringContainsString('Licitação 01', $theoryDescriptions[3]);
+    }
+
+    public function test_generator_does_not_mix_lessons_from_different_tracks_in_the_same_block(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Conhecimentos Específicos',
+            'type' => 'specific',
+            'workload_minutes' => 51,
+            'sort_order' => 1,
+        ]);
+
+        $biddingTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Licitação',
+            'slug' => 'licitacao',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $archiveTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Arquivologia',
+            'slug' => 'arquivologia',
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+
+        $biddingLesson = Lesson::factory()->create([
+            'title' => '01 - Licitação',
+            'duration_seconds' => 2040,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $archiveLesson = Lesson::factory()->create([
+            'title' => 'Aula 01 - Conceitos de Arquivologia',
+            'duration_seconds' => 1020,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $biddingTrack->lessons()->attach($biddingLesson->id, ['sort_order' => 1]);
+        $archiveTrack->lessons()->attach($archiveLesson->id, ['sort_order' => 1]);
+
+        $startDate = now()->startOfWeek(CarbonInterface::MONDAY);
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            $startDate->copy()->addDay()->toDateString(),
+            $startDate->toDateString(),
+            ['monday', 'tuesday'],
+            ['monday' => 90, 'tuesday' => 90],
+            'balanced',
+        );
+
+        $theoryItems = $plan->items()
+            ->where('type', 'specific')
+            ->with('lessons')
+            ->orderBy('sort_order')
+            ->get()
+            ->values();
+
+        $this->assertStringContainsString('Conhecimentos Específicos: Licitação', $theoryItems[0]->title);
+        $this->assertStringContainsString('01 - Licitação', $theoryItems[0]->description);
+        $this->assertStringNotContainsString('Arquivologia', $theoryItems[0]->description);
+        $this->assertSame([$biddingLesson->id], $theoryItems[0]->lessons->pluck('id')->all());
+        $this->assertStringContainsString('Conhecimentos Específicos: Arquivologia', $theoryItems[1]->title);
+        $this->assertSame([$archiveLesson->id], $theoryItems[1]->lessons->pluck('id')->all());
+    }
+
     public function test_generator_alternates_subjects_inside_each_theory_type_between_days(): void
     {
         $course = Course::factory()->create();
@@ -792,6 +946,56 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertTrue($saturdayItems->every(fn ($item) => in_array($item->type, ['questions', 'review'], true)));
         $this->assertSame(['questions', 'review'], $saturdayItems->pluck('type')->all());
         $this->assertSame([30, 30], $saturdayItems->pluck('estimated_minutes')->all());
+    }
+
+    public function test_generator_limits_review_and_question_only_weeks_after_theory_is_finished(): void
+    {
+        Carbon::setTestNow('2026-08-17 09:00:00');
+
+        try {
+            $course = Course::factory()->create();
+            $student = User::factory()->create();
+            $student->courses()->attach($course, ['source' => 'manual']);
+
+            CourseModule::factory()->create([
+                'course_id' => $course->id,
+                'name' => 'Português - Classes de Palavras',
+                'type' => 'basic',
+                'lessons' => [
+                    ['name' => 'Substantivo e Adjetivo', 'minutes' => 60],
+                ],
+                'workload_minutes' => 60,
+                'sort_order' => 1,
+            ]);
+
+            $plan = app(StudyPlanGenerator::class)->generate(
+                $student,
+                $course,
+                null,
+                '2026-10-19',
+                '2026-08-17',
+                ['monday'],
+                ['monday' => 60],
+                'balanced',
+            );
+
+            $items = $plan->items()->orderBy('scheduled_date')->orderBy('sort_order')->get();
+            $reserveOnlyWeeks = $items
+                ->groupBy('week_number')
+                ->filter(fn ($weekItems): bool => $weekItems->every(fn ($item): bool => in_array($item->type, ['questions', 'review'], true)))
+                ->keys()
+                ->values()
+                ->all();
+
+            $this->assertSame(['basic', 'questions', 'review', 'basic', 'questions', 'review', 'questions', 'review', 'questions', 'review'], $items->pluck('type')->all());
+            $this->assertSame([3, 4], $reserveOnlyWeeks);
+            $this->assertSame('2026-09-07', $items->max('scheduled_date')->toDateString());
+            $this->assertStringContainsString('limita revisão e questões a duas semanas', $plan->viability_message);
+            $this->assertStringContainsString('simulados', $plan->viability_message);
+            $this->assertStringContainsString('aulas ao vivo', $plan->viability_message);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_generator_keeps_questions_and_reviews_at_end_of_day_while_theory_remains(): void

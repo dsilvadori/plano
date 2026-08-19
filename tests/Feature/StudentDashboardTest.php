@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
+use App\Models\Lesson;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
@@ -67,6 +69,64 @@ class StudentDashboardTest extends TestCase
         $response->assertRedirect(route('study-plans.show', $plan));
         $this->assertNotNull($plan);
         $this->assertGreaterThan(0, $plan->items()->count());
+    }
+
+    public function test_study_plan_viewer_uses_planned_track_lessons_instead_of_module_wide_lessons(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Conhecimentos Específicos',
+            'type' => 'specific',
+            'lessons' => [
+                ['name' => '01 - Licitação', 'minutes' => 34],
+                ['name' => 'Aula 01 - Conceitos de Recursos Materiais', 'minutes' => 17],
+            ],
+            'workload_minutes' => 51,
+        ]);
+
+        $archiveTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Arquivologia',
+            'slug' => 'arquivologia',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $archiveLesson = Lesson::factory()->create([
+            'title' => 'Conceitos de Arquivologia',
+            'duration_seconds' => 1020,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $archiveTrack->lessons()->attach($archiveLesson->id, ['sort_order' => 1]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $plan->items()->create([
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Conhecimentos Específicos: Arquivologia',
+            'description' => 'Bloco de até 17 minutos para avançar em conhecimentos específicos com foco em Arquivologia. Aulas do bloco: Conceitos de Arquivologia.',
+            'type' => 'specific',
+            'estimated_minutes' => 17,
+            'sort_order' => 1,
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee('Conceitos de Arquivologia')
+            ->assertDontSee('01 - Licitação')
+            ->assertDontSee('Aula 01 - Conceitos de Recursos Materiais');
     }
 
     public function test_study_plan_creation_validation_messages_are_translated(): void
