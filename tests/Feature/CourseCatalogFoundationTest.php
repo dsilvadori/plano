@@ -1305,6 +1305,55 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSeeInOrder(['01 - Conceitos Iniciais', '02 - Terminologias']);
     }
 
+    public function test_plan_lesson_link_opens_lesson_attached_only_through_module_and_plan(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com plano sem trilha',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::withoutEvents(fn () => Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Classe de palavras sem trilha',
+            'duration_seconds' => 900,
+            'status' => 'published',
+        ]));
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-06-29',
+            'title' => 'Bloco 1: Português',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $item->lessons()->attach($lesson, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Classe de palavras sem trilha')
+            ->assertSee('Trilha do plano');
+    }
+
     public function test_lesson_page_shows_track_sidebar_without_plan_and_hides_spreadsheet_import_description(): void
     {
         $student = User::factory()->create(['role' => 'student']);

@@ -595,6 +595,22 @@ class CourseCatalogController extends Controller
             return true;
         }
 
+        if ($lesson->module && $this->moduleBelongsToCourse($lesson->module, $course)) {
+            return true;
+        }
+
+        if ($lesson->modules()
+            ->get()
+            ->contains(fn (CourseModule $module): bool => $this->moduleBelongsToCourse($module, $course))) {
+            return true;
+        }
+
+        if ($lesson->studyPlanItems()
+            ->whereHas('studyPlan', fn (Builder $query) => $query->where('course_id', $course->id))
+            ->exists()) {
+            return true;
+        }
+
         return $lesson->tracks()
             ->where(function (Builder $query) use ($course): void {
                 $query
