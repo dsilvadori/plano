@@ -205,6 +205,10 @@ class AdminAccessTest extends TestCase
         Notification::fake();
 
         $admin = User::factory()->admin()->create();
+        $course = Course::factory()->create([
+            'name' => 'Curso Manual Liberado',
+            'is_active' => true,
+        ]);
 
         $this->actingAs($admin);
 
@@ -213,6 +217,7 @@ class AdminAccessTest extends TestCase
                 'name' => 'Aluno Primeiro Acesso',
                 'email' => 'primeiro-acesso@example.com',
                 'role' => 'student',
+                'course_ids' => [$course->id],
             ])
             ->call('create')
             ->assertHasNoFormErrors();
@@ -221,6 +226,7 @@ class AdminAccessTest extends TestCase
 
         $this->assertNotNull($student);
         $this->assertSame('student', $student->role);
+        $this->assertTrue($student->courses()->whereKey($course)->wherePivot('source', 'manual')->exists());
         Notification::assertSentTo($student, SetPasswordNotification::class);
     }
 
@@ -265,7 +271,13 @@ class AdminAccessTest extends TestCase
         $this->assertStringContainsString(route('password.reset', ['token' => 'token-teste'], false), $mail->actionUrl);
         $this->assertStringContainsString('email=aluno%40example.com', $mail->actionUrl);
         $this->assertStringContainsString('Olá, Aluno Teste!', $html);
+        $this->assertStringContainsString('Seu acesso à nova Plataforma Vencendo Concursos foi criado.', $html);
+        $this->assertStringContainsString('criar seu plano de estudos', $html);
+        $this->assertStringContainsString('assistir às aulas do seu curso', $html);
+        $this->assertStringContainsString('suporte de IA para criar resumos, mapas mentais, questões para treino', $html);
+        $this->assertStringContainsString('chat para tirar dúvidas', $html);
         $this->assertStringContainsString('Este link expira em 2 dias.', $html);
+        $this->assertSame(2880, config('auth.passwords.users.expire'));
         $this->assertStringContainsString('Se você estiver com dificuldade para clicar no botão', $html);
         $this->assertStringContainsString('Todos os direitos reservados.', $html);
         $this->assertStringNotContainsString('Regards', $html);

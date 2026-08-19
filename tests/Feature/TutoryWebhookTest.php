@@ -64,6 +64,11 @@ class TutoryWebhookTest extends TestCase
     public function test_valid_webhook_creates_student_user(): void
     {
         Notification::fake();
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'tutory_product_id' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
 
         $this->postJson('/webhooks/tutory', $this->payload(), [
             'Authorization' => 'Bearer secret-local',
@@ -73,6 +78,7 @@ class TutoryWebhookTest extends TestCase
 
         $this->assertNotNull($user);
         $this->assertSame('student', $user->role);
+        $this->assertTrue($user->courses()->whereKey($course)->wherePivot('source', 'tutory')->exists());
         Notification::assertSentTo($user, SetPasswordNotification::class);
     }
 
