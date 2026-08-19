@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Courses\RelationManagers;
 
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
+use App\Models\Teacher;
 use App\Services\ActiveStudyPlanRefresher;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
@@ -37,6 +38,27 @@ class CourseModulesRelationManager extends RelationManager
                 ->label('Descrição')
                 ->rows(3)
                 ->columnSpanFull(),
+            Select::make('teacher_id')
+                ->label('Professor cadastrado')
+                ->options(fn (): array => Teacher::query()
+                    ->where('is_active', true)
+                    ->orderBy('name')
+                    ->pluck('name', 'id')
+                    ->all())
+                ->searchable()
+                ->preload()
+                ->live()
+                ->afterStateUpdated(function ($state, callable $set): void {
+                    $teacherName = filled($state) ? Teacher::query()->whereKey($state)->value('name') : null;
+
+                    if (filled($teacherName)) {
+                        $set('teacher_name', $teacherName);
+                    }
+                }),
+            TextInput::make('teacher_name')
+                ->label('Professor em texto')
+                ->maxLength(255)
+                ->helperText('Fallback para importações e módulos antigos sem professor cadastrado.'),
             Select::make('type')
                 ->label('Tipo')
                 ->options([
@@ -84,6 +106,8 @@ class CourseModulesRelationManager extends RelationManager
             ->recordTitleAttribute('name')
             ->columns([
                 TextColumn::make('name')->label('Módulo')->searchable()->sortable(),
+                TextColumn::make('teacher.name')->label('Professor')->searchable()->toggleable(),
+                TextColumn::make('teacher_name')->label('Professor em texto')->searchable()->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('type')
                     ->label('Tipo')
                     ->badge()

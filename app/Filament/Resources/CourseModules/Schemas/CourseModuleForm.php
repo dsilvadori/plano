@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\CourseModules\Schemas;
 
 use App\Models\CourseModule;
+use App\Models\Teacher;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -22,6 +23,27 @@ class CourseModuleForm
                     ->label('Descrição')
                     ->rows(3)
                     ->columnSpanFull(),
+                Select::make('teacher_id')
+                    ->label('Professor cadastrado')
+                    ->options(fn (): array => Teacher::query()
+                        ->where('is_active', true)
+                        ->orderBy('name')
+                        ->pluck('name', 'id')
+                        ->all())
+                    ->searchable()
+                    ->preload()
+                    ->live()
+                    ->afterStateUpdated(function ($state, callable $set): void {
+                        $teacherName = filled($state) ? Teacher::query()->whereKey($state)->value('name') : null;
+
+                        if (filled($teacherName)) {
+                            $set('teacher_name', $teacherName);
+                        }
+                    }),
+                TextInput::make('teacher_name')
+                    ->label('Professor em texto')
+                    ->maxLength(255)
+                    ->helperText('Fallback para importações e módulos antigos sem professor cadastrado.'),
                 Select::make('type')
                     ->label('Tipo')
                     ->options([

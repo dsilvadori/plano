@@ -226,10 +226,10 @@ class CourseSpreadsheetImportTest extends TestCase
     {
         $path = tempnam(sys_get_temp_dir(), 'course-import-').'.csv';
         file_put_contents($path, implode("\n", [
-            'course_name,module_name,module_type,module_sort_order,track_name,professor,lesson_title,lesson_minutes,lesson_type,lesson_status,panda_video_id,panda_embed_url',
-            'Curso CSV,Português,basic,1,Classes de palavras,Dorival Conte Jr.,Classes de palavras,30,video,published,video_1,https://player.example.com/video_1',
-            'Curso CSV,Português,basic,1,Classes de palavras,Dorival Conte Jr.,Advérbio,20,video,published,video_2,https://player.example.com/video_2',
-            'Curso CSV,Legislação,specific,2,Legislação,,Lei Orgânica,45,video,draft,video_3,https://player.example.com/video_3',
+            'course_name,module_name,module_type,module_sort_order,module_teacher_name,track_name,professor,lesson_title,lesson_minutes,lesson_type,lesson_status,panda_video_id,panda_embed_url',
+            'Curso CSV,Português,basic,1,Professora do Módulo,Classes de palavras,Dorival Conte Jr.,Classes de palavras,30,video,published,video_1,https://player.example.com/video_1',
+            'Curso CSV,Português,basic,1,Professora do Módulo,Classes de palavras,Dorival Conte Jr.,Advérbio,20,video,published,video_2,https://player.example.com/video_2',
+            'Curso CSV,Legislação,specific,2,,Legislação,,Lei Orgânica,45,video,draft,video_3,https://player.example.com/video_3',
         ]));
 
         try {
@@ -242,6 +242,13 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame(2, $course->modules()->get()->reject->shouldBeExcludedFromStudyPlan()->count());
         $this->assertSame(2, CourseModuleTrack::query()->whereHas('module', fn ($query) => $query->where('name', '!=', 'Comece por aqui'))->count());
         $this->assertSame(3, $course->linkedLessonsCount());
+        $this->assertDatabaseHas('course_modules', [
+            'name' => 'Português',
+            'teacher_name' => 'Professora do Módulo',
+        ]);
+        $this->assertDatabaseHas('teachers', [
+            'name' => 'Professora do Módulo',
+        ]);
         $this->assertDatabaseHas('course_module_tracks', [
             'name' => 'Classes de palavras',
             'teacher_name' => 'Dorival Conte Jr.',

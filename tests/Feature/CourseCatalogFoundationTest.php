@@ -1059,6 +1059,30 @@ class CourseCatalogFoundationTest extends TestCase
         $this->assertSame('Professor Dorival Conte Jr.', $track->teacher_display_name);
     }
 
+    public function test_track_uses_module_teacher_as_fallback(): void
+    {
+        $teacher = Teacher::factory()->create([
+            'name' => 'Dra. Ana Silva',
+            'thumbnail_path' => 'teacher-thumbnails/ana.webp',
+        ]);
+        $module = CourseModule::factory()->create([
+            'teacher_id' => $teacher->id,
+            'teacher_name' => 'Ana Silva',
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Semântica',
+            'slug' => 'semantica',
+            'status' => 'published',
+        ]);
+
+        $this->assertSame('Dra. Ana Silva', $track->teacher_display_name);
+        $this->assertSame(
+            url('/media/thumbnails/teacher-thumbnails/ana.webp'),
+            $track->thumbnail_display_url,
+        );
+    }
+
     public function test_deleting_course_preserves_modules_tracks_and_lessons(): void
     {
         $course = Course::factory()->create(['status' => 'published']);

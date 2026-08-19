@@ -178,6 +178,7 @@ class CourseCatalogController extends Controller
                         ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
             })
             ->with([
+                'module.teacher',
                 'teacher',
                 'lessons' => fn ($lessonQuery) => $lessonQuery
                     ->where('status', '!=', 'archived')
@@ -658,6 +659,7 @@ class CourseCatalogController extends Controller
                             ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
                 })
                 ->with([
+                    'module.teacher',
                     'teacher',
                     'lessons' => fn ($lessonQuery) => $lessonQuery
                         ->where('status', '!=', 'archived')

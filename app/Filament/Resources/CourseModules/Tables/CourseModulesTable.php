@@ -26,6 +26,8 @@ class CourseModulesTable
                     ->searchable()
                     ->sortable(),
                 TextColumn::make('name')->label('Módulo')->searchable()->sortable(),
+                TextColumn::make('teacher.name')->label('Professor')->searchable()->toggleable(),
+                TextColumn::make('teacher_name')->label('Professor em texto')->searchable()->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('type')
                     ->label('Tipo')
                     ->badge()

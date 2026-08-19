@@ -38,8 +38,10 @@ class CourseModule extends Model
 
     protected $fillable = [
         'course_id',
+        'teacher_id',
         'name',
         'description',
+        'teacher_name',
         'type',
         'lessons',
         'workload_minutes',
@@ -99,6 +101,11 @@ class CourseModule extends Model
         return $this->belongsTo(Course::class);
     }
 
+    public function teacher(): BelongsTo
+    {
+        return $this->belongsTo(Teacher::class);
+    }
+
     public function courses(): BelongsToMany
     {
         return $this->belongsToMany(Course::class, 'course_module_course')
@@ -139,6 +146,13 @@ class CourseModule extends Model
         return $this->hasMany(CourseModuleTrack::class)
             ->orderBy('sort_order')
             ->orderBy('name');
+    }
+
+    public function getTeacherDisplayNameAttribute(): ?string
+    {
+        $name = $this->teacher?->name ?: $this->teacher_name;
+
+        return filled($name) ? $name : null;
     }
 
     public function getPlanningLessonsAttribute(): array

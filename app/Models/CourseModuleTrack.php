@@ -81,7 +81,7 @@ class CourseModuleTrack extends Model
 
     public function getThumbnailDisplayUrlAttribute(): string
     {
-        $teacher = $this->teacher ?: $this->teacherFromText();
+        $teacher = $this->teacher ?: $this->module?->teacher ?: $this->teacherFromText() ?: $this->moduleTeacherFromText();
 
         if ($teacher && (filled($teacher->thumbnail_path) || filled($teacher->thumbnail_url))) {
             return $teacher->thumbnail_display_url;
@@ -92,7 +92,12 @@ class CourseModuleTrack extends Model
 
     public function getTeacherDisplayNameAttribute(): ?string
     {
-        $name = $this->teacher?->name ?: $this->teacherFromText()?->name ?: $this->teacher_name;
+        $name = $this->teacher?->name
+            ?: $this->module?->teacher?->name
+            ?: $this->teacherFromText()?->name
+            ?: $this->moduleTeacherFromText()?->name
+            ?: $this->teacher_name
+            ?: $this->module?->teacher_name;
 
         return filled($name) ? $name : null;
     }
@@ -104,6 +109,26 @@ class CourseModuleTrack extends Model
         }
 
         $normalizedName = $this->normalizeTeacherName($this->teacher_name);
+
+        if ($normalizedName === '') {
+            return null;
+        }
+
+        return Teacher::query()
+            ->where('is_active', true)
+            ->get()
+            ->first(fn (Teacher $teacher): bool => $this->normalizeTeacherName($teacher->name) === $normalizedName);
+    }
+
+    protected function moduleTeacherFromText(): ?Teacher
+    {
+        $moduleTeacherName = $this->module?->teacher_name;
+
+        if (blank($moduleTeacherName)) {
+            return null;
+        }
+
+        $normalizedName = $this->normalizeTeacherName($moduleTeacherName);
 
         if ($normalizedName === '') {
             return null;

@@ -129,11 +129,17 @@ class CourseSpreadsheetImporter
                     'course_id' => null,
                     'name' => $moduleData['name'],
                 ]);
+            $moduleTeacherName = filled($moduleData['teacher_name'] ?? null)
+                ? trim((string) $moduleData['teacher_name'])
+                : null;
+            $moduleTeacher = $moduleTeacherName ? $this->resolveTeacher($moduleTeacherName) : null;
 
             $module->fill([
                 'course_id' => null,
+                'teacher_id' => $moduleTeacher?->id ?: $module->teacher_id,
                 'name' => $module->name ?: $moduleData['name'],
                 'type' => $moduleData['type'],
+                'teacher_name' => $moduleTeacherName ?: $module->teacher_name,
                 'lessons' => $moduleData['lessons'] ?? [],
                 'workload_minutes' => $moduleData['workload_minutes'],
                 'sort_order' => $moduleData['sort_order'],

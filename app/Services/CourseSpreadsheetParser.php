@@ -158,6 +158,7 @@ class CourseSpreadsheetParser
                     'sheet_name' => 'CSV',
                     'group_name' => $first['module_group'] ?? $first['grupo_modulo'] ?? 'CSV',
                     'name' => $moduleName,
+                    'teacher_name' => $this->resolveModuleTeacherName($first),
                     'type' => $first['module_type'] ?? $first['tipo_modulo'] ?? $this->inferModuleType('CSV', null, $moduleName),
                     'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
                     'sort_order' => $assignedSortOrder,
@@ -195,6 +196,7 @@ class CourseSpreadsheetParser
             ->flatMap(function (array $sheet) use ($archive, $sharedStrings, &$sortOrder) {
                 $rows = $this->readWorksheetRows($archive, $sheet['target'], $sharedStrings);
                 $groupName = $this->normalizeSheetName($sheet['name']);
+                $currentModuleTeacherName = null;
                 $currentTrackName = null;
                 $currentTeacherName = null;
                 $currentLessons = [];
@@ -235,6 +237,9 @@ class CourseSpreadsheetParser
 
                     if (Str::startsWith($firstCell, 'Módulo - ')) {
                         $groupName = trim(Str::after($firstCell, 'Módulo - '));
+                        $currentModuleTeacherName = $this->resolveModuleTeacherName([
+                            'module_teacher_name' => Arr::get($row, 'C'),
+                        ]) ?: $currentModuleTeacherName;
 
                         continue;
                     }
@@ -250,7 +255,11 @@ class CourseSpreadsheetParser
                     }
 
                     if ($this->isTeacherRow($firstCell)) {
-                        $currentTeacherName = $this->teacherNameFromLabel($firstCell);
+                        if ($currentTrackName === null) {
+                            $currentModuleTeacherName = $this->teacherNameFromLabel($firstCell);
+                        } else {
+                            $currentTeacherName = $this->teacherNameFromLabel($firstCell);
+                        }
 
                         continue;
                     }
@@ -284,6 +293,7 @@ class CourseSpreadsheetParser
                     'sheet_name' => $sheet['name'],
                     'group_name' => $groupName,
                     'name' => $groupName,
+                    'teacher_name' => $currentModuleTeacherName,
                     'type' => $this->inferModuleType($sheet['name'], $groupName, implode(' ', array_column($tracks, 'name'))),
                     'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
                     'sort_order' => $sortOrder++,
@@ -308,6 +318,7 @@ class CourseSpreadsheetParser
                 return [
                     ...$first,
                     'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
+                    'teacher_name' => $modules->pluck('teacher_name')->filter()->first(),
                     'tracks' => $tracks,
                     'lessons' => $lessons,
                 ];
@@ -361,6 +372,22 @@ class CourseSpreadsheetParser
             ?? $row['instrutor']
             ?? $row['instrutora']
             ?? $row['docente']
+            ?? null;
+
+        $name = trim((string) $value);
+
+        return $name !== '' ? $name : null;
+    }
+
+    protected function resolveModuleTeacherName(array $row): ?string
+    {
+        $value = $row['module_teacher_name']
+            ?? $row['teacher_name_module']
+            ?? $row['professor_modulo']
+            ?? $row['professora_modulo']
+            ?? $row['instrutor_modulo']
+            ?? $row['instrutora_modulo']
+            ?? $row['docente_modulo']
             ?? null;
 
         $name = trim((string) $value);
