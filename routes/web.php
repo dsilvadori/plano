@@ -20,7 +20,9 @@ Route::get('/', function () {
         : redirect()->route('dashboard');
 })->name('home');
 
-Route::post('/webhooks/tutory', TutoryWebhookController::class)->name('webhooks.tutory');
+Route::post('/webhooks/tutory/{secret?}', TutoryWebhookController::class)
+    ->where('secret', '[^/]+')
+    ->name('webhooks.tutory');
 
 Route::middleware('auth')->group(function () {
     Route::post('/admin/users/{user}/impersonate', [UserImpersonationController::class, 'start'])

@@ -82,6 +82,25 @@ class TutoryWebhookTest extends TestCase
         Notification::assertSentTo($user, SetPasswordNotification::class);
     }
 
+    public function test_valid_webhook_accepts_secret_in_url(): void
+    {
+        Notification::fake();
+
+        Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'tutory_product_id' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory/secret-local', $this->payload())
+            ->assertOk();
+
+        $this->assertDatabaseHas('users', [
+            'email' => 'joao@email.com',
+            'role' => 'student',
+        ]);
+    }
+
     public function test_duplicate_webhook_does_not_create_duplicate_user(): void
     {
         Notification::fake();
