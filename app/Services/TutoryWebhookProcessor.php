@@ -59,12 +59,16 @@ class TutoryWebhookProcessor
             );
 
             if ($user->isStudent()) {
-                foreach ($this->coursesForPurchase($payload, $productId) as $course) {
+                $courses = $this->coursesForPurchase($payload, $productId);
+
+                foreach ($courses as $course) {
                     StudentCourse::firstOrCreate(
                         ['user_id' => $user->id, 'course_id' => $course->id],
                         ['source' => 'tutory', 'external_purchase_id' => $purchaseId],
                     );
                 }
+
+                $this->removeStaleProvisionalCourses($user, $courses, $purchaseId);
             }
 
             if ($user->isStudent() || $user->isSubscriber()) {
@@ -156,6 +160,35 @@ class TutoryWebhookProcessor
             'combo_name' => null,
             'is_active' => false,
         ]);
+    }
+
+    protected function removeStaleProvisionalCourses(User $user, $courses, ?string $purchaseId): void
+    {
+        if (blank($purchaseId)) {
+            return;
+        }
+
+        $courseIds = $courses
+            ->pluck('id')
+            ->filter()
+            ->values()
+            ->all();
+
+        $hasPublishedCourse = $courses->contains(fn (Course $course): bool => $course->is_active && $course->status === 'published');
+
+        if (! $hasPublishedCourse) {
+            return;
+        }
+
+        StudentCourse::query()
+            ->where('user_id', $user->id)
+            ->where('source', 'tutory')
+            ->where('external_purchase_id', $purchaseId)
+            ->when($courseIds !== [], fn ($query) => $query->whereNotIn('course_id', $courseIds))
+            ->whereHas('course', fn ($query) => $query
+                ->where('is_active', false)
+                ->orWhere('status', '!=', 'published'))
+            ->delete();
     }
 
     protected function productName(array $payload): string

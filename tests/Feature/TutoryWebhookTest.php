@@ -161,6 +161,53 @@ class TutoryWebhookTest extends TestCase
         $this->assertSame(1, Course::query()->count());
     }
 
+    public function test_webhook_ignores_stale_product_id_when_product_name_matches_another_published_course(): void
+    {
+        Notification::fake();
+
+        $student = User::factory()->create([
+            'name' => 'João da Silva',
+            'email' => 'joao@email.com',
+            'role' => 'student',
+        ]);
+        $staleCourse = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Administrador',
+            'slug' => 'gabaritando-santos-administrador',
+            'tutory_product_id' => 'produto-tutory-contagem',
+            'status' => 'draft',
+            'is_active' => false,
+        ]);
+        $contagemCourse = Course::factory()->create([
+            'name' => 'Gabaritando Contagem - Assistente Administrativo',
+            'slug' => 'gabaritando-contagem-assistente-administrativo',
+            'tutory_product_id' => null,
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+
+        $student->courses()->attach($staleCourse, [
+            'source' => 'tutory',
+            'external_purchase_id' => 'purchase_contagem',
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload([
+            'event_id' => 'evt_contagem',
+            'purchase' => [
+                'id' => 'purchase_contagem',
+                'product_id' => 'produto-tutory-contagem',
+                'product_name' => 'Gabaritando Contagem',
+            ],
+        ]), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $student->refresh();
+
+        $this->assertTrue($student->courses()->whereKey($contagemCourse)->exists());
+        $this->assertFalse($student->courses()->whereKey($staleCourse)->exists());
+        $this->assertSame('produto-tutory-contagem', $contagemCourse->fresh()->tutory_product_id);
+    }
+
     public function test_generic_santos_combo_product_links_student_to_all_active_santos_courses(): void
     {
         Notification::fake();

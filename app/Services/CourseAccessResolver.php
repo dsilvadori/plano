@@ -44,6 +44,19 @@ class CourseAccessResolver
                 ->where('tutory_product_id', $productId)
                 ->orderByDesc('is_active')
                 ->orderByRaw("case when status = 'published' then 1 else 0 end desc")
+                ->get()
+                ->first(fn (Course $course): bool => blank($productName) || $this->namesAreCompatible($course->name, $productName));
+
+            if ($course) {
+                return $course;
+            }
+        }
+
+        if (filled($productId) && blank($productName)) {
+            $course = Course::query()
+                ->where('tutory_product_id', $productId)
+                ->orderByDesc('is_active')
+                ->orderByRaw("case when status = 'published' then 1 else 0 end desc")
                 ->first();
 
             if ($course) {
@@ -59,7 +72,8 @@ class CourseAccessResolver
 
         return Course::query()
             ->get()
-            ->filter(fn (Course $course): bool => $this->normalizedName($course->name) === $normalizedProductName)
+            ->filter(fn (Course $course): bool => $this->normalizedName($course->name) === $normalizedProductName
+                || $this->namesAreCompatible($course->name, $productName))
             ->sortByDesc(fn (Course $course): int => ((int) $course->is_active * 2) + ($course->status === 'published' ? 1 : 0))
             ->first();
     }
@@ -118,5 +132,26 @@ class CourseAccessResolver
             ->filter()
             ->values()
             ->all();
+    }
+
+    protected function namesAreCompatible(string $courseName, string $productName): bool
+    {
+        $normalizedCourseName = $this->normalizedName($courseName);
+        $normalizedProductName = $this->normalizedName($productName);
+
+        if ($normalizedCourseName === '' || $normalizedProductName === '') {
+            return false;
+        }
+
+        if ($normalizedCourseName === $normalizedProductName) {
+            return true;
+        }
+
+        if (mb_strlen($normalizedCourseName) < 12 || mb_strlen($normalizedProductName) < 12) {
+            return false;
+        }
+
+        return Str::contains($normalizedCourseName, $normalizedProductName)
+            || Str::contains($normalizedProductName, $normalizedCourseName);
     }
 }
