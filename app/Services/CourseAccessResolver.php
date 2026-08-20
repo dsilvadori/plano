@@ -42,6 +42,8 @@ class CourseAccessResolver
         if (filled($productId)) {
             $course = Course::query()
                 ->where('tutory_product_id', $productId)
+                ->orderByDesc('is_active')
+                ->orderByRaw("case when status = 'published' then 1 else 0 end desc")
                 ->first();
 
             if ($course) {
@@ -55,6 +57,8 @@ class CourseAccessResolver
 
         return Course::query()
             ->where('name', $productName)
+            ->orderByDesc('is_active')
+            ->orderByRaw("case when status = 'published' then 1 else 0 end desc")
             ->first();
     }
 

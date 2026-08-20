@@ -75,9 +75,41 @@ class User extends Authenticatable implements FilamentUser
                 ->where('is_active', true);
         }
 
+        $linkedCourses = $this->courses()
+            ->select(['courses.id', 'courses.name', 'courses.slug', 'courses.tutory_product_id', 'courses.combo_name'])
+            ->get();
+
+        $linkedCourseIds = $linkedCourses->pluck('id')->all();
+        $linkedProductIds = $linkedCourses->pluck('tutory_product_id')->filter()->unique()->values()->all();
+        $linkedNames = $linkedCourses->pluck('name')->filter()->unique()->values()->all();
+        $linkedSlugs = $linkedCourses->pluck('slug')->filter()->unique()->values()->all();
+        $linkedComboNames = $linkedCourses->pluck('combo_name')->filter()->unique()->values()->all();
+
         return Course::query()
             ->where('is_active', true)
-            ->whereHas('students', fn (Builder $query) => $query->whereKey($this->getKey()));
+            ->where(function (Builder $query) use ($linkedCourseIds, $linkedProductIds, $linkedNames, $linkedSlugs, $linkedComboNames): void {
+                $query->whereHas('students', fn (Builder $query) => $query->whereKey($this->getKey()));
+
+                if ($linkedCourseIds !== []) {
+                    $query->orWhereIn('id', $linkedCourseIds);
+                }
+
+                if ($linkedProductIds !== []) {
+                    $query->orWhereIn('tutory_product_id', $linkedProductIds);
+                }
+
+                if ($linkedNames !== []) {
+                    $query->orWhereIn('name', $linkedNames);
+                }
+
+                if ($linkedSlugs !== []) {
+                    $query->orWhereIn('slug', $linkedSlugs);
+                }
+
+                if ($linkedComboNames !== []) {
+                    $query->orWhereIn('combo_name', $linkedComboNames);
+                }
+            });
     }
 
     public function studentCourses(): HasMany

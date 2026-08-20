@@ -46,6 +46,58 @@ class StudentDashboardTest extends TestCase
             ->assertOk();
     }
 
+    public function test_enrolled_featured_course_is_not_locked_on_dashboard(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Contagem - Assistente Administrativo',
+            'status' => 'published',
+            'is_active' => true,
+            'is_featured' => true,
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get('/dashboard')
+            ->assertOk()
+            ->assertSee('Gabaritando Contagem - Assistente Administrativo')
+            ->assertSee('Acessar curso')
+            ->assertDontSee('Bloqueado')
+            ->assertDontSee('Ver detalhes');
+    }
+
+    public function test_student_with_placeholder_purchase_gets_access_to_published_equivalent_course(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $placeholderCourse = Course::factory()->create([
+            'name' => 'Gabaritando Contagem - Assistente Administrativo',
+            'slug' => 'gabaritando-contagem-assistente-administrativo',
+            'tutory_product_id' => 'tutory-gabaritando-contagem',
+            'status' => 'draft',
+            'is_active' => false,
+            'is_featured' => false,
+        ]);
+        $publishedCourse = Course::factory()->create([
+            'name' => 'Gabaritando Contagem - Assistente Administrativo',
+            'slug' => 'gabaritando-contagem-assistente-administrativo-2',
+            'tutory_product_id' => 'tutory-gabaritando-contagem',
+            'status' => 'published',
+            'is_active' => true,
+            'is_featured' => true,
+        ]);
+
+        $student->courses()->attach($placeholderCourse, ['source' => 'tutory']);
+
+        $this->assertTrue($student->availableCoursesQuery()->whereKey($publishedCourse)->exists());
+
+        $this->actingAs($student)
+            ->get('/dashboard')
+            ->assertOk()
+            ->assertSee('Acessar curso')
+            ->assertDontSee('Bloqueado');
+    }
+
     public function test_student_can_generate_study_plan(): void
     {
         ['student' => $student, 'course' => $course, 'track' => $track] = $this->makeStudentWithCourse();
