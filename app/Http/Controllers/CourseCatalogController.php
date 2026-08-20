@@ -39,6 +39,8 @@ class CourseCatalogController extends Controller
 
     protected const PANDA_AI_REQUEST_RETRY_MINUTES = 60;
 
+    protected const COURSE_CATALOG_CACHE_SECONDS = 600;
+
     public function index(): View
     {
         $user = request()->user();
@@ -145,10 +147,10 @@ class CourseCatalogController extends Controller
             'educationLevel',
         ])->loadCount(['lessons']);
 
-        $modules = $this->modulesForCourse($course);
+        $modules = $this->cachedModulesForCourse($course);
         $course->setRelation('modules', $modules);
         $course->setAttribute('modules_count', $modules->count());
-        $course->setAttribute('lessons_count', $this->publishedLessonsForCourse($course)->count('lessons.id'));
+        $course->setAttribute('lessons_count', $this->cachedPublishedLessonsCountForCourse($course));
 
         return view('dashboard.courses.show', [
             'course' => $course,
@@ -445,12 +447,11 @@ class CourseCatalogController extends Controller
             ->groupBy('course_id')
             ->pluck('completed', 'course_id');
 
+        $lessonTotals = $this->cachedPublishedLessonsCountsForCourses($courseIds);
+
         return $courseIds
-            ->mapWithKeys(function (int $courseId) use ($completedTotals) {
-                $course = Course::query()->find($courseId);
-                $total = $course instanceof Course
-                    ? (int) $this->publishedLessonsForCourse($course)->count('lessons.id')
-                    : 0;
+            ->mapWithKeys(function (int $courseId) use ($completedTotals, $lessonTotals) {
+                $total = (int) ($lessonTotals[$courseId] ?? 0);
                 $completed = min((int) ($completedTotals[$courseId] ?? 0), $total);
 
                 return [$courseId => [
@@ -745,6 +746,45 @@ class CourseCatalogController extends Controller
             ->orderBy('sort_order')
             ->orderBy('name')
             ->get();
+    }
+
+    protected function cachedModulesForCourse(Course $course): EloquentCollection
+    {
+        if (app()->environment('testing')) {
+            return $this->modulesForCourse($course);
+        }
+
+        return Cache::remember(
+            "course:{$course->id}:catalog-modules:v2",
+            self::COURSE_CATALOG_CACHE_SECONDS,
+            fn (): EloquentCollection => $this->modulesForCourse($course),
+        );
+    }
+
+    protected function cachedPublishedLessonsCountForCourse(Course $course): int
+    {
+        if (app()->environment('testing')) {
+            return (int) $this->publishedLessonsForCourse($course)->count('lessons.id');
+        }
+
+        return (int) Cache::remember(
+            "course:{$course->id}:published-lessons-count:v2",
+            self::COURSE_CATALOG_CACHE_SECONDS,
+            fn (): int => (int) $this->publishedLessonsForCourse($course)->count('lessons.id'),
+        );
+    }
+
+    protected function cachedPublishedLessonsCountsForCourses(Collection $courseIds): array
+    {
+        return $courseIds
+            ->mapWithKeys(function (int $courseId): array {
+                $course = Course::query()->find($courseId);
+
+                return [$courseId => $course instanceof Course
+                    ? $this->cachedPublishedLessonsCountForCourse($course)
+                    : 0];
+            })
+            ->all();
     }
 
     protected function planLessonContextForLesson(User $user, Course $course, Lesson $lesson): ?array

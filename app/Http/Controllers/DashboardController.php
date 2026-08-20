@@ -33,7 +33,12 @@ class DashboardController extends Controller
 
         $today = now()->toDateString();
         $nextTasks = $activePlan?->items()->whereDate('scheduled_date', '>=', $today)->whereNull('completed_at')->limit(5)->get() ?? collect();
-        $availableCourseIds = $user->availableCoursesQuery()->pluck('courses.id');
+        $availableCourses = $user->availableCoursesQuery()
+            ->with(['sphere', 'educationLevel'])
+            ->withCount(['modules', 'lessons'])
+            ->orderBy('name')
+            ->get();
+        $availableCourseIds = $availableCourses->pluck('id');
         $canCreatePlan = $availableCourseIds
             ->diff($activePlansByCourse->keys())
             ->isNotEmpty();
@@ -52,7 +57,7 @@ class DashboardController extends Controller
 
         return view('dashboard.index', [
             'user' => $user,
-            'availableCourses' => $user->availableCoursesQuery()->orderBy('name')->get(),
+            'availableCourses' => $availableCourses,
             'availableCourseIds' => $availableCourseIds,
             'featuredOnlineCourses' => $featuredOnlineCourses,
             'courseProgress' => $courseProgress,
