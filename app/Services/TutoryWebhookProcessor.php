@@ -128,9 +128,16 @@ class TutoryWebhookProcessor
     {
         $courses = $this->courseAccessResolver->coursesForProduct($productId, $this->productName($payload));
 
-        return $courses->isNotEmpty()
-            ? $courses
-            : collect(array_filter([$this->createPlaceholderCourseForPurchase($payload, $productId)]));
+        if ($courses->isNotEmpty()) {
+            return $courses->map(function (Course $course) use ($productId): Course {
+                $course = $this->courseAccessResolver->publishedEquivalentFor($course) ?? $course;
+                $this->courseAccessResolver->rememberProductId($course, $productId);
+
+                return $course;
+            });
+        }
+
+        return collect(array_filter([$this->createPlaceholderCourseForPurchase($payload, $productId)]));
     }
 
     protected function createPlaceholderCourseForPurchase(array $payload, ?string $productId): ?Course

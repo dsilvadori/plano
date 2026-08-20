@@ -133,6 +133,34 @@ class TutoryWebhookTest extends TestCase
         $this->assertTrue($user->courses()->exists());
     }
 
+    public function test_approved_webhook_links_to_published_course_by_normalized_name_and_stores_product_id(): void
+    {
+        Notification::fake();
+
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'slug' => 'gabaritando-santos-inspetor-de-alunos',
+            'tutory_product_id' => null,
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload([
+            'purchase' => [
+                'product_id' => 'produto-tutory-123',
+                'product_name' => '  gabaritando santos - inspetor de alunos  ',
+            ],
+        ]), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'joao@email.com')->firstOrFail();
+
+        $this->assertTrue($user->courses()->whereKey($course)->exists());
+        $this->assertSame('produto-tutory-123', $course->fresh()->tutory_product_id);
+        $this->assertSame(1, Course::query()->count());
+    }
+
     public function test_generic_santos_combo_product_links_student_to_all_active_santos_courses(): void
     {
         Notification::fake();

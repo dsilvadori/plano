@@ -30,9 +30,13 @@ class UserForm
                     ->label('Cursos liberados')
                     ->multiple()
                     ->options(fn (): array => Course::query()
-                        ->where('is_active', true)
                         ->orderBy('name')
-                        ->pluck('name', 'id')
+                        ->get()
+                        ->mapWithKeys(fn (Course $course): array => [
+                            $course->id => $course->is_active
+                                ? $course->name
+                                : "{$course->name} (inativo/provisório)",
+                        ])
                         ->all())
                     ->searchable()
                     ->preload()

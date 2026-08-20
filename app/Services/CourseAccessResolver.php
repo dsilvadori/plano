@@ -55,11 +55,49 @@ class CourseAccessResolver
             return null;
         }
 
+        $normalizedProductName = $this->normalizedName($productName);
+
         return Course::query()
-            ->where('name', $productName)
-            ->orderByDesc('is_active')
-            ->orderByRaw("case when status = 'published' then 1 else 0 end desc")
+            ->get()
+            ->filter(fn (Course $course): bool => $this->normalizedName($course->name) === $normalizedProductName)
+            ->sortByDesc(fn (Course $course): int => ((int) $course->is_active * 2) + ($course->status === 'published' ? 1 : 0))
             ->first();
+    }
+
+    public function rememberProductId(Course $course, ?string $productId): void
+    {
+        if (blank($productId) || filled($course->tutory_product_id)) {
+            return;
+        }
+
+        $course->forceFill(['tutory_product_id' => $productId])->save();
+    }
+
+    public function publishedEquivalentFor(Course $course): ?Course
+    {
+        if ($course->is_active && $course->status === 'published') {
+            return $course;
+        }
+
+        $normalizedName = $this->normalizedName($course->name);
+
+        if (filled($course->tutory_product_id)) {
+            $equivalentByProduct = Course::query()
+                ->where('is_active', true)
+                ->where('status', 'published')
+                ->where('tutory_product_id', $course->tutory_product_id)
+                ->first();
+
+            if ($equivalentByProduct) {
+                return $equivalentByProduct;
+            }
+        }
+
+        return Course::query()
+            ->where('is_active', true)
+            ->where('status', 'published')
+            ->get()
+            ->first(fn (Course $candidate): bool => $this->normalizedName($candidate->name) === $normalizedName);
     }
 
     public function normalizedName(string $name): string
