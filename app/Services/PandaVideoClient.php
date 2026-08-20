@@ -183,6 +183,47 @@ class PandaVideoClient
         return $video && $this->isReusablePandaVideo($video) ? $video : null;
     }
 
+    public function resolveVideoReference(string $reference): string
+    {
+        $reference = trim($reference);
+
+        if ($reference === '') {
+            throw new RuntimeException('Informe a URL ou o ID do vídeo no Panda.');
+        }
+
+        if (! filter_var($reference, FILTER_VALIDATE_URL)) {
+            if ($this->looksLikePandaId($reference)) {
+                return $reference;
+            }
+
+            throw new RuntimeException('Não reconheci esse vídeo do Panda. Informe a URL completa ou o ID do vídeo.');
+        }
+
+        $parts = parse_url($reference);
+        parse_str((string) ($parts['query'] ?? ''), $query);
+
+        foreach (['video_id', 'videoId', 'video', 'id', 'v'] as $key) {
+            $value = (string) ($query[$key] ?? '');
+
+            if ($this->looksLikePandaId($value)) {
+                return $value;
+            }
+        }
+
+        foreach ([$parts['fragment'] ?? '', $parts['path'] ?? ''] as $segment) {
+            if (preg_match('~(?:^|/)(?:videos?|video|embed|watch)/([^/?#]+)~i', (string) $segment, $matches)
+                && $this->looksLikePandaId((string) $matches[1])) {
+                return (string) $matches[1];
+            }
+
+            if (preg_match('~([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})~i', (string) $segment, $matches)) {
+                return (string) $matches[1];
+            }
+        }
+
+        throw new RuntimeException('Não encontrei o ID do vídeo nessa URL do Panda.');
+    }
+
     public function videoIsReady(array $video): bool
     {
         $status = strtoupper((string) ($video['panda_status'] ?? ''));

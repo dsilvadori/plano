@@ -4,10 +4,12 @@ namespace App\Filament\Resources\Lessons\Pages;
 
 use App\Filament\Resources\Lessons\LessonResource;
 use App\Services\ActiveStudyPlanRefresher;
+use App\Services\LessonPandaVideoImporter;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
 use Throwable;
@@ -28,6 +30,53 @@ class EditLesson extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('importPandaVideo')
+                ->label('Importar URL do Panda')
+                ->icon('heroicon-o-video-camera')
+                ->modalHeading('Importar vídeo do Panda para esta aula')
+                ->modalDescription('Cole a URL completa ou o ID do vídeo no Panda. A aula será publicada e a mídia será vinculada a este cadastro.')
+                ->form([
+                    TextInput::make('panda_video_reference')
+                        ->label('URL ou ID do vídeo no Panda')
+                        ->placeholder('https://dashboard.pandavideo.com.br/#/videos/...')
+                        ->required()
+                        ->maxLength(2048),
+                ])
+                ->action(function (array $data, LessonPandaVideoImporter $importer): void {
+                    try {
+                        $lesson = $importer->importFromReference($this->record, (string) $data['panda_video_reference']);
+
+                        app(ActiveStudyPlanRefresher::class)->refreshCoursesForLesson($lesson);
+
+                        $this->record = $lesson;
+                        $this->refreshFormData([
+                            'description',
+                            'type',
+                            'thumbnail_url',
+                            'duration_seconds',
+                            'status',
+                            'panda_video_id',
+                            'panda_status',
+                            'panda_embed_url',
+                            'panda_player_url',
+                            'source_status',
+                        ]);
+
+                        Notification::make()
+                            ->title('Vídeo do Panda importado.')
+                            ->body('A aula foi publicada e a mídia foi vinculada com sucesso.')
+                            ->success()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        report($exception);
+
+                        Notification::make()
+                            ->title('Não foi possível importar o vídeo do Panda')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
+                }),
             Action::make('activatePandaAi')
                 ->label('Gerar Recursos de IA')
                 ->icon('heroicon-o-sparkles')

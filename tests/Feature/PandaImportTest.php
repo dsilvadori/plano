@@ -7,6 +7,7 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\PandaImportRun;
+use App\Services\LessonPandaVideoImporter;
 use App\Services\PandaCourseImporter;
 use App\Services\PandaVideoClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -1320,6 +1321,52 @@ class PandaImportTest extends TestCase
         $this->assertSame($folderId, $run->panda_folder_id);
         $this->assertSame($folderId, $lesson->metadata['folder_id']);
         $this->assertSame($folderUrl, $lesson->metadata['folder_reference']);
+    }
+
+    public function test_single_lesson_panda_import_accepts_full_video_url(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        $videoId = 'b96cfc31-771f-4237-b5ca-015edb0e5a3b';
+        $videoUrl = 'https://dashboard.pandavideo.com.br/#/videos/'.$videoId;
+
+        Http::fake([
+            'panda.test/videos/'.$videoId => Http::response([
+                'id' => $videoId,
+                'title' => 'Aula importada individualmente',
+                'description' => 'Descrição do Panda.',
+                'duration_seconds' => 1320,
+                'thumbnail_url' => 'https://cdn.test/thumb-individual.jpg',
+                'status' => 'CONVERTED',
+                'embed_url' => 'https://player.test/embed/'.$videoId,
+                'player_url' => 'https://player.test/watch/'.$videoId,
+                'folder_id' => 'folder-1',
+            ]),
+        ]);
+
+        $lesson = Lesson::factory()->create([
+            'title' => 'Aula aguardando mídia',
+            'description' => null,
+            'thumbnail_url' => null,
+            'duration_seconds' => 0,
+            'status' => 'draft',
+            'source_status' => 'awaiting_media',
+        ]);
+
+        $updatedLesson = app(LessonPandaVideoImporter::class)->importFromReference($lesson, $videoUrl);
+
+        $this->assertSame($videoId, $updatedLesson->panda_video_id);
+        $this->assertSame('https://player.test/embed/'.$videoId, $updatedLesson->panda_embed_url);
+        $this->assertSame('https://player.test/watch/'.$videoId, $updatedLesson->panda_player_url);
+        $this->assertSame('https://cdn.test/thumb-individual.jpg', $updatedLesson->thumbnail_url);
+        $this->assertSame(1320, $updatedLesson->duration_seconds);
+        $this->assertSame('published', $updatedLesson->status);
+        $this->assertSame('media_ready', $updatedLesson->source_status);
+        $this->assertSame($videoUrl, $updatedLesson->metadata['panda_direct_import_reference']);
     }
 
     public function test_panda_import_from_lessons_area_links_ready_lesson_to_course_by_approximate_planning_name(): void
