@@ -46,6 +46,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/dashboard/cursos/{course:slug}/aulas/{lesson}/resumo.pdf', [CourseCatalogController::class, 'downloadLessonSummary'])->name('courses.lessons.summary.pdf');
     Route::post('/dashboard/cursos/{course:slug}/aulas/{lesson}/ia/panda', [CourseCatalogController::class, 'syncPandaAi'])->name('courses.lessons.ai.panda');
     Route::post('/dashboard/cursos/{course:slug}/aulas/{lesson}/concluir', [CourseCatalogController::class, 'completeLesson'])->name('courses.lessons.complete');
+    Route::post('/dashboard/cursos/{course:slug}/aulas/{lesson}/comentarios', [CourseCatalogController::class, 'storeComment'])->name('courses.lessons.comments.store');
     Route::get('/dashboard/questoes', [QuestionBankController::class, 'index'])->name('questions.index');
     Route::get('/dashboard/questoes/{questionBank}', [QuestionBankController::class, 'show'])->name('questions.show');
     Route::post('/dashboard/questoes/responder/{question}', [QuestionBankController::class, 'answer'])->name('questions.answer');

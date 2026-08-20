@@ -13,16 +13,20 @@ use App\Models\CourseModuleTrack;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
 use App\Models\Lesson;
+use App\Models\LessonComment;
 use App\Models\LessonProgress;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
 use App\Models\Teacher;
 use App\Models\User;
+use App\Notifications\LessonCommentSubmittedNotification;
 use App\Services\PandaVideoClient;
 use App\Services\StudyPlanGenerator;
 use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Notifications\AnonymousNotifiable;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
@@ -83,6 +87,79 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertOk()
             ->assertSee('Municipal')
             ->assertSee('Curso Municipal');
+    }
+
+    public function test_student_can_comment_on_lesson_and_notify_team(): void
+    {
+        Notification::fake();
+
+        [$student, $course, $lesson] = $this->studentCourseAndLesson();
+
+        $this->actingAs($student)
+            ->post(route('courses.lessons.comments.store', [$course->slug, $lesson]), [
+                'body' => 'Tenho uma dúvida sobre o exemplo apresentado na aula.',
+            ])
+            ->assertRedirect();
+
+        $comment = LessonComment::query()->firstOrFail();
+
+        $this->assertSame($student->id, $comment->user_id);
+        $this->assertSame($course->id, $comment->course_id);
+        $this->assertSame($lesson->id, $comment->lesson_id);
+        $this->assertSame('open', $comment->status);
+
+        Notification::assertSentTo(new AnonymousNotifiable, LessonCommentSubmittedNotification::class, function ($notification, array $channels, object $notifiable): bool {
+            return in_array('mail', $channels, true)
+                && $notifiable->routes['mail'] === [
+                    'danielsilva.it@gmail.com',
+                    'cristianoconcursos@gmail.com',
+                    'liliancarol93@gmail.com',
+                ];
+        });
+    }
+
+    public function test_student_comment_blocks_profanity(): void
+    {
+        Notification::fake();
+
+        [$student, $course, $lesson] = $this->studentCourseAndLesson();
+
+        $this->actingAs($student)
+            ->from(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->post(route('courses.lessons.comments.store', [$course->slug, $lesson]), [
+                'body' => 'Essa aula ficou uma merda e eu nao entendi.',
+            ])
+            ->assertRedirect(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertSessionHasErrors('body');
+
+        $this->assertSame(0, LessonComment::query()->count());
+        Notification::assertNothingSent();
+    }
+
+    public function test_student_comment_blocks_fast_duplicate_spam(): void
+    {
+        Notification::fake();
+
+        [$student, $course, $lesson] = $this->studentCourseAndLesson();
+
+        LessonComment::query()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'lesson_id' => $lesson->id,
+            'body' => 'Pode explicar melhor esta parte da aula?',
+            'status' => 'open',
+        ]);
+
+        $this->actingAs($student)
+            ->from(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->post(route('courses.lessons.comments.store', [$course->slug, $lesson]), [
+                'body' => 'Pode explicar melhor esta parte da aula?',
+            ])
+            ->assertRedirect(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertSessionHasErrors('body');
+
+        $this->assertSame(1, LessonComment::query()->count());
+        Notification::assertNothingSent();
     }
 
     public function test_new_courses_receive_start_here_module_and_instruction_track(): void
@@ -1938,5 +2015,40 @@ class CourseCatalogFoundationTest extends TestCase
 
         $this->assertSame('Completa', LessonResource::aiResourcesStatus($lesson));
         $this->assertSame('Ativo', LessonResource::tutorStatusFlag($lesson));
+    }
+
+    protected function studentCourseAndLesson(): array
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Dúvidas da aula',
+            'slug' => 'duvidas-da-aula',
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'status' => 'published',
+            'source_status' => 'media_ready',
+            'panda_video_id' => 'video-comment-test',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $lesson->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 1]]);
+        $lesson->tracks()->syncWithoutDetaching([$track->id => ['sort_order' => 1]]);
+
+        return [$student, $course, $lesson];
     }
 }

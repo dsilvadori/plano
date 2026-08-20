@@ -734,6 +734,78 @@
                     </div>
                 </div>
             @endif
+
+            <section class="mt-6 rounded-3xl border border-white/10 bg-white/5 p-5">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                        <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Comentários</p>
+                        <h2 class="mt-2 text-xl font-semibold text-white">Envio de dúvidas e comentários.</h2>
+                    </div>
+                    <span class="rounded-full border border-white/10 bg-slate-950/60 px-3 py-1 text-xs font-semibold text-slate-300">
+                        {{ $lessonComments->count() }} comentário(s)
+                    </span>
+                </div>
+
+                @if (session('status'))
+                    <p class="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm font-semibold text-emerald-100">{{ session('status') }}</p>
+                @endif
+
+                <form method="POST" action="{{ route('courses.lessons.comments.store', [$course->slug, $lesson]) }}" class="mt-5 space-y-3">
+                    @csrf
+                    <div>
+                        <label for="lesson-comment-body" class="sr-only">Sua dúvida</label>
+                        <textarea
+                            id="lesson-comment-body"
+                            name="body"
+                            rows="4"
+                            maxlength="2000"
+                            required
+                            class="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-400/50 focus:ring-2 focus:ring-sky-400/20"
+                            placeholder="Escreva sua dúvida ou comentário com detalhes para nossa equipe responder."
+                        >{{ old('body') }}</textarea>
+                        @error('body')
+                            <p class="mt-2 text-sm font-semibold text-rose-200">{{ $message }}</p>
+                        @enderror
+                    </div>
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <p class="text-xs leading-5 text-slate-400">Para manter o ambiente saudável, mensagens repetidas, excesso de envios e palavrões são bloqueados automaticamente.</p>
+                        <button type="submit" class="inline-flex items-center justify-center rounded-2xl bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-400/20">
+                            Enviar
+                        </button>
+                    </div>
+                </form>
+
+                @if ($lessonComments->isNotEmpty())
+                    <div class="mt-6 space-y-3">
+                        @foreach ($lessonComments as $comment)
+                            <article class="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                                <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                                    <p class="text-sm font-semibold text-white">{{ $comment->user->name }}</p>
+                                    <p class="text-xs text-slate-500">{{ $comment->created_at->format('d/m/Y H:i') }}</p>
+                                </div>
+                                <p class="mt-3 whitespace-pre-line text-sm leading-6 text-slate-300">{{ $comment->body }}</p>
+
+                                @if ($comment->answer)
+                                    <div class="mt-4 rounded-2xl border border-sky-400/20 bg-sky-400/10 p-4">
+                                        <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                                            <p class="text-sm font-semibold text-sky-100">Resposta da equipe</p>
+                                            <p class="text-xs text-sky-100/70">
+                                                {{ $comment->answeredBy?->name ?: 'Administrador' }}
+                                                @if ($comment->answered_at)
+                                                    · {{ $comment->answered_at->format('d/m/Y H:i') }}
+                                                @endif
+                                            </p>
+                                        </div>
+                                        <p class="mt-3 whitespace-pre-line text-sm leading-6 text-slate-100">{{ $comment->answer }}</p>
+                                    </div>
+                                @else
+                                    <p class="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">Aguardando resposta</p>
+                                @endif
+                            </article>
+                        @endforeach
+                    </div>
+                @endif
+            </section>
         </section>
 
         <aside class="space-y-4">

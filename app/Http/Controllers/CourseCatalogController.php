@@ -9,11 +9,14 @@ use App\Models\CourseModuleTrack;
 use App\Models\CourseSphere;
 use App\Models\EducationLevel;
 use App\Models\Lesson;
+use App\Models\LessonComment;
 use App\Models\LessonProgress;
 use App\Models\QuestionBank;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\User;
+use App\Notifications\LessonCommentSubmittedNotification;
+use App\Services\LessonCommentGuard;
 use App\Services\LessonSummaryPdfGenerator;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
@@ -24,6 +27,7 @@ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
@@ -32,6 +36,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Throwable;
+use Illuminate\Support\Facades\Notification as MailNotification;
 
 class CourseCatalogController extends Controller
 {
@@ -305,10 +310,51 @@ class CourseCatalogController extends Controller
             'planLessonContext' => $planLessonContext,
             'trackLessonContext' => $planLessonContext ? null : $this->trackLessonContextForLesson($course, $lesson),
             'lessonQuestionLinks' => $this->questionLinksForLesson($user, $course, $lesson),
+            'lessonComments' => $this->commentsForLesson($lesson),
             'pandaTutorUrl' => $this->pandaTutorUrlForLesson($lesson),
             'pandaTutorCandidateUrl' => $this->pandaTutorCandidateUrlForLesson($lesson),
             'pandaTutorConfigUrl' => $this->pandaTutorConfigUrlForLesson($lesson),
         ]);
+    }
+
+    public function storeComment(Course $course, Lesson $lesson, Request $request, LessonCommentGuard $guard): RedirectResponse
+    {
+        $user = $request->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
+        abort_unless($this->userCanAccessCourse($user, $course), 403);
+
+        $data = $request->validate([
+            'body' => ['required', 'string', 'min:8', 'max:2000'],
+        ], [
+            'body.required' => 'Escreva sua dúvida antes de enviar.',
+            'body.min' => 'Escreva uma dúvida um pouco mais detalhada.',
+            'body.max' => 'Sua dúvida ficou muito longa. Tente resumir em até 2000 caracteres.',
+        ]);
+
+        $body = trim((string) $data['body']);
+        $guard->validate($user, $body);
+
+        $comment = LessonComment::query()->create([
+            'user_id' => $user->id,
+            'course_id' => $course->id,
+            'lesson_id' => $lesson->id,
+            'body' => $body,
+            'status' => 'open',
+            'ip_address' => $request->ip(),
+            'user_agent' => substr((string) $request->userAgent(), 0, 512),
+        ]);
+        $comment->load(['user', 'course', 'lesson']);
+
+        MailNotification::route('mail', [
+            'danielsilva.it@gmail.com',
+            'cristianoconcursos@gmail.com',
+            'liliancarol93@gmail.com',
+        ])->notify(new LessonCommentSubmittedNotification($comment));
+
+        return back()->with('status', 'Comentário enviado. Nossa equipe vai responder por aqui.');
     }
 
     public function completeLesson(Course $course, Lesson $lesson): RedirectResponse|JsonResponse
@@ -868,6 +914,16 @@ class CourseCatalogController extends Controller
             'track' => $track,
             'lessons' => $track->lessons,
         ];
+    }
+
+    protected function commentsForLesson(Lesson $lesson): Collection
+    {
+        return $lesson->comments()
+            ->with(['user', 'answeredBy'])
+            ->whereIn('status', ['open', 'answered'])
+            ->latest()
+            ->limit(20)
+            ->get();
     }
 
     protected function questionLinksForLesson(User $user, Course $course, Lesson $lesson): Collection

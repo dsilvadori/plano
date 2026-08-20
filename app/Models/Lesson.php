@@ -127,6 +127,11 @@ class Lesson extends Model
         return $this->hasMany(LessonProgress::class);
     }
 
+    public function comments(): HasMany
+    {
+        return $this->hasMany(LessonComment::class);
+    }
+
     public function aiArtifacts(): HasMany
     {
         return $this->hasMany(AiArtifact::class, 'source_id')
