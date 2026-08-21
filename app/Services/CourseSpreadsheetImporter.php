@@ -123,12 +123,7 @@ class CourseSpreadsheetImporter
                 continue;
             }
 
-            $module = $this->resolveModuleForCourse($course, $moduleData['name'])
-                ?? $this->resolveReusableModule($moduleData['name'])
-                ?? new CourseModule([
-                    'course_id' => null,
-                    'name' => $moduleData['name'],
-                ]);
+            $module = $this->resolveModuleForImport($course, $moduleData);
             $moduleTeacherName = filled($moduleData['teacher_name'] ?? null)
                 ? trim((string) $moduleData['teacher_name'])
                 : null;
@@ -519,6 +514,115 @@ class CourseSpreadsheetImporter
             ->orderBy('id')
             ->get()
             ->first(fn (CourseModule $module) => $this->normalizeName($module->name) === $normalizedName);
+    }
+
+    protected function resolveModuleForImport(Course $course, array $moduleData): CourseModule
+    {
+        $moduleName = (string) $moduleData['name'];
+        $courseModule = $this->resolveModuleForCourse($course, $moduleName);
+
+        if ($courseModule) {
+            return $courseModule;
+        }
+
+        $reusableModule = $this->resolveReusableModule($moduleName);
+
+        if (! $reusableModule) {
+            return new CourseModule([
+                'course_id' => null,
+                'name' => $moduleName,
+            ]);
+        }
+
+        if ($this->moduleStructureMatchesImport($reusableModule, $moduleData)) {
+            return $reusableModule;
+        }
+
+        return $this->cloneReusableModuleForImport($reusableModule, $moduleData);
+    }
+
+    protected function cloneReusableModuleForImport(CourseModule $sourceModule, array $moduleData): CourseModule
+    {
+        return new CourseModule([
+            'course_id' => null,
+            'teacher_id' => $sourceModule->teacher_id,
+            'name' => $moduleData['name'] ?: $sourceModule->name,
+            'description' => $sourceModule->description,
+            'teacher_name' => $sourceModule->teacher_name,
+            'type' => $moduleData['type'] ?? $sourceModule->type,
+            'panda_folder_id' => $sourceModule->panda_folder_id,
+            'metadata' => array_merge(is_array($sourceModule->metadata) ? $sourceModule->metadata : [], [
+                'cloned_from_module_id' => $sourceModule->id,
+                'cloned_from_module_name' => $sourceModule->name,
+                'cloned_reason' => 'spreadsheet_structure_differs',
+                'cloned_at' => now()->toIso8601String(),
+            ]),
+        ]);
+    }
+
+    protected function moduleStructureMatchesImport(CourseModule $module, array $moduleData): bool
+    {
+        $existingTrackSignatures = $this->moduleTrackSignatures($module);
+        $incomingTrackSignatures = $this->moduleDataTrackSignatures($moduleData);
+
+        if ($existingTrackSignatures !== [] && $incomingTrackSignatures !== []) {
+            return $existingTrackSignatures === $incomingTrackSignatures;
+        }
+
+        return $this->lessonSignatures($module->planning_lessons) === $this->lessonSignatures($this->lessonsFromModuleData($moduleData));
+    }
+
+    protected function moduleTrackSignatures(CourseModule $module): array
+    {
+        return $module->tracks()
+            ->where('status', 'published')
+            ->with('lessons')
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get()
+            ->map(fn (CourseModuleTrack $track): array => [
+                'name' => $this->normalizeName($track->name),
+                'lessons' => $this->lessonSignatures($track->lessons
+                    ->sortBy(fn (Lesson $lesson): array => [(int) $lesson->pivot?->sort_order, (int) $lesson->sort_order, $lesson->title])
+                    ->map(fn (Lesson $lesson): array => [
+                        'name' => $lesson->title,
+                        'minutes' => (int) $lesson->duration_minutes,
+                    ])
+                    ->values()
+                    ->all()),
+            ])
+            ->values()
+            ->all();
+    }
+
+    protected function moduleDataTrackSignatures(array $moduleData): array
+    {
+        $tracks = collect($moduleData['tracks'] ?? []);
+
+        if ($tracks->count() === 1 && $this->normalizeName((string) ($tracks->first()['name'] ?? '')) === $this->normalizeName((string) ($moduleData['name'] ?? ''))) {
+            return [];
+        }
+
+        return $tracks
+            ->sortBy(fn (array $track): array => [(int) ($track['sort_order'] ?? 0), $this->normalizeName((string) ($track['name'] ?? ''))])
+            ->map(fn (array $track): array => [
+                'name' => $this->normalizeName((string) ($track['name'] ?? 'Aulas')),
+                'lessons' => $this->lessonSignatures($track['lessons'] ?? []),
+            ])
+            ->values()
+            ->all();
+    }
+
+    protected function lessonSignatures(array $lessons): array
+    {
+        return collect($lessons)
+            ->map(fn (array $lesson): array => [
+                'name' => $this->normalizeName((string) ($lesson['name'] ?? '')),
+                'minutes' => (int) ($lesson['minutes'] ?? 0),
+            ])
+            ->filter(fn (array $lesson): bool => $lesson['name'] !== '')
+            ->values()
+            ->all();
     }
 
     protected function resolveCompoundTrackModule(Course $course, string $moduleName, string $trackName): ?CourseModule

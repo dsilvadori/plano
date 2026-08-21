@@ -413,6 +413,62 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('https://player.example.com/original', $existingLesson->fresh()->panda_embed_url);
     }
 
+    public function test_spreadsheet_import_clones_same_named_module_when_tracks_differ_and_keeps_teacher(): void
+    {
+        $teacher = Teacher::factory()->create(['name' => 'Professora Maria Silva']);
+        $libraryCourse = Course::factory()->create(['name' => 'Biblioteca']);
+        $existingModule = CourseModule::factory()->create([
+            'course_id' => $libraryCourse->id,
+            'teacher_id' => $teacher->id,
+            'teacher_name' => 'Professora Maria Silva',
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 30,
+        ]);
+        $existingTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $existingModule->id,
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $existingLesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Substantivo',
+            'duration_seconds' => 1800,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $existingTrack->lessons()->attach($existingLesson->id, ['sort_order' => 1]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-clone-module-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Novo,Portugues,basic,1,Análise sintática,Sujeito e predicado,40',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertSame(2, CourseModule::query()->whereRaw('lower(name) like ?', ['portugu%'])->count());
+        $this->assertFalse($course->modules()->whereKey($existingModule->id)->exists());
+
+        $clonedModule = $course->modules()->where('course_modules.name', 'Portugues')->firstOrFail();
+
+        $this->assertNotSame($existingModule->id, $clonedModule->id);
+        $this->assertSame($teacher->id, $clonedModule->teacher_id);
+        $this->assertSame('Professora Maria Silva', $clonedModule->teacher_name);
+        $this->assertSame($existingModule->id, $clonedModule->metadata['cloned_from_module_id'] ?? null);
+        $this->assertTrue($clonedModule->tracks()->where('name', 'Análise sintática')->exists());
+        $this->assertFalse($existingModule->tracks()->where('name', 'Análise sintática')->exists());
+        $this->assertTrue($existingModule->tracks()->whereKey($existingTrack)->exists());
+    }
+
     public function test_spreadsheet_import_reuses_compound_track_modules_from_catalog(): void
     {
         $classesModule = CourseModule::factory()->create([
