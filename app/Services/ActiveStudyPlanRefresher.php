@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\CourseCatalogController;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
@@ -154,9 +155,28 @@ class ActiveStudyPlanRefresher
 
     protected function coursesForModule(CourseModule $module): Collection
     {
-        $module->loadMissing(['courses']);
+        $module->loadMissing(['course', 'courses', 'studyTracks.course', 'tracks.courses']);
 
-        return $module->courses;
+        $courses = $module->courses;
+
+        if ($module->course) {
+            $courses->push($module->course);
+        }
+
+        foreach ($module->studyTracks as $studyTrack) {
+            if ($studyTrack->course) {
+                $courses->push($studyTrack->course);
+            }
+        }
+
+        foreach ($module->tracks as $track) {
+            $courses = $courses->merge($track->courses);
+        }
+
+        return $courses
+            ->filter()
+            ->unique('id')
+            ->values();
     }
 
     protected function refreshCourses(Collection $courses): int
@@ -164,7 +184,11 @@ class ActiveStudyPlanRefresher
         return $courses
             ->filter()
             ->unique('id')
-            ->sum(fn (Course $course): int => $this->refreshCourseFromNextWeek($course));
+            ->sum(function (Course $course): int {
+                CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
+
+                return $this->refreshCourseFromNextWeek($course);
+            });
     }
 
     protected function officialStudyTrackFor(Course $course): ?StudyTrack

@@ -800,11 +800,21 @@ class CourseCatalogController extends Controller
             return $this->modulesForCourse($course);
         }
 
-        return Cache::remember(
-            "course:{$course->id}:catalog-modules:v2",
-            self::COURSE_CATALOG_CACHE_SECONDS,
-            fn (): EloquentCollection => $this->modulesForCourse($course),
-        );
+        $cacheKey = $this->catalogModulesCacheKey($course);
+        $cachedModules = Cache::get($cacheKey);
+
+        if ($cachedModules instanceof EloquentCollection) {
+            return $cachedModules;
+        }
+
+        if ($cachedModules !== null) {
+            Cache::forget($cacheKey);
+        }
+
+        $modules = $this->modulesForCourse($course);
+        Cache::put($cacheKey, $modules, self::COURSE_CATALOG_CACHE_SECONDS);
+
+        return $modules;
     }
 
     protected function cachedPublishedLessonsCountForCourse(Course $course): int
@@ -814,10 +824,36 @@ class CourseCatalogController extends Controller
         }
 
         return (int) Cache::remember(
-            "course:{$course->id}:published-lessons-count:v2",
+            $this->publishedLessonsCountCacheKey($course),
             self::COURSE_CATALOG_CACHE_SECONDS,
             fn (): int => (int) $this->publishedLessonsForCourse($course)->count('lessons.id'),
         );
+    }
+
+    public static function forgetCourseCatalogCache(int $courseId): void
+    {
+        Cache::forget(self::catalogModulesCacheKeyForCourseId($courseId));
+        Cache::forget(self::publishedLessonsCountCacheKeyForCourseId($courseId));
+    }
+
+    protected function catalogModulesCacheKey(Course $course): string
+    {
+        return self::catalogModulesCacheKeyForCourseId((int) $course->id);
+    }
+
+    protected function publishedLessonsCountCacheKey(Course $course): string
+    {
+        return self::publishedLessonsCountCacheKeyForCourseId((int) $course->id);
+    }
+
+    protected static function catalogModulesCacheKeyForCourseId(int $courseId): string
+    {
+        return "course:{$courseId}:catalog-modules:v2";
+    }
+
+    protected static function publishedLessonsCountCacheKeyForCourseId(int $courseId): string
+    {
+        return "course:{$courseId}:published-lessons-count:v2";
     }
 
     protected function cachedPublishedLessonsCountsForCourses(Collection $courseIds): array

@@ -25,6 +25,7 @@ use App\Services\PandaVideoClient;
 use App\Services\StudyPlanGenerator;
 use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Notifications\AnonymousNotifiable;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
@@ -456,6 +457,23 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertOk()
             ->assertSee('Acesso bloqueado')
             ->assertSee('Comprar acesso');
+    }
+
+    public function test_module_refresh_forgets_student_catalog_cache(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+        ]);
+
+        Cache::put("course:{$course->id}:catalog-modules:v2", 'cache-antigo', 600);
+        Cache::put("course:{$course->id}:published-lessons-count:v2", 99, 600);
+
+        app(\App\Services\ActiveStudyPlanRefresher::class)->refreshCoursesForModule($module);
+
+        $this->assertNull(Cache::get("course:{$course->id}:catalog-modules:v2"));
+        $this->assertNull(Cache::get("course:{$course->id}:published-lessons-count:v2"));
     }
 
     public function test_course_page_shows_published_lessons_from_tracks_when_only_module_is_attached_to_course(): void
