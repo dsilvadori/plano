@@ -54,7 +54,7 @@
 
                 <div class="mt-6 space-y-4">
                     @foreach ($coursesBySphere as $sphere)
-                        <details x-data="{ open: $el.open }" @toggle="open = $el.open" class="rounded-2xl border border-white/10 bg-white/[0.03] transition open:border-sky-400/30 open:bg-sky-400/[0.04]" @if ($loop->first) open @endif>
+                        <details x-data="{ open: $el.open }" @toggle="open = $el.open" class="rounded-2xl border border-white/10 bg-white/[0.03] transition open:border-sky-400/30 open:bg-sky-400/[0.04]">
                             <summary class="flex cursor-pointer list-none flex-col gap-4 px-5 py-4 marker:hidden sm:flex-row sm:items-center sm:justify-between">
                                 <div class="min-w-0">
                                     <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Esfera {{ $loop->iteration }}</p>
@@ -88,7 +88,7 @@
 
                 <div class="mt-6 space-y-4">
                     @foreach ($coursesByEducationLevel as $level)
-                        <details x-data="{ open: $el.open }" @toggle="open = $el.open" class="rounded-2xl border border-white/10 bg-white/[0.03] transition open:border-sky-400/30 open:bg-sky-400/[0.04]" @if ($loop->first) open @endif>
+                        <details x-data="{ open: $el.open }" @toggle="open = $el.open" class="rounded-2xl border border-white/10 bg-white/[0.03] transition open:border-sky-400/30 open:bg-sky-400/[0.04]">
                             <summary class="flex cursor-pointer list-none flex-col gap-4 px-5 py-4 marker:hidden sm:flex-row sm:items-center sm:justify-between">
                                 <div class="min-w-0">
                                     <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Escolaridade {{ $loop->iteration }}</p>
