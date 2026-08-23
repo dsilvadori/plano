@@ -24,6 +24,7 @@ class SetPasswordNotification extends Notification
         $url = route('password.reset', [
             'token' => $this->token,
             'email' => $notifiable->email,
+            'first_access' => 1,
         ]);
 
         return (new MailMessage)
@@ -36,7 +37,6 @@ class SetPasswordNotification extends Notification
             ->line('Você também terá suporte de IA para criar resumos, mapas mentais, questões para treino e conversar no chat para tirar dúvidas.')
             ->line('Para começar, crie sua senha de primeiro acesso no link abaixo.')
             ->action('Criar senha de primeiro acesso', $url)
-            ->line('Este link expira em 2 dias.')
             ->line('Se você não solicitou este acesso, ignore este e-mail.')
             ->line('Bons estudos!')
             ->salutation('Equipe Vencendo Concursos');

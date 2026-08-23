@@ -72,7 +72,7 @@ class TutoryWebhookProcessor
             }
 
             if ($user->isStudent() || $user->isSubscriber()) {
-                $token = Password::broker()->createToken($user);
+                $token = Password::broker('first_access')->createToken($user);
                 $user->sendSetPasswordNotification($token);
             }
 

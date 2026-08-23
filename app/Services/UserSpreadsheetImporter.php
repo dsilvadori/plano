@@ -58,7 +58,7 @@ class UserSpreadsheetImporter
                 $stats['missing_courses'] += $this->countMissingCourses($studentData['courses']);
 
                 if ($sendFirstAccessEmail && $wasRecentlyCreated) {
-                    $token = Password::broker()->createToken($user);
+                    $token = Password::broker('first_access')->createToken($user);
                     $user->sendSetPasswordNotification($token);
                     $stats['emails_sent']++;
                 }

@@ -314,14 +314,15 @@ class AdminAccessTest extends TestCase
         $this->assertSame('Criar senha de primeiro acesso', $mail->actionText);
         $this->assertStringContainsString(route('password.reset', ['token' => 'token-teste'], false), $mail->actionUrl);
         $this->assertStringContainsString('email=aluno%40example.com', $mail->actionUrl);
+        $this->assertStringContainsString('first_access=1', $mail->actionUrl);
         $this->assertStringContainsString('Olá, Aluno Teste!', $html);
         $this->assertStringContainsString('Seu acesso à nova Plataforma Vencendo Concursos foi criado.', $html);
         $this->assertStringContainsString('criar seu plano de estudos', $html);
         $this->assertStringContainsString('assistir às aulas do seu curso', $html);
         $this->assertStringContainsString('suporte de IA para criar resumos, mapas mentais, questões para treino', $html);
         $this->assertStringContainsString('chat para tirar dúvidas', $html);
-        $this->assertStringContainsString('Este link expira em 2 dias.', $html);
-        $this->assertSame(2880, config('auth.passwords.users.expire'));
+        $this->assertStringNotContainsString('Este link expira em 2 dias.', $html);
+        $this->assertSame(52560000, config('auth.passwords.first_access.expire'));
         $this->assertStringContainsString('Se você estiver com dificuldade para clicar no botão', $html);
         $this->assertStringContainsString('Todos os direitos reservados.', $html);
         $this->assertStringNotContainsString('Regards', $html);

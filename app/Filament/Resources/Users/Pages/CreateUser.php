@@ -29,7 +29,7 @@ class CreateUser extends CreateRecord
             return;
         }
 
-        $token = Password::broker()->createToken($this->record);
+        $token = Password::broker('first_access')->createToken($this->record);
         $this->record->sendSetPasswordNotification($token);
 
         Notification::make()

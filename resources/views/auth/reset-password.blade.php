@@ -9,6 +9,7 @@
         @csrf
 
         <input type="hidden" name="token" value="{{ $request->route('token') }}">
+        <input type="hidden" name="first_access" value="{{ $request->boolean('first_access') ? '1' : '0' }}">
 
         <div>
             <x-input-label for="email" :value="'E-mail'" />

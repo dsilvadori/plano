@@ -2,10 +2,13 @@
 
 namespace Tests\Feature\Auth;
 
+use App\Models\Course;
 use App\Models\User;
 use App\Notifications\ResetPasswordNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Password;
 use Tests\TestCase;
 
 class PasswordResetTest extends TestCase
@@ -83,6 +86,69 @@ class PasswordResetTest extends TestCase
 
             return true;
         });
+    }
+
+    public function test_first_access_password_redirects_to_main_course_and_stores_cookie(): void
+    {
+        $user = User::factory()->create([
+            'email' => 'aluno@example.com',
+            'role' => 'student',
+        ]);
+        $course = Course::factory()->create([
+            'name' => 'Curso Principal',
+            'slug' => 'curso-principal',
+        ]);
+        $user->courses()->attach($course);
+
+        $token = Password::broker('first_access')->createToken($user);
+
+        $response = $this->post('/reset-password', [
+            'token' => $token,
+            'email' => $user->email,
+            'first_access' => '1',
+            'password' => 'nova-senha-segura',
+            'password_confirmation' => 'nova-senha-segura',
+        ]);
+
+        $response
+            ->assertSessionHasNoErrors()
+            ->assertRedirect(route('courses.show', ['course' => $course->slug]))
+            ->assertCookie('vc_first_access_completed');
+
+        $this->assertAuthenticatedAs($user);
+    }
+
+    public function test_used_first_access_link_redirects_to_login_when_completion_cookie_exists(): void
+    {
+        $user = User::factory()->create([
+            'email' => 'aluno@example.com',
+            'role' => 'student',
+        ]);
+
+        $token = Password::broker('first_access')->createToken($user);
+
+        $response = $this->post('/reset-password', [
+            'token' => $token,
+            'email' => $user->email,
+            'first_access' => '1',
+            'password' => 'nova-senha-segura',
+            'password_confirmation' => 'nova-senha-segura',
+        ]);
+
+        $completionCookie = collect($response->headers->getCookies())
+            ->first(fn ($cookie) => $cookie->getName() === 'vc_first_access_completed');
+
+        $this->assertNotNull($completionCookie);
+
+        Auth::logout();
+        $this->flushSession();
+
+        $this
+            ->withUnencryptedCookie($completionCookie->getName(), $completionCookie->getValue())
+            ->get('/reset-password/'.$token.'?email='.urlencode($user->email).'&first_access=1')
+            ->assertRedirect(route('login'))
+            ->assertSessionHas('status', 'Sua senha já foi criada. Entre para acessar seu curso.')
+            ->assertSessionHas('url.intended', route('courses.mine'));
     }
 
     public function test_reset_password_email_is_fully_in_portuguese(): void

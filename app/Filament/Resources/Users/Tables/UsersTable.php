@@ -90,7 +90,7 @@ class UsersTable
                     ->label('Reenviar acesso')
                     ->color('gray')
                     ->action(function ($record) {
-                        $token = Password::broker()->createToken($record);
+                        $token = Password::broker('first_access')->createToken($record);
                         $record->sendSetPasswordNotification($token);
 
                         Notification::make()->title('E-mail de criação de senha reenviado.')->success()->send();
