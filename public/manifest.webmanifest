@@ -10,18 +10,10 @@
   "description": "Plano de estudos personalizado para alunos da Vencendo Concursos.",
   "icons": [
     {
-      "src": "https://vencendoconcursos.com.br/wp-content/uploads/2020/05/cropped-logo-comercial-2-32x32.png",
-      "sizes": "32x32",
-      "type": "image/png",
+      "src": "/favicon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
       "purpose": "any maskable"
-    }
-  ],
-  "screenshots": [
-    {
-      "src": "https://vencendoconcursos.com.br/wp-content/uploads/2020/05/cropped-logo-comercial-2-32x32.png",
-      "sizes": "32x32",
-      "type": "image/png",
-      "form_factor": "wide"
     }
   ]
 }

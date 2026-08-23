@@ -139,7 +139,7 @@ html[data-theme="light"] .theme-toggle-icon-sun {
     display: block;
 }
 
-.theme-toggle + #install-app-button {
+.theme-toggle + .install-app-button {
     margin-top: .75rem;
 }
 
@@ -493,7 +493,7 @@ html[data-theme="light"] .course-carousel-arrow:hover {
     background: #eef2ff !important;
 }
 
-html[data-theme="light"] #install-app-button {
+html[data-theme="light"] .install-app-button {
     border-color: rgba(24, 24, 165, .2) !important;
     background: var(--vc-primary) !important;
     color: var(--vc-white) !important;

@@ -77,10 +77,10 @@
             <div class="mt-6">
                 <x-theme-toggle class="w-full" />
 
-                <button id="install-app-button" type="button" class="hidden w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
+                <button data-install-app-button type="button" class="install-app-button hidden w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
                     Instalar aplicativo
                 </button>
-                <p id="ios-install-hint" class="hidden mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
+                <p data-ios-install-hint class="hidden mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
                     No iPhone ou iPad, toque em compartilhar e depois em “Adicionar à Tela de Início”.
                 </p>
             </div>
@@ -120,6 +120,12 @@
                 <a href="/admin" class="nav-pill">Painel admin</a>
             @endif
             <x-theme-toggle class="w-full lg:hidden" />
+            <button data-install-app-button type="button" class="install-app-button hidden w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
+                Instalar aplicativo
+            </button>
+            <p data-ios-install-hint class="hidden rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
+                No iPhone ou iPad, toque em compartilhar e depois em “Adicionar à Tela de Início”.
+            </p>
             <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
             <form method="POST" action="{{ route('logout') }}">
                 @csrf

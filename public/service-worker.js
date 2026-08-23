@@ -1,7 +1,8 @@
-const CACHE_NAME = 'plano-vc-v3';
+const CACHE_NAME = 'plano-vc-v4';
 const ASSETS = [
     '/manifest.webmanifest',
     '/images/vencendo-concursos-logo-white.webp',
+    '/favicon.svg',
 ];
 
 const isLocalhost = self.location.hostname === 'localhost' || self.location.hostname === '127.0.0.1';
