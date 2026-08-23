@@ -175,39 +175,48 @@ let deferredInstallPrompt = null;
 
 const installButtons = () => Array.from(document.querySelectorAll('[data-install-app-button]'));
 
-const hideInstallButtons = () => {
-    installButtons().forEach((installButton) => {
-        installButton.classList.add('hidden');
-        installButton.onclick = null;
-    });
+const appHomeUrl = '/dashboard';
+
+const isRunningAsInstalledApp = () => {
+    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
 };
 
-const showInstallButtons = () => {
+const openAppHome = () => {
+    window.location.assign(appHomeUrl);
+};
+
+const updateInstallButtons = () => {
     installButtons().forEach((installButton) => {
-        installButton.classList.remove('hidden');
+        installButton.textContent = deferredInstallPrompt || ! isRunningAsInstalledApp()
+            ? 'Instalar aplicativo'
+            : 'Abrir aplicativo';
+
         installButton.onclick = async () => {
             if (!deferredInstallPrompt) {
+                openAppHome();
                 return;
             }
 
             deferredInstallPrompt.prompt();
             await deferredInstallPrompt.userChoice;
             deferredInstallPrompt = null;
-            hideInstallButtons();
+            updateInstallButtons();
         };
     });
 };
+
+updateInstallButtons();
 
 window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
     deferredInstallPrompt = event;
 
-    showInstallButtons();
+    updateInstallButtons();
 });
 
 window.addEventListener('appinstalled', () => {
     deferredInstallPrompt = null;
-    hideInstallButtons();
+    updateInstallButtons();
 });
 
 window.addEventListener('load', () => {

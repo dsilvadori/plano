@@ -77,7 +77,7 @@
             <div class="mt-6">
                 <x-theme-toggle class="w-full" />
 
-                <button data-install-app-button type="button" class="install-app-button hidden w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
+                <button data-install-app-button type="button" class="install-app-button w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
                     Instalar aplicativo
                 </button>
                 <p data-ios-install-hint class="hidden mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
@@ -120,7 +120,7 @@
                 <a href="/admin" class="nav-pill">Painel admin</a>
             @endif
             <x-theme-toggle class="w-full lg:hidden" />
-            <button data-install-app-button type="button" class="install-app-button hidden w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
+            <button data-install-app-button type="button" class="install-app-button w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
                 Instalar aplicativo
             </button>
             <p data-ios-install-hint class="hidden rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
