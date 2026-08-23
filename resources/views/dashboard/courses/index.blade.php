@@ -22,11 +22,7 @@
                     </div>
                 </div>
 
-                <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
-                    @foreach ($featuredCourses as $course)
-                        @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null, 'activePlan' => $activePlansByCourse->get($course->id)])
-                    @endforeach
-                </div>
+                @include('dashboard.courses.partials.course-carousel', ['courses' => $featuredCourses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse])
             </section>
         @endif
 
@@ -36,45 +32,82 @@
                 <h2 class="mt-2 text-2xl font-semibold text-white">Últimos cursos disponíveis</h2>
             </div>
 
-            <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
-                @forelse ($latestCourses as $course)
-                    @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null, 'activePlan' => $activePlansByCourse->get($course->id)])
-                @empty
-                    <div class="card-subtle">
-                        <p class="text-sm text-slate-300">Nenhum curso publicado no momento.</p>
-                    </div>
-                @endforelse
+            @include('dashboard.courses.partials.course-carousel', ['courses' => $latestCourses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse, 'emptyMessage' => 'Nenhum curso publicado no momento.'])
+        </section>
+
+        <section class="card-panel">
+            <div>
+                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Catálogo de cursos</p>
+                <h2 class="mt-2 text-2xl font-semibold text-white">Todos os cursos publicados</h2>
+                <p class="mt-2 text-sm text-slate-300">{{ $catalogCourses->count() }} curso(s) disponível(is) no catálogo.</p>
             </div>
+
+            @include('dashboard.courses.partials.course-carousel', ['courses' => $catalogCourses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse, 'emptyMessage' => 'Nenhum curso publicado no momento.'])
         </section>
 
         @if ($coursesBySphere->isNotEmpty())
-            <section class="space-y-6">
-                @foreach ($coursesBySphere as $sphere)
-                    <div class="card-panel">
-                        <div>
-                            <p class="text-sm uppercase tracking-[0.25em] text-amber-300">{{ $sphere->name }}</p>
-                            <h2 class="mt-2 text-2xl font-semibold text-white">Cursos por esfera</h2>
-                        </div>
+            <section class="card-panel">
+                <div>
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Esfera</p>
+                    <h2 class="mt-2 text-2xl font-semibold text-white">Cursos por esfera</h2>
+                </div>
 
-                        <div class="mt-6 grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
-                            @foreach ($sphere->courses as $course)
-                                @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $accessibleCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null, 'activePlan' => $activePlansByCourse->get($course->id)])
-                            @endforeach
-                        </div>
-                    </div>
-                @endforeach
+                <div class="mt-6 space-y-4">
+                    @foreach ($coursesBySphere as $sphere)
+                        <details x-data="{ open: $el.open }" @toggle="open = $el.open" class="rounded-2xl border border-white/10 bg-white/[0.03] transition open:border-sky-400/30 open:bg-sky-400/[0.04]" @if ($loop->first) open @endif>
+                            <summary class="flex cursor-pointer list-none flex-col gap-4 px-5 py-4 marker:hidden sm:flex-row sm:items-center sm:justify-between">
+                                <div class="min-w-0">
+                                    <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Esfera {{ $loop->iteration }}</p>
+                                    <h3 class="mt-2 text-lg font-semibold text-white">{{ $sphere->name }}</h3>
+                                    <p class="mt-1 text-sm text-slate-400">{{ $sphere->courses->count() }} curso(s) publicado(s).</p>
+                                </div>
+                                <span class="course-accordion-toggle inline-flex min-w-24 items-center justify-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold">
+                                    <span x-show="!open">Abrir</span>
+                                    <span x-show="open" x-cloak>Fechar</span>
+                                    <svg class="h-4 w-4 transition" :class="{ 'rotate-180': open }" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                        <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clip-rule="evenodd" />
+                                    </svg>
+                                </span>
+                            </summary>
+
+                            <div class="border-t border-white/10 px-5 pb-5">
+                                @include('dashboard.courses.partials.course-carousel', ['courses' => $sphere->courses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse])
+                            </div>
+                        </details>
+                    @endforeach
+                </div>
             </section>
         @endif
 
-        @if ($educationLevels->isNotEmpty())
+        @if ($coursesByEducationLevel->isNotEmpty())
             <section class="card-panel">
-                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Escolaridade</p>
-                <h2 class="mt-2 text-2xl font-semibold text-white">Filtros que já estão prontos para o catálogo</h2>
-                <div class="mt-5 flex flex-wrap gap-3">
-                    @foreach ($educationLevels as $level)
-                        <span class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-100">
-                            {{ $level->name }} · {{ $level->courses_count }} curso(s)
-                        </span>
+                <div>
+                    <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Escolaridade</p>
+                    <h2 class="mt-2 text-2xl font-semibold text-white">Cursos por escolaridade</h2>
+                </div>
+
+                <div class="mt-6 space-y-4">
+                    @foreach ($coursesByEducationLevel as $level)
+                        <details x-data="{ open: $el.open }" @toggle="open = $el.open" class="rounded-2xl border border-white/10 bg-white/[0.03] transition open:border-sky-400/30 open:bg-sky-400/[0.04]" @if ($loop->first) open @endif>
+                            <summary class="flex cursor-pointer list-none flex-col gap-4 px-5 py-4 marker:hidden sm:flex-row sm:items-center sm:justify-between">
+                                <div class="min-w-0">
+                                    <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Escolaridade {{ $loop->iteration }}</p>
+                                    <h3 class="mt-2 text-lg font-semibold text-white">{{ $level->name }}</h3>
+                                    <p class="mt-1 text-sm text-slate-400">{{ $level->courses->count() }} curso(s) publicado(s).</p>
+                                </div>
+                                <span class="course-accordion-toggle inline-flex min-w-24 items-center justify-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold">
+                                    <span x-show="!open">Abrir</span>
+                                    <span x-show="open" x-cloak>Fechar</span>
+                                    <svg class="h-4 w-4 transition" :class="{ 'rotate-180': open }" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                        <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clip-rule="evenodd" />
+                                    </svg>
+                                </span>
+                            </summary>
+
+                            <div class="border-t border-white/10 px-5 pb-5">
+                                @include('dashboard.courses.partials.course-carousel', ['courses' => $level->courses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse])
+                            </div>
+                        </details>
                     @endforeach
                 </div>
             </section>

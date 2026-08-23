@@ -70,6 +70,13 @@ class CourseCatalogController extends Controller
             ->limit(8)
             ->get();
 
+        $catalogCourses = $this->publishedCourses()
+            ->with(['sphere', 'educationLevel'])
+            ->withCount(['modules', 'lessons'])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+
         $coursesBySphere = CourseSphere::query()
             ->where('is_active', true)
             ->whereHas('courses', fn (Builder $query) => $this->publishedCourses($query))
@@ -78,16 +85,20 @@ class CourseCatalogController extends Controller
                 ->withCount(['modules', 'lessons'])
                 ->orderBy('sort_order')
                 ->orderBy('name')
-                ->limit(6),
             ])
             ->orderBy('sort_order')
             ->orderBy('name')
             ->get();
 
-        $educationLevels = EducationLevel::query()
+        $coursesByEducationLevel = EducationLevel::query()
             ->where('is_active', true)
             ->whereHas('courses', fn (Builder $query) => $this->publishedCourses($query))
-            ->withCount(['courses' => fn (Builder $query) => $this->publishedCourses($query)])
+            ->with(['courses' => fn ($query) => $this->publishedCourses($query)
+                ->with(['sphere', 'educationLevel'])
+                ->withCount(['modules', 'lessons'])
+                ->orderBy('sort_order')
+                ->orderBy('name')
+            ])
             ->orderBy('sort_order')
             ->orderBy('name')
             ->get();
@@ -95,7 +106,9 @@ class CourseCatalogController extends Controller
         $courseProgress = $this->progressForCourses(
             $featuredCourses
                 ->concat($latestCourses)
-                ->concat($coursesBySphere->flatMap->courses),
+                ->concat($catalogCourses)
+                ->concat($coursesBySphere->flatMap->courses)
+                ->concat($coursesByEducationLevel->flatMap->courses),
             $user,
         );
 
@@ -104,8 +117,9 @@ class CourseCatalogController extends Controller
             'accessibleCourseIds' => $accessibleCourseIds,
             'featuredCourses' => $featuredCourses,
             'latestCourses' => $latestCourses,
+            'catalogCourses' => $catalogCourses,
             'coursesBySphere' => $coursesBySphere,
-            'educationLevels' => $educationLevels,
+            'coursesByEducationLevel' => $coursesByEducationLevel,
             'courseProgress' => $courseProgress,
             'activePlansByCourse' => $this->activePlansByCourse($user),
         ]);

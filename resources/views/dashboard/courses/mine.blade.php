@@ -8,18 +8,16 @@
     </x-slot>
 
     <section class="card-panel">
-        <div class="grid gap-5 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
-            @forelse ($courses as $course)
-                @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => true, 'progress' => $courseProgress[$course->id] ?? null, 'activePlan' => $activePlansByCourse->get($course->id)])
-            @empty
-                <div class="card-subtle">
-                    <p class="text-sm font-semibold text-white">Você ainda não tem cursos liberados.</p>
-                    <p class="mt-2 text-sm text-slate-400">Quando uma matrícula for vinculada ao seu usuário, o curso aparecerá aqui.</p>
-                    <a href="{{ route('courses.index') }}" class="mt-4 inline-flex rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
-                        Ver catálogo
-                    </a>
-                </div>
-            @endforelse
-        </div>
+        @if ($courses->isNotEmpty())
+            @include('dashboard.courses.partials.course-carousel', ['courses' => $courses, 'forceAccess' => true, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse])
+        @else
+            <div class="card-subtle">
+                <p class="text-sm font-semibold text-white">Você ainda não tem cursos liberados.</p>
+                <p class="mt-2 text-sm text-slate-400">Quando uma matrícula for vinculada ao seu usuário, o curso aparecerá aqui.</p>
+                <a href="{{ route('courses.index') }}" class="mt-4 inline-flex rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
+                    Ver catálogo
+                </a>
+            </div>
+        @endif
     </section>
 </x-app-layout>

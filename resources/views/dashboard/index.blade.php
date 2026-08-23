@@ -52,11 +52,7 @@
                         </a>
                     </div>
 
-                    <div class="mt-5 grid gap-4 sm:grid-cols-[repeat(auto-fill,minmax(18rem,22rem))]">
-                        @foreach ($featuredOnlineCourses as $course)
-                            @include('dashboard.courses.partials.course-card', ['course' => $course, 'hasAccess' => $availableCourseIds->contains($course->id), 'progress' => $courseProgress[$course->id] ?? null, 'activePlan' => $activePlansByCourse->get($course->id)])
-                        @endforeach
-                    </div>
+                    @include('dashboard.courses.partials.course-carousel', ['courses' => $featuredOnlineCourses, 'accessibleCourseIds' => $availableCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse])
                 </div>
             @endif
 
