@@ -175,25 +175,23 @@ let deferredInstallPrompt = null;
 
 const installButtons = () => Array.from(document.querySelectorAll('[data-install-app-button]'));
 
-const appHomeUrl = '/dashboard';
-
 const isRunningAsInstalledApp = () => {
     return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
 };
 
-const openAppHome = () => {
-    window.location.assign(appHomeUrl);
-};
-
 const updateInstallButtons = () => {
     installButtons().forEach((installButton) => {
-        installButton.textContent = deferredInstallPrompt || ! isRunningAsInstalledApp()
-            ? 'Instalar aplicativo'
-            : 'Abrir aplicativo';
+        if (isRunningAsInstalledApp()) {
+            installButton.classList.add('hidden');
+            installButton.onclick = null;
+            return;
+        }
+
+        installButton.classList.remove('hidden');
+        installButton.textContent = 'Instalar aplicativo';
 
         installButton.onclick = async () => {
             if (!deferredInstallPrompt) {
-                openAppHome();
                 return;
             }
 
