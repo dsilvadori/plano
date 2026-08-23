@@ -133,7 +133,18 @@ class LessonResource extends Resource
                 ->label('Duração em segundos')
                 ->numeric()
                 ->default(0)
-                ->required(),
+                ->required()
+                ->suffix('s')
+                ->live(onBlur: true)
+                ->afterStateHydrated(fn ($state, Set $set) => $set('duration_minutes_preview', self::durationSecondsToMinutes($state)))
+                ->afterStateUpdated(fn ($state, Set $set) => $set('duration_minutes_preview', self::durationSecondsToMinutes($state))),
+            TextInput::make('duration_minutes_preview')
+                ->label('Duração em minutos')
+                ->numeric()
+                ->disabled()
+                ->dehydrated(false)
+                ->suffix('min')
+                ->helperText('Calculada automaticamente a partir da duração em segundos.'),
             Select::make('library_video_lesson_id')
                 ->label('Usar vídeo da biblioteca')
                 ->options(fn (): array => self::libraryVideoOptions())
@@ -575,11 +586,17 @@ class LessonResource extends Resource
         $set('type', 'video');
         $set('thumbnail_url', $lesson->thumbnail_url);
         $set('duration_seconds', (int) $lesson->duration_seconds);
+        $set('duration_minutes_preview', self::durationSecondsToMinutes($lesson->duration_seconds));
         $set('panda_video_id', $lesson->panda_video_id);
         $set('panda_embed_url', $lesson->panda_embed_url);
         $set('panda_player_url', $lesson->panda_player_url);
         $set('panda_status', $lesson->panda_status);
         $set('source_status', 'media_ready');
+    }
+
+    protected static function durationSecondsToMinutes(mixed $seconds): int
+    {
+        return (int) ceil(max(0, (int) $seconds) / 60);
     }
 
     protected static function libraryVideoQuery(?string $search = null): \Illuminate\Database\Eloquent\Builder
