@@ -18,6 +18,10 @@ class CourseModule extends Model
 
     protected static function booted(): void
     {
+        static::creating(function (CourseModule $module): void {
+            $module->inheritTeacherFromSameNamedModule();
+        });
+
         static::deleting(function (CourseModule $module): void {
             $module->onlineLessons()->detach();
             $module->courses()->detach();
@@ -34,6 +38,44 @@ class CourseModule extends Model
                 ]);
         });
 
+    }
+
+    protected function inheritTeacherFromSameNamedModule(): void
+    {
+        if (blank($this->name) || (filled($this->teacher_id) && filled($this->teacher_name))) {
+            return;
+        }
+
+        $normalizedName = $this->normalizedModuleName($this->name);
+
+        $sourceModule = static::query()
+            ->with('teacher')
+            ->oldest('id')
+            ->get()
+            ->first(fn (CourseModule $module): bool => $this->normalizedModuleName($module->name) === $normalizedName
+                && (filled($module->teacher_id) || filled($module->teacher_name)));
+
+        if (! $sourceModule) {
+            return;
+        }
+
+        if (blank($this->teacher_id) && filled($sourceModule->teacher_id)) {
+            $this->teacher_id = $sourceModule->teacher_id;
+        }
+
+        if (blank($this->teacher_name)) {
+            $this->teacher_name = $sourceModule->teacher_name ?: $sourceModule->teacher?->name;
+        }
+    }
+
+    protected function normalizedModuleName(?string $name): string
+    {
+        return Str::of((string) $name)
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/\s+/u', ' ')
+            ->trim()
+            ->value();
     }
 
     protected $fillable = [
