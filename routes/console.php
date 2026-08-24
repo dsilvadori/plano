@@ -10,7 +10,6 @@ use App\Services\CourseAccessResolver;
 use App\Services\CourseLessonMediaImporter;
 use App\Services\LessonCourseLinker;
 use App\Services\PandaVideoClient;
-use App\Services\QuestionBankAutoLinker;
 use App\Services\QuestionPdfImporter;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Foundation\Inspiring;
@@ -53,20 +52,6 @@ Artisan::command('study-plans:refresh-active {--course-id=* : Limita a atualiza�
 
     return 0;
 })->purpose('Atualiza planos ativos preservando progresso e semanas próximas');
-
-Artisan::command('question-banks:auto-link', function (QuestionBankAutoLinker $linker) {
-    $totals = $linker->linkAll(function (QuestionBank $bank, array $result): void {
-        if ($result['modules'] === 0 && $result['tracks'] === 0 && $result['lessons'] === 0) {
-            return;
-        }
-
-        $this->line("{$bank->id} - {$bank->title}: +{$result['modules']} módulo(s), +{$result['tracks']} trilha(s), +{$result['lessons']} aula(s)");
-    });
-
-    $this->info("Bancos processados: {$totals['banks']}. Vínculos criados: {$totals['modules']} módulo(s), {$totals['tracks']} trilha(s), {$totals['lessons']} aula(s).");
-
-    return 0;
-})->purpose('Vincula bancos de questões a módulos, trilhas e aulas com nomes correspondentes');
 
 Artisan::command('courses:expand-combo {comboName}', function (string $comboName) {
     $comboCourses = app(CourseAccessResolver::class)->coursesForCombo($comboName);
@@ -452,7 +437,7 @@ Artisan::command('lessons:sync-panda-durations {--lesson-id=* : ID de aula espec
 
                 try {
                     $video = $panda->video((string) $lesson->panda_video_id, data_get($lesson->metadata, 'folder_id'));
-                } catch (\Throwable $exception) {
+                } catch (Throwable $exception) {
                     $stats['failed']++;
                     $this->warn("Falha ao consultar aula {$lesson->id} ({$lesson->panda_video_id}): {$exception->getMessage()}");
 

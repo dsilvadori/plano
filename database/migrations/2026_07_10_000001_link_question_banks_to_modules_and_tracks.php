@@ -39,36 +39,6 @@ return new class extends Migration
             $table->index(['lesson_id', 'question_bank_id'], 'qb_lesson_lesson_idx');
         });
 
-        DB::table('questions')
-            ->select(['question_bank_id', 'course_module_id'])
-            ->whereNotNull('course_module_id')
-            ->distinct()
-            ->orderBy('question_bank_id')
-            ->get()
-            ->each(function (object $row): void {
-                DB::table('question_bank_course_module')->insertOrIgnore([
-                    'question_bank_id' => $row->question_bank_id,
-                    'course_module_id' => $row->course_module_id,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
-            });
-
-        DB::table('questions')
-            ->select(['question_bank_id', 'lesson_id'])
-            ->whereNotNull('lesson_id')
-            ->distinct()
-            ->orderBy('question_bank_id')
-            ->get()
-            ->each(function (object $row): void {
-                DB::table('question_bank_lesson')->insertOrIgnore([
-                    'question_bank_id' => $row->question_bank_id,
-                    'lesson_id' => $row->lesson_id,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
-            });
-
         DB::table('questions')->update([
             'course_id' => null,
             'course_module_id' => null,

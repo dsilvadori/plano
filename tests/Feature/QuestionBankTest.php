@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\QuestionBanks\QuestionBankResource;
 use App\Jobs\GenerateQuestionCommentary;
 use App\Models\Course;
 use App\Models\CourseModule;
@@ -12,7 +13,6 @@ use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\User;
 use App\Services\GeminiQuestionCommentaryGenerator;
-use App\Services\QuestionBankAutoLinker;
 use App\Services\QuestionPdfImporter;
 use App\Services\QuestionSpreadsheetImporter;
 use App\Support\QuestionTextRenderer;
@@ -260,7 +260,7 @@ TXT;
         $this->assertFalse($correct->fresh()->is_correct);
     }
 
-    public function test_question_bank_auto_links_to_matching_module_track_and_lesson_when_saved(): void
+    public function test_question_bank_does_not_auto_link_to_matching_module_track_or_lesson_when_saved(): void
     {
         $course = Course::factory()->create(['status' => 'published']);
         $module = CourseModule::factory()->create([
@@ -286,37 +286,133 @@ TXT;
             'status' => 'published',
         ]);
 
+        $this->assertFalse($bank->fresh()->modules()->whereKey($module->id)->exists());
+        $this->assertFalse($bank->fresh()->tracks()->whereKey($track->id)->exists());
+        $this->assertFalse($bank->fresh()->lessons()->whereKey($lesson->id)->exists());
+    }
+
+    public function test_question_bank_manual_links_to_module_track_and_lesson_are_kept(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Classe de Palavras',
+        ]);
+        $track = $module->tracks()->create([
+            'name' => 'Substantivo e Adjetivo',
+            'slug' => 'substantivo-e-adjetivo',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Classes de Palavras - Substantivo e Adjetivo',
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Classe de palavras - Substantivo e Adjetivo',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $bank->modules()->sync([$module->id]);
+        $bank->tracks()->sync([$track->id]);
+        $bank->lessons()->sync([$lesson->id]);
+
         $this->assertTrue($bank->fresh()->modules()->whereKey($module->id)->exists());
         $this->assertTrue($bank->fresh()->tracks()->whereKey($track->id)->exists());
         $this->assertTrue($bank->fresh()->lessons()->whereKey($lesson->id)->exists());
     }
 
-    public function test_existing_question_banks_can_be_auto_linked_after_lessons_are_available(): void
+    public function test_question_bank_admin_sync_keeps_only_current_manual_links(): void
     {
+        $course = Course::factory()->create(['status' => 'published']);
+        $oldModule = CourseModule::factory()->create(['course_id' => $course->id]);
+        $currentModule = CourseModule::factory()->create(['course_id' => $course->id]);
+        $oldTrack = $oldModule->tracks()->create([
+            'name' => 'Frações antigas',
+            'slug' => 'fracoes-antigas',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $currentTrack = $currentModule->tracks()->create([
+            'name' => 'Frações atuais',
+            'slug' => 'fracoes-atuais',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $oldLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $oldModule->id,
+            'course_module_track_id' => $oldTrack->id,
+        ]);
+        $currentLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $currentModule->id,
+            'course_module_track_id' => $currentTrack->id,
+        ]);
         $bank = QuestionBank::query()->create([
-            'title' => 'Interpretação - Panorama Geral',
+            'title' => 'Operações com Frações',
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
 
+        $bank->modules()->sync([$oldModule->id]);
+        $bank->tracks()->sync([$oldTrack->id]);
+        $bank->lessons()->sync([$oldLesson->id]);
+
+        QuestionBankResource::syncManualLinks($bank, [
+            'modules' => [$currentModule->id],
+            'tracks' => [$currentTrack->id],
+            'lessons' => [$currentLesson->id],
+        ]);
+
+        $bank = $bank->fresh();
+
+        $this->assertFalse($bank->modules()->whereKey($oldModule->id)->exists());
+        $this->assertFalse($bank->tracks()->whereKey($oldTrack->id)->exists());
+        $this->assertFalse($bank->lessons()->whereKey($oldLesson->id)->exists());
+        $this->assertTrue($bank->modules()->whereKey($currentModule->id)->exists());
+        $this->assertTrue($bank->tracks()->whereKey($currentTrack->id)->exists());
+        $this->assertTrue($bank->lessons()->whereKey($currentLesson->id)->exists());
+    }
+
+    public function test_question_bank_does_not_auto_link_lessons_with_similar_part_titles(): void
+    {
         $course = Course::factory()->create(['status' => 'published']);
         $module = CourseModule::factory()->create([
             'course_id' => $course->id,
-            'name' => 'Português',
+            'name' => 'Matemática',
         ]);
-        $lesson = Lesson::factory()->create([
+        $track = $module->tracks()->create([
+            'name' => 'Frações',
+            'slug' => 'fracoes',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $partOne = Lesson::factory()->create([
             'course_id' => $course->id,
             'course_module_id' => $module->id,
-            'title' => '05 - Interpretação - Panorama Geral',
+            'course_module_track_id' => $track->id,
+            'title' => 'Operações com Frações Parte I',
+        ]);
+        $partTwo = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => 'Operações com Frações Parte II',
         ]);
 
-        $this->assertFalse($bank->fresh()->lessons()->whereKey($lesson->id)->exists());
+        $bank = QuestionBank::query()->create([
+            'title' => 'Operações com Frações Parte I',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
 
-        $result = app(QuestionBankAutoLinker::class)->linkAll();
-
-        $this->assertSame(1, $result['banks']);
-        $this->assertSame(1, $result['lessons']);
-        $this->assertTrue($bank->fresh()->lessons()->whereKey($lesson->id)->exists());
+        $this->assertFalse($bank->fresh()->lessons()->whereKey($partOne->id)->exists());
+        $this->assertFalse($bank->fresh()->lessons()->whereKey($partTwo->id)->exists());
     }
 
     public function test_commentary_renderer_breaks_each_option_explanation_into_its_own_line(): void
@@ -1046,7 +1142,7 @@ XML);
             'source_type' => 'pdf',
             'status' => 'published',
         ]);
-        $bank->modules()->syncWithoutDetaching($module->id);
+        $bank->lessons()->syncWithoutDetaching($lesson->id);
         $trackBank = QuestionBank::query()->create([
             'title' => 'Banco geral da trilha',
             'source_type' => 'pdf',

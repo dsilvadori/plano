@@ -17,6 +17,11 @@ class EditQuestionBank extends EditRecord
 {
     protected static string $resource = QuestionBankResource::class;
 
+    protected function afterSave(): void
+    {
+        QuestionBankResource::syncManualLinks($this->record, $this->data);
+    }
+
     protected function getHeaderActions(): array
     {
         return [

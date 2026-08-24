@@ -175,6 +175,27 @@ class QuestionBankResource extends Resource
         ];
     }
 
+    public static function syncManualLinks(QuestionBank $bank, array $data): void
+    {
+        $bank->modules()->sync(self::relationIds($data['modules'] ?? []));
+        $bank->tracks()->sync(self::relationIds($data['tracks'] ?? []));
+        $bank->lessons()->sync(self::relationIds($data['lessons'] ?? []));
+
+        $bank->unsetRelation('modules');
+        $bank->unsetRelation('tracks');
+        $bank->unsetRelation('lessons');
+    }
+
+    protected static function relationIds(mixed $value): array
+    {
+        return collect(is_array($value) ? $value : [])
+            ->map(fn ($id): int => (int) $id)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
     protected static function trackOptionsForModules(array $moduleIds): array
     {
         $moduleIds = collect($moduleIds)->map(fn ($id): int => (int) $id)->filter()->values();

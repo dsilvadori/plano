@@ -2,7 +2,6 @@
 
 namespace App\Models;
 
-use App\Services\QuestionBankAutoLinker;
 use Database\Factories\QuestionBankFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -36,10 +35,6 @@ class QuestionBank extends Model
     {
         static::saving(function (QuestionBank $bank): void {
             $bank->course_id = null;
-        });
-
-        static::saved(function (QuestionBank $bank): void {
-            app(QuestionBankAutoLinker::class)->link($bank);
         });
     }
 

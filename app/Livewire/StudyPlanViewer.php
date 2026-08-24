@@ -20,9 +20,13 @@ class StudyPlanViewer extends Component
     use AuthorizesRequests;
 
     public StudyPlan $studyPlan;
+
     public int $selectedWeek = 1;
+
     public ?string $editingDate = null;
+
     public array $manualDayRows = [];
+
     public ?array $manualDayConfirmation = null;
 
     protected $listeners = ['study-plan-item-toggled' => '$refresh'];
@@ -354,7 +358,7 @@ class StudyPlanViewer extends Component
                     'total_minutes' => $totalMinutes,
                     'completed_minutes' => $completedMinutes,
                     'progress' => $progress,
-                    'minutes_label' => StudyTime::formatMinutes($completedMinutes) . ' / ' . StudyTime::formatMinutes($totalMinutes),
+                    'minutes_label' => StudyTime::formatMinutes($completedMinutes).' / '.StudyTime::formatMinutes($totalMinutes),
                 ];
             })
             ->filter(fn (array $row) => $row['tasks'] > 0)
@@ -363,19 +367,16 @@ class StudyPlanViewer extends Component
         $theoryMinutes = max(0, $weeklySummary['total_minutes'] - $weeklySummary['review_minutes'] - $weeklySummary['questions_minutes']);
         $weeklyFocusMessage = match (true) {
             $weeklySummary['total_minutes'] === 0 => 'Esta semana ainda não tem blocos planejados.',
-            $weeklySummary['review_minutes'] > 0 && $weeklySummary['questions_minutes'] > 0
-                => 'Nesta semana você vai avançar em teoria, revisar o que estudou e testar retenção com questões.',
-            $weeklySummary['review_minutes'] > 0
-                => 'Nesta semana o plano reserva um espaço especial para revisão e consolidação.',
-            $weeklySummary['questions_minutes'] > 0
-                => 'Nesta semana o plano já separa tempo de prática para você medir evolução com questões.',
+            $weeklySummary['review_minutes'] > 0 && $weeklySummary['questions_minutes'] > 0 => 'Nesta semana você vai avançar em teoria, revisar o que estudou e testar retenção com questões.',
+            $weeklySummary['review_minutes'] > 0 => 'Nesta semana o plano reserva um espaço especial para revisão e consolidação.',
+            $weeklySummary['questions_minutes'] > 0 => 'Nesta semana o plano já separa tempo de prática para você medir evolução com questões.',
             default => 'Nesta semana o foco está concentrado em construir base e avançar no conteúdo principal.',
         };
 
         $weeklyBreakdownMessage = $weeklySummary['total_minutes'] > 0
-            ? 'Você vai dedicar ' . StudyTime::formatMinutes($theoryMinutes) . ' para teoria, '
-                . StudyTime::formatMinutes($weeklySummary['review_minutes']) . ' para revisão e '
-                . StudyTime::formatMinutes($weeklySummary['questions_minutes']) . ' para questões.'
+            ? 'Você vai dedicar '.StudyTime::formatMinutes($theoryMinutes).' para teoria, '
+                .StudyTime::formatMinutes($weeklySummary['review_minutes']).' para revisão e '
+                .StudyTime::formatMinutes($weeklySummary['questions_minutes']).' para questões.'
             : 'Assim que o plano tiver blocos nesta semana, mostramos a distribuição aqui.';
 
         $selectedWeekRange = null;
@@ -386,7 +387,7 @@ class StudyPlanViewer extends Component
             $firstItem = $selectedWeekItems->first();
             $weekStart = $firstItem->scheduled_date->copy()->startOfWeek(CarbonInterface::MONDAY);
             $weekEnd = $firstItem->scheduled_date->copy()->endOfWeek(CarbonInterface::SUNDAY);
-            $selectedWeekRange = $weekStart->format('d/m') . ' até ' . $weekEnd->format('d/m');
+            $selectedWeekRange = $weekStart->format('d/m').' até '.$weekEnd->format('d/m');
         }
 
         return view('livewire.study-plan-viewer', [
@@ -462,9 +463,8 @@ class StudyPlanViewer extends Component
         $links = [];
         $referencesByItem = [];
         $allLessonIds = collect();
-        $allLessonKeys = collect();
 
-        $questionItems->each(function (StudyPlanItem $item) use (&$referencesByItem, &$allLessonIds, &$allLessonKeys): void {
+        $questionItems->each(function (StudyPlanItem $item) use (&$referencesByItem, &$allLessonIds): void {
             $lessonReferences = $this->questionLessonReferencesForDate($item);
 
             if ($lessonReferences->isEmpty()) {
@@ -473,7 +473,6 @@ class StudyPlanViewer extends Component
 
             $referencesByItem[$item->id] = $lessonReferences;
             $allLessonIds = $allLessonIds->merge($lessonReferences->pluck('id')->filter());
-            $allLessonKeys = $allLessonKeys->merge($lessonReferences->pluck('key')->filter());
         });
 
         if ($referencesByItem === []) {
@@ -481,23 +480,15 @@ class StudyPlanViewer extends Component
         }
 
         $lessonIds = $allLessonIds->unique()->values();
-        $lessonKeys = $allLessonKeys->unique()->values();
+
+        if ($lessonIds->isEmpty()) {
+            return [];
+        }
+
         $candidateBanks = QuestionBank::query()
             ->where('status', 'published')
             ->with('lessons')
-            ->whereHas('lessons', function ($query) use ($lessonIds, $lessonKeys): void {
-                $query->where(function ($query) use ($lessonIds, $lessonKeys): void {
-                    if ($lessonIds->isNotEmpty()) {
-                        $query->whereIn('lessons.id', $lessonIds);
-                    }
-
-                    if ($lessonKeys->isNotEmpty()) {
-                        $query->{$lessonIds->isNotEmpty() ? 'orWhere' : 'where'}(function ($query): void {
-                            $query->whereNotNull('lessons.title');
-                        });
-                    }
-                });
-            })
+            ->whereHas('lessons', fn ($query) => $query->whereIn('lessons.id', $lessonIds))
             ->whereHas('questions', fn ($query) => $query->where('status', 'published'))
             ->withCount(['questions as related_questions_count' => fn ($query) => $query->where('status', 'published')])
             ->orderByDesc('related_questions_count')
@@ -509,24 +500,11 @@ class StudyPlanViewer extends Component
 
             foreach ($lessonReferences as $lessonReference) {
                 $banks = $candidateBanks
-                    ->filter(fn (QuestionBank $bank): bool => $bank->lessons->contains(function ($lesson) use ($lessonReference): bool {
-                        if (($lessonReference['id'] ?? null) && (int) $lesson->id === (int) $lessonReference['id']) {
-                            return true;
-                        }
-
-                        return ($lessonReference['key'] ?? '') !== ''
-                            && LessonTitleNormalizer::matchKey($lesson->title) === $lessonReference['key'];
-                    }));
+                    ->filter(fn (QuestionBank $bank): bool => ($lessonReference['id'] ?? null)
+                        && $bank->lessons->contains(fn ($lesson): bool => (int) $lesson->id === (int) $lessonReference['id']));
 
                 foreach ($banks as $linkedBank) {
-                    $matchedLesson = $linkedBank->lessons->first(function ($lesson) use ($lessonReference): bool {
-                        if (($lessonReference['id'] ?? null) && (int) $lesson->id === (int) $lessonReference['id']) {
-                            return true;
-                        }
-
-                        return ($lessonReference['key'] ?? '') !== ''
-                            && LessonTitleNormalizer::matchKey($lesson->title) === $lessonReference['key'];
-                    });
+                    $matchedLesson = $linkedBank->lessons->first(fn ($lesson): bool => (int) $lesson->id === (int) $lessonReference['id']);
 
                     $itemLinks[] = [
                         'label' => 'Resolver questões: '.$linkedBank->title,
@@ -656,6 +634,7 @@ class StudyPlanViewer extends Component
 
             if ($lessonMinutes <= 0) {
                 $index++;
+
                 continue;
             }
 
@@ -753,7 +732,7 @@ class StudyPlanViewer extends Component
         ]);
     }
 
-    protected function orderedPlanItems(): \Illuminate\Support\Collection
+    protected function orderedPlanItems(): Collection
     {
         return $this->studyPlan->items
             ->sortBy(function (StudyPlanItem $item): string {
@@ -1046,16 +1025,16 @@ class StudyPlanViewer extends Component
     protected function formatLessonMinutes(int $minutes): string
     {
         if ($minutes < 60) {
-            return $minutes . ' min';
+            return $minutes.' min';
         }
 
         $hours = intdiv($minutes, 60);
         $remainingMinutes = $minutes % 60;
 
         if ($remainingMinutes === 0) {
-            return $hours . 'h';
+            return $hours.'h';
         }
 
-        return $hours . 'h ' . $remainingMinutes . 'min';
+        return $hours.'h '.$remainingMinutes.'min';
     }
 }
