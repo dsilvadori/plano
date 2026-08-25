@@ -344,11 +344,13 @@ class PandaVideoClient
             $lastResponse = $response;
 
             if (! in_array($response->status(), [401, 403], true)) {
-                $response->throw();
+                $this->throwPandaHttpException($response, 'criação do upload TUS');
             }
         }
 
-        $lastResponse?->throw();
+        if ($lastResponse && ! $lastResponse->successful()) {
+            $this->throwPandaHttpException($lastResponse, 'criação do upload TUS');
+        }
 
         $location = $lastResponse?->header('Location');
 
@@ -380,7 +382,9 @@ class PandaVideoClient
             fclose($handle);
         }
 
-        $response->throw();
+        if (! $response->successful()) {
+            $this->throwPandaHttpException($response, 'envio do arquivo TUS');
+        }
     }
 
     protected function tusMetadataHeader(array $metadata): string
@@ -698,7 +702,7 @@ class PandaVideoClient
             $lastBody = $response->body();
 
             if ($response->status() !== 401) {
-                $response->throw();
+                $this->throwPandaHttpException($response, 'consulta ao provedor de vídeo');
             }
         }
 
@@ -760,7 +764,7 @@ class PandaVideoClient
             $lastBody = $response->body();
 
             if ($response->status() !== 401) {
-                $response->throw();
+                $this->throwPandaHttpException($response, 'requisição ao provedor de vídeo');
             }
         }
 
@@ -797,7 +801,7 @@ class PandaVideoClient
             $lastBody = $response->body();
 
             if ($response->status() !== 401) {
-                $response->throw();
+                $this->throwPandaHttpException($response, 'atualização no provedor de vídeo');
             }
         }
 
@@ -821,6 +825,18 @@ class PandaVideoClient
         }
 
         return [];
+    }
+
+    protected function throwPandaHttpException($response, string $context): never
+    {
+        $body = trim((string) $response->body());
+        $message = 'Falha na '.$context.' (status '.$response->status().')';
+
+        if ($body !== '') {
+            $message .= ': '.$body;
+        }
+
+        throw new RuntimeException($message);
     }
 
     protected function multipartPostWithAuthFallback(string $path, array $payload, string $fileField, string $filePath): array
@@ -862,7 +878,7 @@ class PandaVideoClient
             $lastBody = $response->body();
 
             if ($response->status() !== 401) {
-                $response->throw();
+                $this->throwPandaHttpException($response, 'upload multipart ao Panda');
             }
         }
 
@@ -919,7 +935,7 @@ class PandaVideoClient
                     );
                 }
 
-                $response->throw();
+                $this->throwPandaHttpException($response, 'upload binário ao Panda');
             }
         }
 

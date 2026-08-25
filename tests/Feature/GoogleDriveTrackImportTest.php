@@ -1647,6 +1647,62 @@ class GoogleDriveTrackImportTest extends TestCase
         Queue::assertNotPushed(SyncPandaVideoStatus::class);
     }
 
+    public function test_panda_upload_job_requeues_transient_panda_errors_without_failing_lesson(): void
+    {
+        config(['services.panda.video_upload_job_delay_seconds' => 0]);
+
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $lesson = Lesson::query()->create([
+            'title' => '01 - Aula com Limite',
+            'slug' => '01-aula-com-limite',
+            'description' => 'Aula importada pelo Drive.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'upload_queued',
+            'metadata' => [
+                'source' => 'google_drive',
+                'drive_file_id' => 'drive-video-limite-01',
+                'drive_mime_type' => 'video/mp4',
+                'panda_folder_id' => 'panda-folder-limite',
+            ],
+        ]);
+        $run = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'root-folder',
+            'folder_id' => 'root-folder',
+            'status' => 'finished',
+            'panda_videos_failed' => 1,
+        ]);
+
+        $drive->shouldReceive('downloadFileToPath')
+            ->once()
+            ->with('drive-video-limite-01', Mockery::type('string'))
+            ->andReturnUsing(function (string $fileId, string $path): void {
+                file_put_contents($path, 'video-content');
+            });
+        $panda->shouldReceive('findVideoByTitle')
+            ->once()
+            ->with('01 - Aula com Limite', 'panda-folder-limite')
+            ->andReturn(null);
+        $panda->shouldReceive('uploadVideo')
+            ->once()
+            ->with(Mockery::type('string'), '01 - Aula com Limite', 'panda-folder-limite')
+            ->andThrow(new \RuntimeException('Falha na criação do upload TUS (status 429): {"errCode":10,"message":"upload concurrency limit"}'));
+
+        (new UploadLessonToPanda($lesson->id, $run->id))->handle(new GoogleDriveTrackImporter($drive, $panda));
+
+        $lesson->refresh();
+        $run->refresh();
+
+        $this->assertSame('upload_queued', $lesson->source_status);
+        $this->assertStringContainsString('upload concurrency limit', $lesson->metadata['panda_upload_error']);
+        $this->assertNull($run->error_message);
+        $this->assertStringContainsString('nova tentativa agendada', $run->latest_message);
+    }
+
     public function test_panda_status_job_marks_processing_lesson_ready_when_conversion_finishes(): void
     {
         $panda = Mockery::mock(PandaVideoClient::class);

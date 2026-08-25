@@ -57,7 +57,7 @@ class UploadLessonToPanda implements ShouldQueue
 
             $this->pauseAfterUpload();
         } catch (Throwable $exception) {
-            if ($this->isPandaUploadConcurrencyLimit($exception)) {
+            if ($this->isRetryablePandaUploadError($exception)) {
                 $this->markLessonQueued($lesson, $exception);
                 $this->updateRunForRetry($run, $lesson, $exception);
                 $this->release($this->backoffSeconds());
@@ -140,6 +140,29 @@ class UploadLessonToPanda implements ShouldQueue
             || str_contains($message, 'reached the upload concurrency')
             || str_contains($message, 'errcode":10')
             || str_contains($message, 'errcode": 10');
+    }
+
+    protected function isRetryablePandaUploadError(Throwable $exception): bool
+    {
+        $message = strtolower($exception->getMessage());
+
+        return $this->isPandaUploadConcurrencyLimit($exception)
+            || str_contains($message, 'status 408')
+            || str_contains($message, 'status 409')
+            || str_contains($message, 'status 425')
+            || str_contains($message, 'status 429')
+            || str_contains($message, 'status 500')
+            || str_contains($message, 'status 502')
+            || str_contains($message, 'status 503')
+            || str_contains($message, 'status 504')
+            || str_contains($message, 'timeout')
+            || str_contains($message, 'timed out')
+            || str_contains($message, 'connection')
+            || str_contains($message, 'temporarily')
+            || str_contains($message, 'try again')
+            || str_contains($message, 'too many requests')
+            || str_contains($message, 'rate limit')
+            || str_contains($message, 'server error');
     }
 
     protected function backoffSeconds(): int
