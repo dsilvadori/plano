@@ -54,6 +54,10 @@ class ImportGoogleDriveLessons implements ShouldQueue
         $track = $this->trackId ? CourseModuleTrack::query()->findOrFail($this->trackId) : null;
         $run = $this->runId ? GoogleDriveImportRun::query()->find($this->runId) : null;
 
+        if ($run?->isCanceled()) {
+            return;
+        }
+
         $run?->forceFill([
             'status' => 'running',
             'latest_message' => 'Importação de aulas iniciada.',
@@ -71,6 +75,10 @@ class ImportGoogleDriveLessons implements ShouldQueue
             $this->uploadPandaVideos,
             $run,
         );
+
+        if ($run?->fresh()?->isCanceled()) {
+            return;
+        }
 
         if (($summary['total_lessons'] ?? 0) === 0) {
             $run?->forceFill([
@@ -97,6 +105,10 @@ class ImportGoogleDriveLessons implements ShouldQueue
     public function failed(Throwable $exception): void
     {
         if (! $this->runId) {
+            return;
+        }
+
+        if (GoogleDriveImportRun::query()->find($this->runId)?->isCanceled()) {
             return;
         }
 

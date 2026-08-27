@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\GoogleDriveImportRuns\Schemas;
 
+use App\Models\GoogleDriveImportRun;
 use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\KeyValue;
 use Filament\Forms\Components\Textarea;
@@ -23,6 +24,7 @@ class GoogleDriveImportRunForm
                         'running' => 'Rodando',
                         'finished' => 'Concluída',
                         'failed' => 'Falhou',
+                        GoogleDriveImportRun::STATUS_CANCELED => 'Interrompida',
                         null => '',
                         default => $state,
                     })

@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class GoogleDriveImportRun extends Model
 {
+    public const STATUS_CANCELED = 'canceled';
+
     protected $fillable = [
         'course_id',
         'course_module_id',
@@ -72,5 +74,25 @@ class GoogleDriveImportRun extends Model
         }
 
         return "{$this->progress_percent}%";
+    }
+
+    public function cancel(?string $message = null): bool
+    {
+        return $this->forceFill([
+            'status' => self::STATUS_CANCELED,
+            'latest_message' => $message ?: 'Importação interrompida manualmente.',
+            'error_message' => null,
+            'finished_at' => now(),
+        ])->save();
+    }
+
+    public function isCanceled(): bool
+    {
+        return $this->status === self::STATUS_CANCELED;
+    }
+
+    public function isTerminal(): bool
+    {
+        return in_array($this->status, ['finished', 'failed', self::STATUS_CANCELED], true);
     }
 }

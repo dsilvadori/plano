@@ -1576,6 +1576,50 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame(0, $run->panda_videos_failed);
     }
 
+    public function test_panda_jobs_ignore_canceled_drive_import_run(): void
+    {
+        $drive = Mockery::mock(GoogleDriveClient::class);
+        $panda = Mockery::mock(PandaVideoClient::class);
+
+        $lesson = Lesson::query()->create([
+            'title' => '01 - Importação Interrompida',
+            'slug' => '01-importacao-interrompida',
+            'description' => 'Aula importada pelo Drive.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'upload_queued',
+            'panda_video_id' => 'panda-video-canceled',
+            'panda_status' => 'CONVERTING',
+            'metadata' => [
+                'source' => 'google_drive',
+                'drive_file_id' => 'drive-video-canceled',
+                'drive_mime_type' => 'video/mp4',
+                'panda_folder_id' => 'panda-folder-canceled',
+            ],
+        ]);
+        $run = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'root-folder',
+            'folder_id' => 'root-folder',
+            'status' => GoogleDriveImportRun::STATUS_CANCELED,
+            'latest_message' => 'Importação interrompida manualmente.',
+            'finished_at' => now(),
+        ]);
+
+        $drive->shouldNotReceive('downloadFileToPath');
+        $panda->shouldNotReceive('findVideoByTitle');
+        $panda->shouldNotReceive('uploadVideo');
+        $panda->shouldNotReceive('video');
+
+        (new UploadLessonToPanda($lesson->id, $run->id))->handle(new GoogleDriveTrackImporter($drive, $panda));
+        (new SyncPandaVideoStatus($lesson->id, $run->id))->handle($panda);
+
+        $this->assertSame('upload_queued', $lesson->fresh()->source_status);
+        $this->assertSame(GoogleDriveImportRun::STATUS_CANCELED, $run->fresh()->status);
+        $this->assertSame('Importação interrompida manualmente.', $run->fresh()->latest_message);
+    }
+
     public function test_panda_upload_job_marks_permanent_panda_validation_failure_without_queueing_status_sync(): void
     {
         Queue::fake([SyncPandaVideoStatus::class]);
@@ -1806,6 +1850,37 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame(['tracks' => 1, 'created_lessons' => 0], $run->fresh()->summary);
     }
 
+    public function test_canceled_background_drive_import_does_not_restart(): void
+    {
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática',
+        ]);
+        $run = GoogleDriveImportRun::query()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'folder_url' => 'https://drive.test/root',
+            'status' => GoogleDriveImportRun::STATUS_CANCELED,
+            'latest_message' => 'Importação interrompida manualmente.',
+            'finished_at' => now(),
+        ]);
+        $importer = Mockery::mock(GoogleDriveTrackImporter::class);
+
+        $importer->shouldNotReceive('importFolderSubfoldersAsTracks');
+
+        (new ImportGoogleDriveModuleTracks(
+            $course->id,
+            $module->id,
+            'https://drive.test/root',
+            'published',
+            runId: $run->id,
+        ))->handle($importer);
+
+        $this->assertSame(GoogleDriveImportRun::STATUS_CANCELED, $run->fresh()->status);
+        $this->assertSame('Importação interrompida manualmente.', $run->fresh()->latest_message);
+    }
+
     public function test_background_job_runs_standalone_lesson_drive_import(): void
     {
         $run = GoogleDriveImportRun::query()->create([
@@ -1851,6 +1926,31 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertSame('finished', $run->fresh()->status);
         $this->assertSame('Importação de aulas concluída.', $run->fresh()->latest_message);
         $this->assertSame(['tracks' => 0, 'total_lessons' => 2, 'created_lessons' => 2], $run->fresh()->summary);
+    }
+
+    public function test_canceled_standalone_drive_import_does_not_restart(): void
+    {
+        $run = GoogleDriveImportRun::query()->create([
+            'folder_url' => 'https://drive.test/aulas',
+            'status' => GoogleDriveImportRun::STATUS_CANCELED,
+            'latest_message' => 'Importação interrompida manualmente.',
+            'finished_at' => now(),
+        ]);
+        $importer = Mockery::mock(GoogleDriveTrackImporter::class);
+
+        $importer->shouldNotReceive('importFolderFilesAsLessons');
+
+        (new ImportGoogleDriveLessons(
+            null,
+            null,
+            null,
+            'https://drive.test/aulas',
+            pandaFolderName: 'Aulas avulsas',
+            runId: $run->id,
+        ))->handle($importer);
+
+        $this->assertSame(GoogleDriveImportRun::STATUS_CANCELED, $run->fresh()->status);
+        $this->assertSame('Importação interrompida manualmente.', $run->fresh()->latest_message);
     }
 
     public function test_background_lesson_drive_import_fails_when_folder_has_no_files(): void

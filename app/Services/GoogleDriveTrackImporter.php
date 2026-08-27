@@ -65,6 +65,10 @@ class GoogleDriveTrackImporter
         }
 
         foreach ($folders as $trackIndex => $folder) {
+            if ($this->runWasCanceled($run)) {
+                break;
+            }
+
             $trackName = trim((string) ($folder['name'] ?? '')) ?: 'Trilha '.($trackIndex + 1);
             $trackSlug = Str::slug($trackName) ?: 'trilha-'.($trackIndex + 1);
             $track = $module->tracks()
@@ -118,6 +122,10 @@ class GoogleDriveTrackImporter
             ]);
 
             foreach ($files as $lessonIndex => $file) {
+                if ($this->runWasCanceled($run)) {
+                    break;
+                }
+
                 $title = $this->lessonTitleFromFile((string) ($file['name'] ?? ''), $lessonIndex + 1);
                 $slug = Str::slug($title) ?: 'aula-'.($lessonIndex + 1);
                 $lesson = $this->resolveReusableDriveLesson($course, $module, $track, $title, $slug, $file)
@@ -337,6 +345,10 @@ class GoogleDriveTrackImporter
         }
 
         foreach ($files as $lessonIndex => $file) {
+            if ($this->runWasCanceled($run)) {
+                break;
+            }
+
             $title = $this->lessonTitleFromFile((string) ($file['name'] ?? ''), $lessonIndex + 1);
             $slug = Str::slug($title) ?: 'aula-'.($lessonIndex + 1);
             [$lessonPandaFolderId, $lessonPandaFolderError, $lessonPandaFolderCreated] = $this->resolvePandaFolderIdForStandaloneDriveFile(
@@ -736,6 +748,10 @@ class GoogleDriveTrackImporter
         $pandaFolders = 0;
 
         foreach ($lessons->values() as $index => $lesson) {
+            if ($this->runWasCanceled($run)) {
+                break;
+            }
+
             $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
             [$pandaFolderId, $pandaFolderError, $pandaFolderCreated] = $this->resolvePandaFolderIdForPendingLesson($lesson);
             $pandaFolders += $pandaFolderCreated ? 1 : 0;
@@ -1126,8 +1142,19 @@ class GoogleDriveTrackImporter
             return;
         }
 
+        $run->refresh();
+
+        if ($run->isCanceled()) {
+            return;
+        }
+
         $run->forceFill($attributes)->save();
         $run->refresh();
+    }
+
+    protected function runWasCanceled(?GoogleDriveImportRun $run): bool
+    {
+        return (bool) $run?->fresh()?->isCanceled();
     }
 
     protected function shouldQueuePandaUploads(): bool
@@ -1137,11 +1164,19 @@ class GoogleDriveTrackImporter
 
     protected function dispatchPandaUpload(Lesson $lesson, ?GoogleDriveImportRun $run): void
     {
+        if ($this->runWasCanceled($run)) {
+            return;
+        }
+
         UploadLessonToPanda::dispatch($lesson->id, $run?->id);
     }
 
     protected function dispatchPandaStatusSync(Lesson $lesson, ?GoogleDriveImportRun $run): void
     {
+        if ($this->runWasCanceled($run)) {
+            return;
+        }
+
         $dispatch = SyncPandaVideoStatus::dispatch($lesson->id, $run?->id)
             ->delay(now()->addSeconds(max(0, (int) config('services.panda.video_status_sync_delay_seconds', 300))));
 

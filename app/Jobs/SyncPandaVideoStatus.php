@@ -44,6 +44,10 @@ class SyncPandaVideoStatus implements ShouldQueue
 
     public function handle(PandaVideoClient $panda, ?LessonCourseLinker $linker = null, ?ActiveStudyPlanRefresher $refresher = null): void
     {
+        if ($this->runId && GoogleDriveImportRun::query()->find($this->runId)?->isCanceled()) {
+            return;
+        }
+
         $lesson = Lesson::query()->findOrFail($this->lessonId);
 
         if (blank($lesson->panda_video_id)) {
@@ -57,6 +61,10 @@ class SyncPandaVideoStatus implements ShouldQueue
         if (! $video) {
             $this->markProcessingAndRelease($lesson, 'Vídeo ainda não apareceu na API do Panda.');
 
+            return;
+        }
+
+        if ($this->runId && GoogleDriveImportRun::query()->find($this->runId)?->isCanceled()) {
             return;
         }
 
@@ -94,6 +102,10 @@ class SyncPandaVideoStatus implements ShouldQueue
 
     public function failed(Throwable $exception): void
     {
+        if ($this->runId && GoogleDriveImportRun::query()->find($this->runId)?->isCanceled()) {
+            return;
+        }
+
         $lesson = Lesson::query()->find($this->lessonId);
 
         if ($lesson) {
@@ -146,6 +158,10 @@ class SyncPandaVideoStatus implements ShouldQueue
             return;
         }
 
+        if (GoogleDriveImportRun::query()->find($this->runId)?->isCanceled()) {
+            return;
+        }
+
         $updates = [
             'latest_message' => 'Vídeo pronto no Panda: '.$lesson->title,
             'error_message' => null,
@@ -164,6 +180,10 @@ class SyncPandaVideoStatus implements ShouldQueue
     protected function updateRunMessage(string $message, ?string $error = null): void
     {
         if (! $this->runId) {
+            return;
+        }
+
+        if (GoogleDriveImportRun::query()->find($this->runId)?->isCanceled()) {
             return;
         }
 

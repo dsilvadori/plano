@@ -35,6 +35,7 @@ class GoogleDriveImportRunsTable
                         $state === 'running' => 'warning',
                         $state === 'finished' => 'success',
                         $state === 'failed' => 'danger',
+                        $state === GoogleDriveImportRun::STATUS_CANCELED => 'gray',
                         default => 'gray',
                     })
                     ->formatStateUsing(fn (string $state, $record): string => match (true) {
@@ -43,6 +44,7 @@ class GoogleDriveImportRunsTable
                         $state === 'running' => 'Rodando',
                         $state === 'finished' => 'Concluída',
                         $state === 'failed' => 'Falhou',
+                        $state === GoogleDriveImportRun::STATUS_CANCELED => 'Interrompida',
                         default => $state,
                     }),
                 TextColumn::make('progress_label')->label('Progresso'),
@@ -62,14 +64,34 @@ class GoogleDriveImportRunsTable
                         'running' => 'Rodando',
                         'finished' => 'Concluída',
                         'failed' => 'Falhou',
+                        GoogleDriveImportRun::STATUS_CANCELED => 'Interrompida',
                     ]),
             ])
             ->recordActions([
+                Action::make('cancelImport')
+                    ->label('Interromper')
+                    ->icon('heroicon-o-no-symbol')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->modalHeading('Interromper importação')
+                    ->modalDescription('A importação será marcada como interrompida. Jobs de upload/status ainda na fila vão parar ao encontrar este status.')
+                    ->visible(fn (GoogleDriveImportRun $record): bool => $record->status !== GoogleDriveImportRun::STATUS_CANCELED
+                        && (in_array($record->status, ['queued', 'running'], true) || (int) $record->panda_videos_failed > 0))
+                    ->action(function (GoogleDriveImportRun $record): void {
+                        $record->cancel();
+
+                        Notification::make()
+                            ->title('Importação interrompida.')
+                            ->body('Os jobs relacionados vão parar no próximo ponto seguro.')
+                            ->warning()
+                            ->send();
+                    }),
                 Action::make('reprocessPending')
                     ->label('Reprocessar pendentes')
                     ->icon('heroicon-o-arrow-path')
                     ->requiresConfirmation()
-                    ->visible(fn (GoogleDriveImportRun $record): bool => filled($record->folder_id) || filled($record->folder_url))
+                    ->visible(fn (GoogleDriveImportRun $record): bool => $record->status !== GoogleDriveImportRun::STATUS_CANCELED
+                        && (filled($record->folder_id) || filled($record->folder_url)))
                     ->action(function (GoogleDriveImportRun $record): void {
                         try {
                             $run = GoogleDriveImportRun::query()->create([

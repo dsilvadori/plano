@@ -50,6 +50,10 @@ class ImportGoogleDriveModuleTracks implements ShouldQueue
         $module = CourseModule::query()->findOrFail($this->moduleId);
         $run = $this->runId ? GoogleDriveImportRun::query()->find($this->runId) : null;
 
+        if ($run?->isCanceled()) {
+            return;
+        }
+
         $run?->forceFill([
             'status' => 'running',
             'latest_message' => 'Importação iniciada.',
@@ -66,6 +70,10 @@ class ImportGoogleDriveModuleTracks implements ShouldQueue
             $run,
         );
 
+        if ($run?->fresh()?->isCanceled()) {
+            return;
+        }
+
         $run?->forceFill([
             'status' => 'finished',
             'summary' => $summary,
@@ -79,6 +87,10 @@ class ImportGoogleDriveModuleTracks implements ShouldQueue
     public function failed(Throwable $exception): void
     {
         if (! $this->runId) {
+            return;
+        }
+
+        if (GoogleDriveImportRun::query()->find($this->runId)?->isCanceled()) {
             return;
         }
 

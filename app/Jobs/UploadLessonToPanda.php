@@ -40,8 +40,16 @@ class UploadLessonToPanda implements ShouldQueue
         $lesson = Lesson::query()->findOrFail($this->lessonId);
         $run = $this->runId ? GoogleDriveImportRun::query()->find($this->runId) : null;
 
+        if ($run?->isCanceled()) {
+            return;
+        }
+
         try {
             $importer->uploadQueuedLessonToPanda($lesson, $run);
+
+            if ($run?->fresh()?->isCanceled()) {
+                return;
+            }
 
             if (($lesson->fresh()?->source_status) === 'panda_processing') {
                 $dispatch = SyncPandaVideoStatus::dispatch($lesson->id, $run?->id)
@@ -76,6 +84,10 @@ class UploadLessonToPanda implements ShouldQueue
     {
         $lesson = Lesson::query()->find($this->lessonId);
         $run = $this->runId ? GoogleDriveImportRun::query()->find($this->runId) : null;
+
+        if ($run?->isCanceled()) {
+            return;
+        }
 
         if ($lesson) {
             $this->markLessonFailed($lesson, $exception);
@@ -116,6 +128,10 @@ class UploadLessonToPanda implements ShouldQueue
 
     protected function updateRunForRetry(?GoogleDriveImportRun $run, Lesson $lesson, Throwable $exception): void
     {
+        if ($run?->isCanceled()) {
+            return;
+        }
+
         $run?->forceFill([
             'latest_message' => 'Panda limitou uploads; nova tentativa agendada: '.$lesson->title,
             'error_message' => null,
@@ -124,6 +140,10 @@ class UploadLessonToPanda implements ShouldQueue
 
     protected function updateRunForFailure(?GoogleDriveImportRun $run, ?Lesson $lesson, Throwable $exception): void
     {
+        if ($run?->isCanceled()) {
+            return;
+        }
+
         $run?->forceFill([
             'latest_message' => $lesson
                 ? 'Upload Panda falhou: '.$lesson->title

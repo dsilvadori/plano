@@ -42,6 +42,10 @@ class ReprocessGoogleDrivePendingLessons implements ShouldQueue
         $sourceRun = GoogleDriveImportRun::query()->findOrFail($this->sourceRunId);
         $run = $this->runId ? GoogleDriveImportRun::query()->find($this->runId) : null;
 
+        if ($run?->isCanceled()) {
+            return;
+        }
+
         $run?->forceFill([
             'status' => 'running',
             'latest_message' => 'Reprocessamento de aulas pendentes iniciado.',
@@ -49,6 +53,10 @@ class ReprocessGoogleDrivePendingLessons implements ShouldQueue
         ])->save();
 
         $summary = $importer->reprocessPendingLessonsForRun($sourceRun, $run);
+
+        if ($run?->fresh()?->isCanceled()) {
+            return;
+        }
 
         $run?->forceFill([
             'status' => 'finished',
@@ -63,6 +71,10 @@ class ReprocessGoogleDrivePendingLessons implements ShouldQueue
     public function failed(Throwable $exception): void
     {
         if (! $this->runId) {
+            return;
+        }
+
+        if (GoogleDriveImportRun::query()->find($this->runId)?->isCanceled()) {
             return;
         }
 
