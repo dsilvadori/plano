@@ -2,6 +2,7 @@
     $hasAccess = $hasAccess ?? false;
     $progress = $progress ?? null;
     $activePlan = $activePlan ?? null;
+    $ownedBadge = $ownedBadge ?? false;
     $progressPercentage = (int) ($progress['percentage'] ?? 0);
     $thumbnail = $course->thumbnail_display_url;
 @endphp
@@ -10,10 +11,19 @@
     <div class="course-thumbnail-frame relative aspect-video overflow-hidden rounded-t-2xl border-b border-white/10 p-3">
         <img src="{{ $thumbnail }}" alt="{{ $course->name }}" class="h-full w-full rounded-xl object-contain" loading="lazy" decoding="async">
         @unless ($hasAccess)
-            <div class="absolute right-3 top-3 rounded-full border border-white/20 bg-slate-950/80 px-3 py-1 text-xs font-semibold text-slate-100 shadow-lg">
-                Bloqueado
+            <div class="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-slate-950/80 px-3 py-1 text-xs font-semibold text-slate-100 shadow-lg">
+                <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M5 8V6a5 5 0 0 1 10 0v2h.5A1.5 1.5 0 0 1 17 9.5v7A1.5 1.5 0 0 1 15.5 18h-11A1.5 1.5 0 0 1 3 16.5v-7A1.5 1.5 0 0 1 4.5 8H5Zm2 0h6V6a3 3 0 1 0-6 0v2Z" clip-rule="evenodd" />
+                </svg>
+                <span>Bloqueado</span>
             </div>
         @endunless
+        @if ($ownedBadge && $hasAccess)
+            <div class="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-300/50 bg-emerald-400/15 px-3 py-1 text-xs font-bold text-emerald-100 shadow-lg shadow-emerald-950/20 backdrop-blur">
+                <span class="h-1.5 w-1.5 rounded-full bg-emerald-300"></span>
+                <span>Meu Curso</span>
+            </div>
+        @endif
     </div>
 
     <div class="flex flex-1 flex-col p-5">

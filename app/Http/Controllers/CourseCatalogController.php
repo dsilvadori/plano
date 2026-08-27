@@ -63,13 +63,6 @@ class CourseCatalogController extends Controller
             ->limit(8)
             ->get();
 
-        $latestCourses = $this->publishedCourses()
-            ->with(['sphere', 'educationLevel'])
-            ->withCount(['modules', 'lessons'])
-            ->latest()
-            ->limit(8)
-            ->get();
-
         $catalogCourses = $this->publishedCourses()
             ->with(['sphere', 'educationLevel'])
             ->withCount(['modules', 'lessons'])
@@ -105,7 +98,6 @@ class CourseCatalogController extends Controller
 
         $courseProgress = $this->progressForCourses(
             $featuredCourses
-                ->concat($latestCourses)
                 ->concat($catalogCourses)
                 ->concat($coursesBySphere->flatMap->courses)
                 ->concat($coursesByEducationLevel->flatMap->courses),
@@ -116,7 +108,6 @@ class CourseCatalogController extends Controller
             'user' => $user,
             'accessibleCourseIds' => $accessibleCourseIds,
             'featuredCourses' => $featuredCourses,
-            'latestCourses' => $latestCourses,
             'catalogCourses' => $catalogCourses,
             'coursesBySphere' => $coursesBySphere,
             'coursesByEducationLevel' => $coursesByEducationLevel,

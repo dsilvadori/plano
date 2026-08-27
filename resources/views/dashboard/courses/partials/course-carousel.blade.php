@@ -5,6 +5,7 @@
     $activePlansByCourse = $activePlansByCourse ?? collect();
     $forceAccess = $forceAccess ?? false;
     $emptyMessage = $emptyMessage ?? 'Nenhum curso publicado no momento.';
+    $showOwnedBadge = $showOwnedBadge ?? false;
 @endphp
 
 @if ($courses->isNotEmpty())
@@ -34,6 +35,7 @@
                         'hasAccess' => $forceAccess || $accessibleCourseIds->contains($course->id),
                         'progress' => $courseProgress[$course->id] ?? null,
                         'activePlan' => $activePlansByCourse->get($course->id),
+                        'ownedBadge' => $showOwnedBadge,
                     ])
                 </div>
             @endforeach

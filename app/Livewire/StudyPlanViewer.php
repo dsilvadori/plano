@@ -431,18 +431,29 @@ class StudyPlanViewer extends Component
                 if (isset($lessonsByItem[$item->id])) {
                     $linkedLessonsByName = collect($linkedLessons)
                         ->keyBy(fn (array $lesson): string => $this->normalizeLessonName((string) ($lesson['name'] ?? '')));
+                    $matchedLinkedLessons = 0;
 
                     $lessonsByItem[$item->id] = collect($lessonsByItem[$item->id])
-                        ->map(function (array $lesson) use ($linkedLessonsByName): array {
+                        ->map(function (array $lesson) use ($linkedLessonsByName, &$matchedLinkedLessons): array {
                             $linkedLesson = $linkedLessonsByName->get($this->normalizeLessonName((string) ($lesson['name'] ?? '')));
 
-                            return $linkedLesson ? array_merge($lesson, [
+                            if (! $linkedLesson) {
+                                return $lesson;
+                            }
+
+                            $matchedLinkedLessons++;
+
+                            return array_merge($lesson, [
                                 'url' => $linkedLesson['url'] ?? null,
                                 'is_online' => true,
-                            ]) : $lesson;
+                            ]);
                         })
                         ->values()
                         ->all();
+
+                    if ($matchedLinkedLessons === 0) {
+                        $lessonsByItem[$item->id] = $linkedLessons;
+                    }
 
                     return;
                 }

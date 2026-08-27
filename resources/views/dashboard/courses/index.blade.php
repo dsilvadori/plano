@@ -22,18 +22,9 @@
                     </div>
                 </div>
 
-                @include('dashboard.courses.partials.course-carousel', ['courses' => $featuredCourses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse])
+                @include('dashboard.courses.partials.course-carousel', ['courses' => $featuredCourses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse, 'showOwnedBadge' => true])
             </section>
         @endif
-
-        <section class="card-panel">
-            <div>
-                <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Catálogo</p>
-                <h2 class="mt-2 text-2xl font-semibold text-white">Últimos cursos disponíveis</h2>
-            </div>
-
-            @include('dashboard.courses.partials.course-carousel', ['courses' => $latestCourses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse, 'emptyMessage' => 'Nenhum curso publicado no momento.'])
-        </section>
 
         <section class="card-panel">
             <div>
@@ -42,7 +33,7 @@
                 <p class="mt-2 text-sm text-slate-300">{{ $catalogCourses->count() }} curso(s) disponível(is) no catálogo.</p>
             </div>
 
-            @include('dashboard.courses.partials.course-carousel', ['courses' => $catalogCourses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse, 'emptyMessage' => 'Nenhum curso publicado no momento.'])
+            @include('dashboard.courses.partials.course-carousel', ['courses' => $catalogCourses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse, 'emptyMessage' => 'Nenhum curso publicado no momento.', 'showOwnedBadge' => true])
         </section>
 
         @if ($coursesBySphere->isNotEmpty())
@@ -71,7 +62,7 @@
                             </summary>
 
                             <div class="border-t border-white/10 px-5 pb-5">
-                                @include('dashboard.courses.partials.course-carousel', ['courses' => $sphere->courses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse])
+                                @include('dashboard.courses.partials.course-carousel', ['courses' => $sphere->courses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse, 'showOwnedBadge' => true])
                             </div>
                         </details>
                     @endforeach
@@ -105,7 +96,7 @@
                             </summary>
 
                             <div class="border-t border-white/10 px-5 pb-5">
-                                @include('dashboard.courses.partials.course-carousel', ['courses' => $level->courses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse])
+                                @include('dashboard.courses.partials.course-carousel', ['courses' => $level->courses, 'accessibleCourseIds' => $accessibleCourseIds, 'courseProgress' => $courseProgress, 'activePlansByCourse' => $activePlansByCourse, 'showOwnedBadge' => true])
                             </div>
                         </details>
                     @endforeach

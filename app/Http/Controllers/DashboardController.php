@@ -42,24 +42,27 @@ class DashboardController extends Controller
         $canCreatePlan = $availableCourseIds
             ->diff($activePlansByCourse->keys())
             ->isNotEmpty();
-        $featuredOnlineCourses = Course::query()
+        $catalogCourses = Course::query()
             ->where('is_active', true)
             ->where('status', 'published')
-            ->where('is_featured', true)
             ->with(['sphere', 'educationLevel'])
             ->withCount(['modules', 'lessons'])
             ->orderBy('sort_order')
             ->orderBy('name')
-            ->limit(3)
-            ->get();
+            ->get()
+            ->sortBy(fn (Course $course): string => ($availableCourseIds->contains($course->id) ? '0' : '1').'-'.str($course->name)->lower()->ascii())
+            ->values();
 
-        $courseProgress = $this->progressForCourses($featuredOnlineCourses, $user);
+        $courseProgress = $this->progressForCourses(
+            $availableCourses->concat($catalogCourses),
+            $user,
+        );
 
         return view('dashboard.index', [
             'user' => $user,
             'availableCourses' => $availableCourses,
             'availableCourseIds' => $availableCourseIds,
-            'featuredOnlineCourses' => $featuredOnlineCourses,
+            'catalogCourses' => $catalogCourses,
             'courseProgress' => $courseProgress,
             'activePlan' => $activePlan,
             'activePlans' => $activePlans,
