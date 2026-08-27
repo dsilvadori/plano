@@ -703,11 +703,21 @@ html[data-theme="light"] .color-scheme-dark {
     }
 
     .lesson-ai-panel {
-        @apply overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-2xl shadow-black/20 backdrop-blur;
+        @apply min-w-0 overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-2xl shadow-black/20 backdrop-blur;
+    }
+
+    .lesson-video-frame {
+        @apply max-w-full overflow-hidden rounded-3xl border border-white/10 bg-slate-950;
     }
 
     .lesson-ai-tabs {
         @apply flex gap-2 overflow-x-auto border-b border-white/10 px-5 py-3;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+    }
+
+    .lesson-ai-tabs::-webkit-scrollbar {
+        display: none;
     }
 
     .lesson-ai-tab {
@@ -753,6 +763,28 @@ html[data-theme="light"] .color-scheme-dark {
             @apply rounded-[1.2rem] p-4;
         }
     }
+
+    @media (max-width: 640px) {
+        .hero-panel {
+            @apply rounded-[1.35rem] p-4;
+        }
+
+        .lesson-video-frame {
+            @apply rounded-[1.35rem];
+        }
+
+        .lesson-ai-panel {
+            @apply rounded-[1.35rem];
+        }
+
+        .lesson-ai-tabs {
+            @apply px-4;
+        }
+
+        .lesson-tutor-frame {
+            @apply h-[28rem];
+        }
+    }
 }
 
 [x-cloak] {
@@ -762,6 +794,7 @@ html[data-theme="light"] .color-scheme-dark {
 .lesson-mindmap {
     display: grid;
     gap: 1.25rem;
+    min-width: 0;
 }
 
 .lesson-ai-prose h2,
@@ -844,6 +877,7 @@ html[data-theme="light"] .color-scheme-dark {
         linear-gradient(135deg, rgba(30, 41, 59, .92), rgba(2, 6, 23, .92));
     color: #fff;
     text-align: center;
+    min-width: 0;
 }
 
 .lesson-mindmap-center span {
@@ -858,12 +892,14 @@ html[data-theme="light"] .color-scheme-dark {
     max-width: 42rem;
     font-size: 1.2rem;
     line-height: 1.35;
+    overflow-wrap: anywhere;
 }
 
 .lesson-mindmap-branches {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(13.5rem, 100%), 1fr));
     gap: .9rem;
+    min-width: 0;
 }
 
 .lesson-mindmap-branch {
@@ -875,6 +911,7 @@ html[data-theme="light"] .color-scheme-dark {
     background:
         linear-gradient(135deg, rgba(14, 165, 233, .12), rgba(15, 23, 42, .7));
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+    min-width: 0;
 }
 
 .lesson-mindmap-branch::before {
@@ -930,6 +967,7 @@ html[data-theme="light"] .color-scheme-dark {
     font-size: .98rem;
     font-weight: 800;
     line-height: 1.45;
+    overflow-wrap: anywhere;
 }
 
 .lesson-mindmap-branch h3 span,
@@ -973,6 +1011,7 @@ html[data-theme="light"] .color-scheme-dark {
     color: rgb(203 213 225);
     font-size: .86rem;
     line-height: 1.45;
+    overflow-wrap: anywhere;
 }
 
 .lesson-mindmap-branch li strong {
