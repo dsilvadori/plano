@@ -35,8 +35,10 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Throwable;
 use Illuminate\Support\Facades\Notification as MailNotification;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class CourseCatalogController extends Controller
 {
@@ -319,6 +321,10 @@ class CourseCatalogController extends Controller
             'pandaTutorUrl' => $this->pandaTutorUrlForLesson($lesson),
             'pandaTutorCandidateUrl' => $this->pandaTutorCandidateUrlForLesson($lesson),
             'pandaTutorConfigUrl' => $this->pandaTutorConfigUrlForLesson($lesson),
+            'digitalBookDownloadUrl' => $this->digitalBookPathExists($lesson)
+                ? route('courses.lessons.digital-book.download', [$course->slug, $lesson])
+                : null,
+            'lessonPdfEmbedUrl' => $this->lessonPdfEmbedUrl($course, $lesson),
         ]);
     }
 
@@ -429,6 +435,33 @@ class CourseCatalogController extends Controller
         return response($pdf->generate($course, $lesson, $summary), 200, [
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'attachment; filename="'.$filename.'"',
+        ]);
+    }
+
+    public function showLessonDigitalBook(Course $course, Lesson $lesson): BinaryFileResponse
+    {
+        $this->authorizeLessonDigitalBookAccess(request()->user(), $course, $lesson);
+
+        $path = (string) $lesson->digital_book_path;
+
+        abort_unless($this->safeLocalPdfPathExists($path), 404);
+
+        return response()->file(Storage::disk('local')->path($path), [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="'.$this->digitalBookFilename($lesson).'"',
+        ]);
+    }
+
+    public function downloadLessonDigitalBook(Course $course, Lesson $lesson): BinaryFileResponse
+    {
+        $this->authorizeLessonDigitalBookAccess(request()->user(), $course, $lesson);
+
+        $path = (string) $lesson->digital_book_path;
+
+        abort_unless($this->safeLocalPdfPathExists($path), 404);
+
+        return response()->download(Storage::disk('local')->path($path), $this->digitalBookFilename($lesson), [
+            'Content-Type' => 'application/pdf',
         ]);
     }
 
@@ -718,6 +751,84 @@ class CourseCatalogController extends Controller
                     ->orWhereHas('module', fn (Builder $query) => $query->where('course_id', $course->id));
             })
             ->exists();
+    }
+
+    protected function authorizeLessonDigitalBookAccess(User $user, Course $course, Lesson $lesson): void
+    {
+        abort_unless($user->canAccessStudentArea(), 403);
+
+        $hasActivePlanLessonAccess = $this->userHasActivePlanLessonAccess($user, $course, $lesson);
+        $courseIsPublished = $course->is_active && $course->status === 'published';
+
+        abort_unless($courseIsPublished || $hasActivePlanLessonAccess, 404);
+        abort_unless($lesson->status !== 'archived' || $hasActivePlanLessonAccess, 404);
+        abort_unless($this->lessonBelongsToCourse($lesson, $course) || $hasActivePlanLessonAccess, 404);
+        abort_unless($this->userCanAccessCourse($user, $course) || $hasActivePlanLessonAccess, 403);
+    }
+
+    protected function lessonPdfEmbedUrl(Course $course, Lesson $lesson): ?string
+    {
+        if ($lesson->type !== 'pdf') {
+            return null;
+        }
+
+        if ($this->digitalBookPathExists($lesson)) {
+            return route('courses.lessons.digital-book.show', [$course->slug, $lesson]);
+        }
+
+        $driveFileId = (string) data_get($lesson->metadata, 'drive_file_id', '');
+
+        if ($driveFileId !== '') {
+            return 'https://drive.google.com/file/d/'.rawurlencode($driveFileId).'/preview';
+        }
+
+        return $this->googleDrivePreviewUrl((string) $lesson->google_doc_url) ?: $lesson->google_doc_url;
+    }
+
+    protected function googleDrivePreviewUrl(string $url): ?string
+    {
+        if ($url === '' || ! str_contains($url, 'drive.google.com')) {
+            return null;
+        }
+
+        if (preg_match('~/file/d/([^/]+)~', $url, $matches)) {
+            return 'https://drive.google.com/file/d/'.rawurlencode($matches[1]).'/preview';
+        }
+
+        if (preg_match('~[?&]id=([^&]+)~', $url, $matches)) {
+            return 'https://drive.google.com/file/d/'.rawurlencode($matches[1]).'/preview';
+        }
+
+        return null;
+    }
+
+    protected function digitalBookPathExists(Lesson $lesson): bool
+    {
+        return $this->safeLocalPdfPathExists((string) $lesson->digital_book_path);
+    }
+
+    protected function safeLocalPdfPathExists(string $path): bool
+    {
+        return $path !== ''
+            && ! str_starts_with($path, '/')
+            && ! str_contains($path, '..')
+            && str_ends_with(strtolower($path), '.pdf')
+            && Storage::disk('local')->exists($path);
+    }
+
+    protected function digitalBookFilename(Lesson $lesson): string
+    {
+        $pathFilename = basename((string) $lesson->digital_book_path);
+
+        if ($pathFilename !== '' && $pathFilename !== '.') {
+            return $pathFilename;
+        }
+
+        return str($lesson->title)
+            ->ascii()
+            ->slug('-')
+            ->append('.pdf')
+            ->toString();
     }
 
     protected function userHasActivePlanLessonAccess(User $user, Course $course, Lesson $lesson): bool

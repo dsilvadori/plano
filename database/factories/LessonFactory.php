@@ -35,6 +35,7 @@ class LessonFactory extends Factory
             'panda_player_url' => null,
             'panda_status' => null,
             'google_doc_url' => null,
+            'digital_book_path' => null,
             'source_status' => 'media_ready',
             'metadata' => null,
         ];

@@ -43,6 +43,8 @@ Route::middleware('auth')->group(function () {
     Route::get('/dashboard/cursos/{course:slug}/modulos/{module}/trilhas', [CourseCatalogController::class, 'moduleTracks'])->name('courses.modules.tracks.index');
     Route::get('/dashboard/cursos/{course:slug}/modulos/{module}/trilhas/{track}/aulas', [CourseCatalogController::class, 'trackLessons'])->name('courses.modules.tracks.lessons.index');
     Route::get('/dashboard/cursos/{course:slug}/aulas/{lesson}', [CourseCatalogController::class, 'lesson'])->name('courses.lessons.show');
+    Route::get('/dashboard/cursos/{course:slug}/aulas/{lesson}/livro-digital', [CourseCatalogController::class, 'showLessonDigitalBook'])->name('courses.lessons.digital-book.show');
+    Route::get('/dashboard/cursos/{course:slug}/aulas/{lesson}/livro-digital/baixar', [CourseCatalogController::class, 'downloadLessonDigitalBook'])->name('courses.lessons.digital-book.download');
     Route::get('/dashboard/cursos/{course:slug}/aulas/{lesson}/resumo.pdf', [CourseCatalogController::class, 'downloadLessonSummary'])->name('courses.lessons.summary.pdf');
     Route::post('/dashboard/cursos/{course:slug}/aulas/{lesson}/ia/panda', [CourseCatalogController::class, 'syncPandaAi'])->name('courses.lessons.ai.panda');
     Route::post('/dashboard/cursos/{course:slug}/aulas/{lesson}/concluir', [CourseCatalogController::class, 'completeLesson'])->name('courses.lessons.complete');

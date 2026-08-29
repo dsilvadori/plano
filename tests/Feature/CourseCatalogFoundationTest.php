@@ -670,6 +670,48 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
     }
 
+    public function test_pdf_lesson_embeds_digital_book_and_allows_download(): void
+    {
+        Storage::fake('local');
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com apostila',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Noções de Direito',
+        ]);
+
+        Storage::disk('local')->put('lesson-digital-books/apostila-direito.pdf', '%PDF-1.4 teste');
+
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Apostila de Direito',
+            'type' => 'pdf',
+            'digital_book_path' => 'lesson-digital-books/apostila-direito.pdf',
+            'status' => 'published',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Apostila de Direito')
+            ->assertSee('Baixar livro digital')
+            ->assertSee(route('courses.lessons.digital-book.show', [$course->slug, $lesson]), false)
+            ->assertSee(route('courses.lessons.digital-book.download', [$course->slug, $lesson]), false)
+            ->assertDontSee('A mídia desta aula entrará em breve');
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.digital-book.download', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+    }
+
     public function test_course_track_card_links_to_in_progress_lesson_before_first_lesson(): void
     {
         $student = User::factory()->create(['role' => 'student']);

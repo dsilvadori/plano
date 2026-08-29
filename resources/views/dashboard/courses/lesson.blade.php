@@ -408,6 +408,13 @@
                         referrerpolicy="strict-origin-when-cross-origin"
                         allowfullscreen
                     ></iframe>
+                @elseif ($lessonPdfEmbedUrl && $lesson->type === 'pdf')
+                    <iframe
+                        src="{{ $lessonPdfEmbedUrl }}"
+                        title="{{ $lesson->title }}"
+                        class="block h-[72vh] min-h-[32rem] w-full"
+                        referrerpolicy="strict-origin-when-cross-origin"
+                    ></iframe>
                 @else
                     <div class="flex aspect-video flex-col items-center justify-center p-8 text-center">
                         <p class="text-sm uppercase tracking-[0.25em] text-amber-300">{{ ucfirst($lesson->type) }}</p>
@@ -435,6 +442,11 @@
 
                     @if ($lesson->description && $lesson->description !== 'Aula importada por planilha.')
                         <p class="mt-4 text-sm leading-6 text-slate-300">{{ $lesson->description }}</p>
+                    @endif
+                    @if ($digitalBookDownloadUrl)
+                        <a href="{{ $digitalBookDownloadUrl }}" class="mt-4 inline-flex items-center justify-center rounded-2xl border border-amber-300/30 bg-amber-300/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:border-amber-200/50 hover:bg-amber-300/20">
+                            Baixar livro digital
+                        </a>
                     @endif
                     <p x-show="error" x-text="error" x-cloak class="mt-3 text-sm font-semibold text-rose-200"></p>
                 </div>

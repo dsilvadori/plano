@@ -79,6 +79,7 @@ class Lesson extends Model
         'panda_player_url',
         'panda_status',
         'google_doc_url',
+        'digital_book_path',
         'source_status',
         'metadata',
     ];

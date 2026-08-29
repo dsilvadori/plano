@@ -18,6 +18,7 @@ use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -123,6 +124,15 @@ class LessonResource extends Resource
             Textarea::make('description')
                 ->label('Descrição')
                 ->rows(4)
+                ->columnSpanFull(),
+            FileUpload::make('digital_book_path')
+                ->label('Livro digital / apostila em PDF')
+                ->disk('local')
+                ->directory('lesson-digital-books')
+                ->preserveFilenames()
+                ->acceptedFileTypes(['application/pdf'])
+                ->maxSize(51200)
+                ->helperText('Opcional. Quando preenchido, o aluno poderá baixar o PDF; em aulas do tipo PDF, ele também será exibido dentro da aula.')
                 ->columnSpanFull(),
             TextInput::make('thumbnail_url')
                 ->label('URL da thumbnail')
@@ -241,6 +251,12 @@ class LessonResource extends Resource
                         'published' => 'Publicado',
                         default => (string) $state,
                     }),
+                TextColumn::make('digital_book_path')
+                    ->label('Apostila')
+                    ->badge()
+                    ->toggleable()
+                    ->formatStateUsing(fn (?string $state): string => filled($state) ? 'PDF' : 'Sem PDF')
+                    ->color(fn (?string $state): string => filled($state) ? 'success' : 'gray'),
                 TextColumn::make('ai_resources_status')
                     ->label('IA')
                     ->badge()
