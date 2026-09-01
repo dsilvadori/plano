@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\User;
 use App\Models\WebhookEvent;
+use App\Notifications\CourseAccessGrantedNotification;
 use App\Notifications\SetPasswordNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -80,6 +81,57 @@ class TutoryWebhookTest extends TestCase
         $this->assertSame('student', $user->role);
         $this->assertTrue($user->courses()->whereKey($course)->wherePivot('source', 'tutory')->exists());
         Notification::assertSentTo($user, SetPasswordNotification::class);
+    }
+
+    public function test_webhook_links_existing_student_to_new_course_and_sends_course_access_email(): void
+    {
+        Notification::fake();
+
+        $student = User::factory()->create([
+            'name' => 'João da Silva',
+            'email' => 'joao@email.com',
+            'role' => 'student',
+        ]);
+
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'tutory_product_id' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload(), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $this->assertTrue($student->fresh()->courses()->whereKey($course)->wherePivot('source', 'tutory')->exists());
+
+        Notification::assertSentTo($student, CourseAccessGrantedNotification::class);
+        Notification::assertNotSentTo($student, SetPasswordNotification::class);
+    }
+
+    public function test_course_access_email_announces_existing_platform_access(): void
+    {
+        $student = User::factory()->create([
+            'name' => 'Aluno Atual',
+            'email' => 'aluno.atual@example.com',
+            'role' => 'student',
+        ]);
+        $course = Course::factory()->create([
+            'name' => 'Curso Novo Liberado',
+            'is_active' => true,
+        ]);
+
+        $mail = (new CourseAccessGrantedNotification(collect([$course])))->toMail($student);
+        $html = (string) $mail->render();
+
+        $this->assertSame('Novo curso liberado na Plataforma Vencendo Concursos', $mail->subject);
+        $this->assertSame('Acessar meus cursos', $mail->actionText);
+        $this->assertSame(route('courses.mine'), $mail->actionUrl);
+        $this->assertStringContainsString('Seu acesso ao novo curso foi liberado', $html);
+        $this->assertStringContainsString('Curso Novo Liberado', $html);
+        $this->assertStringContainsString('a senha que já usa na plataforma', $html);
+        $this->assertStringNotContainsString('primeiro acesso', $html);
+        $this->assertStringNotContainsString('first_access=1', $html);
     }
 
     public function test_valid_webhook_accepts_secret_in_url(): void

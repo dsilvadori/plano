@@ -51,6 +51,7 @@ class TutoryWebhookProcessor
             $purchaseData = $payload['purchase'] ?? [];
             $productId = $purchaseData['product_id'] ?? data_get($payload, 'product.id') ?? data_get($payload, 'produto.id');
             $purchaseId = $purchaseData['id'] ?? $payload['id'] ?? null;
+            $existingUser = User::findByEmail($studentData['email'] ?? null) !== null;
 
             $user = $this->upsertUser(
                 studentData: $studentData,
@@ -58,22 +59,30 @@ class TutoryWebhookProcessor
                 tutoryCustomerId: $this->customerId($payload),
             );
 
+            $linkedCourses = collect();
+
             if ($user->isStudent()) {
                 $courses = $this->coursesForPurchase($payload, $productId);
 
                 foreach ($courses as $course) {
-                    StudentCourse::firstOrCreate(
+                    $studentCourse = StudentCourse::firstOrCreate(
                         ['user_id' => $user->id, 'course_id' => $course->id],
                         ['source' => 'tutory', 'external_purchase_id' => $purchaseId],
                     );
+
+                    if ($studentCourse->wasRecentlyCreated) {
+                        $linkedCourses->push($course);
+                    }
                 }
 
                 $this->removeStaleProvisionalCourses($user, $courses, $purchaseId);
             }
 
-            if ($user->isStudent() || $user->isSubscriber()) {
+            if (($user->isStudent() || $user->isSubscriber()) && ! $existingUser) {
                 $token = Password::broker('first_access')->createToken($user);
                 $user->sendSetPasswordNotification($token);
+            } elseif ($user->isStudent() && $linkedCourses->isNotEmpty()) {
+                $user->sendCourseAccessGrantedNotification($linkedCourses);
             }
 
             $event->update([
@@ -217,8 +226,7 @@ class TutoryWebhookProcessor
 
     protected function upsertUser(array $studentData, string $role, ?string $tutoryCustomerId): User
     {
-        $email = strtolower((string) ($studentData['email'] ?? ''));
-        $user = User::firstOrNew(['email' => $email]);
+        $user = User::firstOrNewByEmail($studentData['email'] ?? null);
 
         if (! $user->exists) {
             $user->password = Str::password(24);

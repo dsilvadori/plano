@@ -32,7 +32,7 @@ class UserSpreadsheetImporter
 
         DB::transaction(function () use ($payload, $sendFirstAccessEmail, &$stats): void {
             foreach ($payload['students'] as $studentData) {
-                $user = User::query()->firstOrNew(['email' => $studentData['email']]);
+                $user = User::firstOrNewByEmail($studentData['email']);
                 $wasRecentlyCreated = ! $user->exists;
 
                 $user->name = $studentData['name'];
