@@ -373,7 +373,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('published', $removedLesson->fresh()->status);
     }
 
-    public function test_spreadsheet_import_reuses_existing_modules_and_lessons_by_name(): void
+    public function test_spreadsheet_import_recreates_modules_but_reuses_existing_lessons_by_name(): void
     {
         $libraryCourse = Course::factory()->create(['name' => 'Biblioteca']);
         $existingModule = CourseModule::factory()->create([
@@ -405,16 +405,20 @@ class CourseSpreadsheetImportTest extends TestCase
             @unlink($path);
         }
 
-        $this->assertSame(1, CourseModule::query()->whereRaw('lower(name) like ?', ['portugu%'])->count());
+        $this->assertSame(2, CourseModule::query()->whereRaw('lower(name) like ?', ['portugu%'])->count());
         $this->assertSame(1, Lesson::query()->where('title', 'Classes de palavras')->count());
-        $this->assertTrue($course->modules()->whereKey($existingModule->id)->exists());
+        $importedModule = $course->modules()->where('course_modules.name', 'Portugues')->firstOrFail();
+
+        $this->assertFalse($course->modules()->whereKey($existingModule->id)->exists());
+        $this->assertNotSame($existingModule->id, $importedModule->id);
         $this->assertTrue($existingModule->onlineLessons()->whereKey($existingLesson->id)->exists());
-        $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($existingModule->id)->exists());
+        $this->assertTrue($importedModule->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($importedModule->id)->exists());
         $this->assertSame('panda-original', $existingLesson->fresh()->panda_video_id);
         $this->assertSame('https://player.example.com/original', $existingLesson->fresh()->panda_embed_url);
     }
 
-    public function test_spreadsheet_import_clones_same_named_module_when_tracks_differ_and_keeps_teacher(): void
+    public function test_spreadsheet_import_recreates_same_named_module_and_keeps_teacher(): void
     {
         $teacher = Teacher::factory()->create(['name' => 'Professora Maria Silva']);
         $libraryCourse = Course::factory()->create(['name' => 'Biblioteca']);
@@ -459,18 +463,18 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame(2, CourseModule::query()->whereRaw('lower(name) like ?', ['portugu%'])->count());
         $this->assertFalse($course->modules()->whereKey($existingModule->id)->exists());
 
-        $clonedModule = $course->modules()->where('course_modules.name', 'Portugues')->firstOrFail();
+        $importedModule = $course->modules()->where('course_modules.name', 'Portugues')->firstOrFail();
 
-        $this->assertNotSame($existingModule->id, $clonedModule->id);
-        $this->assertSame($teacher->id, $clonedModule->teacher_id);
-        $this->assertSame('Professora Maria Silva', $clonedModule->teacher_name);
-        $this->assertSame($existingModule->id, $clonedModule->metadata['cloned_from_module_id'] ?? null);
-        $this->assertTrue($clonedModule->tracks()->where('name', 'Análise sintática')->exists());
+        $this->assertNotSame($existingModule->id, $importedModule->id);
+        $this->assertSame($teacher->id, $importedModule->teacher_id);
+        $this->assertSame('Professora Maria Silva', $importedModule->teacher_name);
+        $this->assertNull($importedModule->metadata['cloned_from_module_id'] ?? null);
+        $this->assertTrue($importedModule->tracks()->where('name', 'Análise sintática')->exists());
         $this->assertFalse($existingModule->tracks()->where('name', 'Análise sintática')->exists());
         $this->assertTrue($existingModule->tracks()->whereKey($existingTrack)->exists());
     }
 
-    public function test_spreadsheet_import_reuses_compound_track_modules_from_catalog(): void
+    public function test_spreadsheet_import_keeps_compound_tracks_inside_new_spreadsheet_module(): void
     {
         $classesModule = CourseModule::factory()->create([
             'course_id' => null,
@@ -506,12 +510,15 @@ class CourseSpreadsheetImportTest extends TestCase
             @unlink($path);
         }
 
-        $this->assertTrue($course->modules()->whereKey($classesModule->id)->exists());
-        $this->assertTrue($course->modules()->whereKey($syntaxModule->id)->exists());
-        $this->assertFalse($course->modules()->where('name', 'Português')->exists());
-        $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($classesModule->id)->exists());
-        $this->assertTrue($classesModule->fresh()->tracks()->where('name', 'Classe de palavras')->exists());
-        $this->assertTrue($syntaxModule->fresh()->tracks()->where('name', 'Análise sintática')->exists());
+        $importedModule = $course->modules()->where('name', 'Português')->firstOrFail();
+
+        $this->assertFalse($course->modules()->whereKey($classesModule->id)->exists());
+        $this->assertFalse($course->modules()->whereKey($syntaxModule->id)->exists());
+        $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($importedModule->id)->exists());
+        $this->assertTrue($importedModule->tracks()->where('name', 'Classe de palavras')->exists());
+        $this->assertTrue($importedModule->tracks()->where('name', 'Análise sintática')->exists());
+        $this->assertFalse($classesModule->fresh()->tracks()->where('name', 'Classe de palavras')->exists());
+        $this->assertFalse($syntaxModule->fresh()->tracks()->where('name', 'Análise sintática')->exists());
         $this->assertDatabaseHas('lessons', [
             'course_id' => null,
             'title' => 'Substantivo',

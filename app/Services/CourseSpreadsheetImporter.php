@@ -175,7 +175,7 @@ class CourseSpreadsheetImporter
 
     protected function shouldAttachCompoundTrackModules(array $moduleData): bool
     {
-        return ($moduleData['sheet_name'] ?? null) === 'CSV';
+        return false;
     }
 
     protected function replaceExistingOfficialStructure(Course $course, string $_studyTrackName): void
@@ -539,27 +539,10 @@ class CourseSpreadsheetImporter
 
     protected function resolveModuleForImport(Course $course, array $moduleData): CourseModule
     {
-        $moduleName = (string) $moduleData['name'];
-        $courseModule = $this->resolveModuleForCourse($course, $moduleName);
-
-        if ($courseModule) {
-            return $courseModule;
-        }
-
-        $reusableModule = $this->resolveReusableModule($moduleName);
-
-        if (! $reusableModule) {
-            return new CourseModule([
-                'course_id' => null,
-                'name' => $moduleName,
-            ]);
-        }
-
-        if ($this->moduleStructureMatchesImport($reusableModule, $moduleData)) {
-            return $reusableModule;
-        }
-
-        return $this->cloneReusableModuleForImport($reusableModule, $moduleData);
+        return new CourseModule([
+            'course_id' => null,
+            'name' => (string) $moduleData['name'],
+        ]);
     }
 
     protected function cloneReusableModuleForImport(CourseModule $sourceModule, array $moduleData): CourseModule
