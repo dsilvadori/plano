@@ -134,10 +134,8 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('Curso Gabaritando CRT', $importedCourse->name);
         $this->assertSame('curso-gabaritando-crt', $importedCourse->slug);
         $this->assertFalse($importedCourse->is_active);
-        $this->assertDatabaseHas('course_modules', [
+        $this->assertDatabaseMissing('course_modules', [
             'id' => $existingModule->id,
-            'course_id' => $course->id,
-            'name' => 'Módulo criado manualmente',
         ]);
         $this->assertDatabaseHas('course_modules', [
             'course_id' => null,
@@ -148,7 +146,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'course_id' => $course->id,
             'name' => 'Trilha Oficial - Curso Gabaritando CRT',
         ]);
-        $this->assertSame(9, $course->modules()->get()->reject->shouldBeExcludedFromStudyPlan()->count());
+        $this->assertSame(8, $course->modules()->get()->reject->shouldBeExcludedFromStudyPlan()->count());
         $this->assertSame(8, $course->studyTracks()->where('name', 'Trilha Oficial - Curso Gabaritando CRT')->first()->modules()->count());
     }
 
@@ -252,6 +250,9 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertDatabaseHas('course_module_tracks', [
             'name' => 'Classes de palavras',
             'teacher_name' => 'Dorival Conte Jr.',
+        ]);
+        $this->assertDatabaseHas('course_module_track_course', [
+            'course_id' => $course->id,
         ]);
         $teacher = Teacher::query()->where('name', 'Dorival Conte Jr.')->first();
         $this->assertNotNull($teacher);
@@ -891,6 +892,8 @@ class CourseSpreadsheetImportTest extends TestCase
         }
 
         $readyLesson->refresh();
+        $importedTrack = $course->modules()->where('name', 'Informática')->firstOrFail()
+            ->tracks()->where('name', 'Windows 10')->firstOrFail();
 
         $this->assertNull($readyLesson->course_id);
         $this->assertNull($readyLesson->course_module_id);
@@ -898,9 +901,9 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('panda-seguranca', $readyLesson->panda_video_id);
         $this->assertSame('media_ready', $readyLesson->source_status);
         $this->assertSame('published', $readyLesson->status);
-        $this->assertTrue($track->lessons()->whereKey($readyLesson->id)->exists());
-        $this->assertFalse($track->lessons()->whereKey($placeholder->id)->exists());
-        $this->assertSame(1, $track->lessons()->count());
+        $this->assertTrue($importedTrack->lessons()->whereKey($readyLesson->id)->exists());
+        $this->assertFalse($importedTrack->lessons()->whereKey($placeholder->id)->exists());
+        $this->assertSame(1, $importedTrack->lessons()->count());
     }
 
     public function test_spreadsheet_import_reuses_ready_lesson_without_moving_it_into_module_when_slug_conflicts(): void
@@ -965,13 +968,15 @@ class CourseSpreadsheetImportTest extends TestCase
         }
 
         $readyLesson->refresh();
+        $importedModule = $course->modules()->where('name', 'Direito Constitucional')->firstOrFail();
+        $importedTrack = $importedModule->tracks()->where('name', 'Conceitos Iniciais')->firstOrFail();
 
         $this->assertNull($readyLesson->course_id);
         $this->assertNull($readyLesson->course_module_id);
         $this->assertNull($readyLesson->course_module_track_id);
-        $this->assertTrue($module->onlineLessons()->whereKey($readyLesson->id)->exists());
-        $this->assertTrue($track->lessons()->whereKey($readyLesson->id)->exists());
-        $this->assertFalse($track->lessons()->whereKey($placeholder->id)->exists());
+        $this->assertTrue($importedModule->onlineLessons()->whereKey($readyLesson->id)->exists());
+        $this->assertTrue($importedTrack->lessons()->whereKey($readyLesson->id)->exists());
+        $this->assertFalse($importedTrack->lessons()->whereKey($placeholder->id)->exists());
     }
 
     public function test_catalog_detach_course_bindings_preserves_legacy_direct_links_in_pivots(): void

@@ -178,34 +178,52 @@ class CourseSpreadsheetImporter
         return ($moduleData['sheet_name'] ?? null) === 'CSV';
     }
 
-    protected function replaceExistingOfficialStructure(Course $course, string $studyTrackName): void
+    protected function replaceExistingOfficialStructure(Course $course, string $_studyTrackName): void
     {
-        $studyTrack = $course->studyTracks()
-            ->where('name', $studyTrackName)
-            ->first()
-            ?? $course->studyTracks()
-                ->where('name', 'like', 'Trilha Oficial -%')
-                ->orderBy('id')
-                ->first();
+        $modules = $this->modulesForCourseStructureReplacement($course);
 
-        if (! $studyTrack instanceof StudyTrack) {
+        if ($modules->isEmpty()) {
             return;
         }
 
-        $modules = $studyTrack->modules()->withCount('courses')->get();
-
-        $studyTrack->modules()->detach();
+        $course->studyTracks()
+            ->get()
+            ->each(fn (StudyTrack $track) => $track->modules()->detach($modules->pluck('id')->all()));
 
         foreach ($modules as $module) {
             $this->removedStructureModuleIds[] = (int) $module->id;
             $module->courses()->detach($course->id);
+            $module->tracks()->get()->each(fn (CourseModuleTrack $track) => $track->courses()->detach($course->id));
 
-            if ((int) $module->courses_count <= 1) {
+            $belongsOnlyToThisCourse = blank($module->course_id) || (int) $module->course_id === (int) $course->id;
+            $isSharedThroughPivot = (int) $module->courses_count > 1;
+
+            if ($belongsOnlyToThisCourse && ! $isSharedThroughPivot) {
                 $module->delete();
+
+                continue;
+            }
+
+            if ((int) $module->course_id === (int) $course->id) {
+                $module->forceFill(['course_id' => null])->save();
             }
         }
 
         $this->removedStructureModuleIds = array_values(array_unique($this->removedStructureModuleIds));
+    }
+
+    protected function modulesForCourseStructureReplacement(Course $course): Collection
+    {
+        return CourseModule::query()
+            ->withCount('courses')
+            ->where(function ($query) use ($course): void {
+                $query
+                    ->where('course_id', $course->id)
+                    ->orWhereHas('courses', fn ($query) => $query->whereKey($course->id));
+            })
+            ->get()
+            ->reject(fn (CourseModule $module): bool => $module->shouldBeExcludedFromStudyPlan())
+            ->values();
     }
 
     protected function attachCompoundTrackModules(Course $course, array $moduleData, array &$moduleIds): array
@@ -327,6 +345,9 @@ class CourseSpreadsheetImporter
                 ],
             ]);
             $track->save();
+            $track->courses()->syncWithoutDetaching([
+                $course->id => ['sort_order' => $sortOrder],
+            ]);
 
             $this->importLessons($course, $module, $track, $trackData['lessons'] ?? []);
         }
