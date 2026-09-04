@@ -166,11 +166,11 @@ class CourseSpreadsheetImporter
 
         if ($replaceTrackModules) {
             $studyTrack->modules()->sync($moduleIds);
-
-            return;
+        } else {
+            $studyTrack->modules()->syncWithoutDetaching($moduleIds);
         }
 
-        $studyTrack->modules()->syncWithoutDetaching($moduleIds);
+        Course::ensureStartHereModuleIsAttached($course);
     }
 
     protected function shouldAttachCompoundTrackModules(array $moduleData): bool

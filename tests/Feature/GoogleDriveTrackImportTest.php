@@ -164,7 +164,7 @@ class GoogleDriveTrackImportTest extends TestCase
         $this->assertDatabaseMissing('lessons', [
             'title' => '02 - Explorador de Arquivos',
         ]);
-        $this->assertSame(1, Lesson::query()->count());
+        $this->assertSame(1, Lesson::query()->where('title', '!=', 'Comece por aqui')->count());
     }
 
     public function test_import_can_create_panda_module_and_track_folders(): void

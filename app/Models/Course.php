@@ -71,6 +71,22 @@ class Course extends Model
             'metadata' => ['source' => 'system_start_here'],
         ]);
 
+        $lesson = Lesson::query()->firstOrCreate([
+            'title' => 'Comece por aqui',
+            'slug' => 'comece-por-aqui',
+            'course_module_id' => null,
+        ], [
+            'course_id' => null,
+            'course_module_track_id' => null,
+            'description' => 'Orientações iniciais para começar o curso.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 0,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+            'metadata' => ['source' => 'system_start_here'],
+        ]);
+
         $module->courses()->syncWithoutDetaching([
             $course->id => ['sort_order' => 0],
         ]);
@@ -78,6 +94,21 @@ class Course extends Model
         $track->courses()->syncWithoutDetaching([
             $course->id => ['sort_order' => 0],
         ]);
+
+        $module->onlineLessons()->syncWithoutDetaching([
+            $lesson->id => ['sort_order' => 0],
+        ]);
+
+        $track->lessons()->syncWithoutDetaching([
+            $lesson->id => ['sort_order' => 0],
+        ]);
+
+        $course->studyTracks()
+            ->where('name', 'like', 'Trilha Oficial -%')
+            ->get()
+            ->each(fn (StudyTrack $studyTrack) => $studyTrack->modules()->syncWithoutDetaching([
+                $module->id => ['weight' => 1, 'sort_order' => 0],
+            ]));
     }
 
     protected $fillable = [

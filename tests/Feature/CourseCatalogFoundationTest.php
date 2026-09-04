@@ -175,6 +175,9 @@ class CourseCatalogFoundationTest extends TestCase
 
         $this->assertTrue($module->courses()->whereKey($course->id)->exists());
         $this->assertTrue($track->courses()->whereKey($course->id)->exists());
+        $lesson = Lesson::query()->where('title', 'Comece por aqui')->firstOrFail();
+        $this->assertTrue($module->onlineLessons()->whereKey($lesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($lesson->id)->exists());
     }
 
     public function test_course_lists_all_linked_lessons_and_counts_media(): void
@@ -221,13 +224,13 @@ class CourseCatalogFoundationTest extends TestCase
 
         $lessons = $course->linkedLessons();
 
-        $this->assertCount(4, $lessons);
+        $this->assertCount(5, $lessons);
         $this->assertTrue($lessons->contains($directLesson));
         $this->assertTrue($lessons->contains($moduleLesson));
         $this->assertTrue($lessons->contains($trackLesson));
         $this->assertTrue($lessons->contains($withoutMedia));
         $this->assertFalse($lessons->contains($otherLesson));
-        $this->assertSame(4, $course->linkedLessonsCount());
+        $this->assertSame(5, $course->linkedLessonsCount());
         $this->assertSame(3, $course->linkedMediaLessonsCount());
     }
 
@@ -263,9 +266,9 @@ class CourseCatalogFoundationTest extends TestCase
         $this->assertTrue($firstCourse->linkedLessons()->contains($lesson));
         $this->assertTrue($secondCourse->linkedLessons()->contains($lesson));
         $this->assertTrue($thirdCourse->linkedLessons()->contains($lesson));
-        $this->assertSame(1, $firstCourse->linkedLessonsCount());
-        $this->assertSame(1, $secondCourse->linkedLessonsCount());
-        $this->assertSame(1, $thirdCourse->linkedLessonsCount());
+        $this->assertSame(2, $firstCourse->linkedLessonsCount());
+        $this->assertSame(2, $secondCourse->linkedLessonsCount());
+        $this->assertSame(2, $thirdCourse->linkedLessonsCount());
     }
 
     public function test_lesson_admin_module_and_track_filter_options_follow_selected_course(): void
@@ -419,7 +422,7 @@ class CourseCatalogFoundationTest extends TestCase
         $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
 
         $this->assertTrue($course->linkedLessons()->contains($lesson));
-        $this->assertSame(1, $course->linkedLessonsCount());
+        $this->assertSame(2, $course->linkedLessonsCount());
         $this->assertSame(1, $course->linkedMediaLessonsCount());
     }
 
@@ -665,7 +668,7 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.show', $course->slug))
             ->assertOk()
-            ->assertSee('1 de 1 aula(s) concluída(s).')
+            ->assertSee('1 de 2 aula(s) concluída(s).')
             ->assertSee('Ver aulas')
             ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
     }

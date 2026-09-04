@@ -79,7 +79,19 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertCount(8, $course->modules->reject->shouldBeExcludedFromStudyPlan());
         $this->assertCount(1, $course->studyTracks);
         $this->assertSame('Trilha Oficial - Oficial de Administração', $course->studyTracks->first()->name);
-        $this->assertCount(8, $course->studyTracks->first()->modules);
+        $this->assertCount(9, $course->studyTracks->first()->modules);
+        $this->assertTrue($course->modules()->where('course_modules.name', 'Comece por aqui')->exists());
+        $this->assertTrue($course->moduleTracks()->where('course_module_tracks.slug', 'instrucoes')->exists());
+        $this->assertDatabaseHas('lessons', [
+            'title' => 'Comece por aqui',
+            'slug' => 'comece-por-aqui',
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+        $startHereModule = $course->modules()->where('course_modules.name', 'Comece por aqui')->firstOrFail();
+        $startHereLesson = Lesson::query()->where('title', 'Comece por aqui')->firstOrFail();
+        $this->assertTrue($startHereModule->onlineLessons()->whereKey($startHereLesson->id)->exists());
+        $this->assertTrue($course->studyTracks->first()->modules()->whereKey($startHereModule->id)->exists());
         $this->assertDatabaseHas('course_modules', [
             'course_id' => null,
             'name' => 'Informáitca',
@@ -147,7 +159,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'name' => 'Trilha Oficial - Curso Gabaritando CRT',
         ]);
         $this->assertSame(8, $course->modules()->get()->reject->shouldBeExcludedFromStudyPlan()->count());
-        $this->assertSame(8, $course->studyTracks()->where('name', 'Trilha Oficial - Curso Gabaritando CRT')->first()->modules()->count());
+        $this->assertSame(9, $course->studyTracks()->where('name', 'Trilha Oficial - Curso Gabaritando CRT')->first()->modules()->count());
     }
 
     public function test_importer_updates_existing_official_structure_when_importing_into_course(): void
@@ -200,7 +212,8 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertDatabaseCount('study_tracks', 1);
         $this->assertSame('Trilha Oficial - Nome Antigo', $officialTrack->name);
         $this->assertTrue($officialTrack->modules()->whereKey($updatedModule->id)->exists());
-        $this->assertSame(8, $officialTrack->modules()->count());
+        $this->assertTrue($officialTrack->modules()->where('course_modules.name', 'Comece por aqui')->exists());
+        $this->assertSame(9, $officialTrack->modules()->count());
     }
 
     public function test_importer_preview_reports_dry_run_counts_without_writing(): void
@@ -239,7 +252,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('Curso CSV', $course->name);
         $this->assertSame(2, $course->modules()->get()->reject->shouldBeExcludedFromStudyPlan()->count());
         $this->assertSame(2, CourseModuleTrack::query()->whereHas('module', fn ($query) => $query->where('name', '!=', 'Comece por aqui'))->count());
-        $this->assertSame(3, $course->linkedLessonsCount());
+        $this->assertSame(4, $course->linkedLessonsCount());
         $this->assertDatabaseHas('course_modules', [
             'name' => 'Português',
             'teacher_name' => 'Professora do Módulo',

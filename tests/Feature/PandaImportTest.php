@@ -942,8 +942,8 @@ class PandaImportTest extends TestCase
         $this->assertSame(1, Lesson::query()->where('panda_video_id', 'shared-video')->count());
         $this->assertSame(2, $lesson->modules()->count());
         $this->assertSame(2, PandaImportRun::query()->where('status', 'finished')->count());
-        $this->assertTrue($firstCourse->modules()->first()->onlineLessons()->whereKey($lesson->id)->exists());
-        $this->assertTrue($secondCourse->modules()->first()->onlineLessons()->whereKey($lesson->id)->exists());
+        $this->assertTrue($firstCourse->modules()->where('course_modules.name', 'Módulo A')->firstOrFail()->onlineLessons()->whereKey($lesson->id)->exists());
+        $this->assertTrue($secondCourse->modules()->where('course_modules.name', 'Módulo B')->firstOrFail()->onlineLessons()->whereKey($lesson->id)->exists());
     }
 
     public function test_panda_import_publishes_ready_media_even_when_initial_status_is_draft(): void
@@ -1118,7 +1118,7 @@ class PandaImportTest extends TestCase
         $this->assertSame('finished', $run->status);
         $this->assertSame(0, $run->summary['created']);
         $this->assertSame(1, $run->summary['updated']);
-        $this->assertSame(1, Lesson::query()->count());
+        $this->assertSame(1, Lesson::query()->where('title', '!=', 'Comece por aqui')->count());
         $this->assertSame('01 - Classe de Palavras', $existingLesson->title);
         $this->assertSame('panda-classe-palavras', $existingLesson->panda_video_id);
         $this->assertSame('media_ready', $existingLesson->source_status);

@@ -15,11 +15,53 @@ use App\Support\LessonTitleNormalizer;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('courses:ensure-start-here {--course-id=* : Limita a atualização a um ou mais cursos}', function () {
+    if (! Schema::hasTable('courses')) {
+        $this->error('Tabela de cursos não encontrada. Rode as migrations antes deste comando.');
+
+        return 1;
+    }
+
+    $courseIds = collect((array) $this->option('course-id'))
+        ->filter()
+        ->map(fn ($id): int => (int) $id)
+        ->values();
+
+    $query = Course::query()
+        ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('id', $courseIds));
+
+    $total = (clone $query)->count();
+
+    if ($total === 0) {
+        $this->warn('Nenhum curso encontrado para atualizar.');
+
+        return 0;
+    }
+
+    $updated = 0;
+
+    DB::transaction(function () use ($query, &$updated): void {
+        $query
+            ->orderBy('id')
+            ->chunkById(100, function ($courses) use (&$updated): void {
+                foreach ($courses as $course) {
+                    Course::ensureStartHereModuleIsAttached($course);
+                    $updated++;
+                }
+            });
+    });
+
+    $this->info("Cursos atualizados com Comece por aqui: {$updated}.");
+
+    return 0;
+})->purpose('Garante módulo, trilha e aula Comece por aqui em todos os cursos');
 
 Artisan::command('study-plans:refresh-active {--course-id=* : Limita a atualização a um ou mais cursos} {--dry-run}', function (ActiveStudyPlanRefresher $refresher) {
     $courseIds = collect((array) $this->option('course-id'))
