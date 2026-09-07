@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Courses\Pages;
 use App\Filament\Resources\Courses\CourseResource;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\LessonCourseLinker;
+use App\Support\CourseSpreadsheetUpload;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
 use Filament\Forms\Components\FileUpload;
@@ -14,7 +15,6 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\HtmlString;
 use Throwable;
@@ -77,14 +77,14 @@ class ListCourses extends ListRecords
                             $set('preview_track_count', null);
                             $set('preview_total_minutes', null);
 
-                            $path = self::resolveUploadedSpreadsheetPath($state);
+                            $absolutePath = self::resolveUploadedSpreadsheetPreviewPath($state);
 
-                            if ($path === null) {
+                            if ($absolutePath === null) {
                                 return;
                             }
 
                             try {
-                                $preview = $importer->preview(Storage::disk('local')->path($path));
+                                $preview = $importer->preview($absolutePath);
 
                                 $set('preview_course_name', $preview['course']['name']);
                                 $set('preview_module_count', $preview['modules']['total']);
@@ -190,17 +190,12 @@ class ListCourses extends ListRecords
 
     protected static function resolveUploadedSpreadsheetPath(mixed $state): ?string
     {
-        if (is_string($state) && $state !== '') {
-            return $state;
-        }
+        return CourseSpreadsheetUpload::storedPath($state);
+    }
 
-        if (is_array($state)) {
-            $first = Arr::first($state, fn ($value) => is_string($value) && $value !== '');
-
-            return is_string($first) ? $first : null;
-        }
-
-        return null;
+    protected static function resolveUploadedSpreadsheetPreviewPath(mixed $state): ?string
+    {
+        return CourseSpreadsheetUpload::absolutePath($state);
     }
 
     protected static function formatSyncStats(array $stats): string

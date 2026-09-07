@@ -9,10 +9,13 @@ use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
 use App\Models\Teacher;
+use App\Support\CourseSpreadsheetUpload;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Storage;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
 use Tests\TestCase;
 
 class CourseSpreadsheetImportTest extends TestCase
@@ -53,6 +56,45 @@ class CourseSpreadsheetImportTest extends TestCase
             'imports/courses/Administrador.xlsx',
             $method->invoke(null, 'imports/courses/Administrador.xlsx'),
         );
+    }
+
+    public function test_course_spreadsheet_upload_reads_temporary_file_without_moving_it(): void
+    {
+        Storage::fake('local');
+        Storage::disk('local')->put(
+            'livewire-tmp/curso.xlsx',
+            file_get_contents(base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')),
+        );
+        Storage::disk('local')->put('livewire-tmp/curso.xlsx.json', json_encode([
+            'name' => 'Oficial de Administração com aba.xlsx',
+        ]));
+
+        $file = new TemporaryUploadedFile('curso.xlsx', 'local');
+        $absolutePath = CourseSpreadsheetUpload::absolutePath(['upload' => $file]);
+
+        $this->assertNotNull($absolutePath);
+        $this->assertFileExists($absolutePath);
+        $this->assertTrue(Storage::disk('local')->exists('livewire-tmp/curso.xlsx'));
+    }
+
+    public function test_course_spreadsheet_upload_stores_temporary_file_for_import_action(): void
+    {
+        Storage::fake('local');
+        Storage::disk('local')->put(
+            'livewire-tmp/curso.xlsx',
+            file_get_contents(base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')),
+        );
+        Storage::disk('local')->put('livewire-tmp/curso.xlsx.json', json_encode([
+            'name' => 'Oficial de Administração com aba.xlsx',
+        ]));
+
+        $file = new TemporaryUploadedFile('curso.xlsx', 'local');
+        $storedPath = CourseSpreadsheetUpload::storedPath(['upload' => $file]);
+
+        $this->assertNotNull($storedPath);
+        $this->assertStringStartsWith('imports/courses/oficial-de-administracao-com-aba-', $storedPath);
+        $this->assertTrue(Storage::disk('local')->exists($storedPath));
+        $this->assertFalse(Storage::disk('local')->exists('livewire-tmp/curso.xlsx'));
     }
 
     public function test_parser_detects_complementary_module_type(): void

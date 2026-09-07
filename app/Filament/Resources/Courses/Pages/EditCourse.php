@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Courses\Pages;
 use App\Filament\Resources\Courses\CourseResource;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\LessonCourseLinker;
+use App\Support\CourseSpreadsheetUpload;
 use App\Support\FilamentThumbnailUpload;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -112,19 +113,19 @@ class EditCourse extends EditRecord
                             $set('preview_track_count', null);
                             $set('preview_total_minutes', null);
 
-                            $path = self::resolveUploadedSpreadsheetPath($state);
+                            $absolutePath = self::resolveUploadedSpreadsheetPreviewPath($state);
 
-                            if ($path === null) {
+                            if ($absolutePath === null) {
                                 return;
                             }
 
                             try {
-                                $preview = $importer->preview(Storage::disk('local')->path($path), $this->record);
+                                $preview = $importer->preview($absolutePath, $this->record);
 
                                 self::logCourseDebug('import.preview_success', [
                                     'course_id' => $this->record->id,
                                     'course_name' => $this->record->name,
-                                    'spreadsheet_path' => $path,
+                                    'spreadsheet_path' => $absolutePath,
                                     'payload_course_name' => $preview['payload']['course_name'] ?? null,
                                     'module_total' => $preview['modules']['total'] ?? null,
                                     'module_create' => $preview['modules']['create'] ?? null,
@@ -145,7 +146,7 @@ class EditCourse extends EditRecord
                                 self::logCourseDebug('import.preview_failed', [
                                     'course_id' => $this->record->id,
                                     'course_name' => $this->record->name,
-                                    'spreadsheet_path' => $path,
+                                    'spreadsheet_path' => $absolutePath,
                                     'error' => $exception->getMessage(),
                                 ]);
 
@@ -267,7 +268,12 @@ class EditCourse extends EditRecord
 
     protected static function resolveUploadedSpreadsheetPath(mixed $state): ?string
     {
-        return self::resolveUploadedPath($state);
+        return CourseSpreadsheetUpload::storedPath($state);
+    }
+
+    protected static function resolveUploadedSpreadsheetPreviewPath(mixed $state): ?string
+    {
+        return CourseSpreadsheetUpload::absolutePath($state);
     }
 
     protected static function resolveUploadedPath(mixed $state, ?string $fallback = null, ?string $directory = null): ?string
