@@ -114,12 +114,12 @@ class CourseSpreadsheetParser
                         $lessons = $trackRows
                             ->values()
                             ->map(function (array $row, int $index) {
-                                $minutes = (int) round((float) str_replace(',', '.', $row['lesson_minutes'] ?? $row['minutos'] ?? 0));
+                                $minutes = $this->parseLessonMinutes($row['lesson_minutes'] ?? $row['minutos'] ?? 0);
                                 $status = $row['lesson_status'] ?? $row['status_aula'] ?? null;
 
                                 return [
                                     'name' => $this->normalizeLessonName($row['lesson_title'] ?? $row['aula']),
-                                    'minutes' => max(0, $minutes),
+                                    'minutes' => $minutes,
                                     'type' => $row['lesson_type'] ?? $row['tipo_aula'] ?? 'video',
                                     'status' => filled($status) ? $status : 'draft',
                                     'status_explicit' => filled($status),
@@ -272,13 +272,15 @@ class CourseSpreadsheetParser
                         $currentTrackName = $groupName;
                     }
 
-                    if (! is_numeric($minutesCell)) {
+                    $minutes = $this->parseLessonMinutes($minutesCell);
+
+                    if ($minutes <= 0) {
                         continue;
                     }
 
                     $currentLessons[] = [
                         'name' => $this->normalizeLessonName($firstCell),
-                        'minutes' => (int) round((float) $minutesCell),
+                        'minutes' => $minutes,
                     ];
                 }
 
@@ -449,6 +451,51 @@ class CourseSpreadsheetParser
     protected function normalizeLessonName(string $value): string
     {
         return trim(str_replace("\n", ' ', preg_replace('/\s+/', ' ', $value) ?? $value));
+    }
+
+    protected function parseLessonMinutes(mixed $value): int
+    {
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return 0;
+        }
+
+        $normalized = str_replace(',', '.', $value);
+
+        if (preg_match('/^(\d+)\s*h(?:\s*(\d+))?/iu', $normalized, $matches)) {
+            return ((int) $matches[1] * 60) + (int) ($matches[2] ?? 0);
+        }
+
+        if (preg_match('/^(\d{1,3}):(\d{2})(?::(\d{2}))?$/', $normalized, $matches)) {
+            $first = (int) $matches[1];
+            $second = (int) $matches[2];
+            $third = (int) ($matches[3] ?? 0);
+
+            if (array_key_exists(3, $matches)) {
+                return ($first * 60) + $second + (int) round($third / 60);
+            }
+
+            return $first > 12
+                ? $first + (int) round($second / 60)
+                : ($first * 60) + $second;
+        }
+
+        if (is_numeric($normalized)) {
+            $number = (float) $normalized;
+
+            if ($number > 0 && $number < 1) {
+                return max(1, (int) round($number * 24 * 60));
+            }
+
+            return max(0, (int) round($number));
+        }
+
+        if (preg_match('/(\d+(?:\.\d+)?)/', $normalized, $matches)) {
+            return max(0, (int) round((float) $matches[1]));
+        }
+
+        return 0;
     }
 
     protected function normalizeHeader(string $value): string

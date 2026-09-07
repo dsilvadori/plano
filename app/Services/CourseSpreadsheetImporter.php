@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\CourseCatalogController;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
@@ -12,6 +13,7 @@ use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 class CourseSpreadsheetImporter
 {
@@ -31,6 +33,7 @@ class CourseSpreadsheetImporter
     public function preview(string $path, ?Course $course = null): array
     {
         $payload = $this->parser->parse($path);
+        $this->ensurePayloadHasImportableStructure($payload);
         $this->resetImportCaches();
         $targetCourse = $course ?: Course::query()->where('slug', $payload['course_slug'])->first();
         $moduleStats = ['create' => 0, 'update' => 0];
@@ -72,6 +75,7 @@ class CourseSpreadsheetImporter
     public function import(string $path): Course
     {
         $payload = $this->parser->parse($path);
+        $this->ensurePayloadHasImportableStructure($payload);
         $this->resetImportCaches();
 
         return DB::transaction(function () use ($payload) {
@@ -85,6 +89,7 @@ class CourseSpreadsheetImporter
             );
 
             $this->importStructure($course, $payload, $payload['study_track_name']);
+            CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
             $this->activeStudyPlanRefresher->refreshCourseFromNextWeek($course);
 
             return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
@@ -94,16 +99,28 @@ class CourseSpreadsheetImporter
     public function importInto(Course $course, string $path): Course
     {
         $payload = $this->parser->parse($path);
+        $this->ensurePayloadHasImportableStructure($payload);
         $this->resetImportCaches();
 
         return DB::transaction(function () use ($course, $payload) {
             $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - '.$course->name;
 
             $this->importStructure($course, $payload, $studyTrackName);
+            CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
             $this->activeStudyPlanRefresher->refreshCourseFromNextWeek($course);
 
             return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
+    }
+
+    protected function ensurePayloadHasImportableStructure(array $payload): void
+    {
+        $modules = $payload['modules'] ?? [];
+        $lessonCount = collect($modules)->sum(fn (array $module): int => count($this->lessonsFromModuleData($module)));
+
+        if ($modules === [] || $lessonCount === 0) {
+            throw new RuntimeException('A planilha não possui módulos e aulas importáveis. Confira se as aulas estão na coluna A e a carga horária/minutos na coluna B.');
+        }
     }
 
     protected function importStructure(Course $course, array $payload, string $studyTrackName, bool $replaceTrackModules = true): void

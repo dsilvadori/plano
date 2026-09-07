@@ -14,8 +14,10 @@ use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
+use RuntimeException;
 use Tests\TestCase;
 
 class CourseSpreadsheetImportTest extends TestCase
@@ -107,6 +109,74 @@ class CourseSpreadsheetImportTest extends TestCase
         $type = $method->invoke($parser, 'Conhecimentos Complementares', 'Módulo - Apoio', 'Trilha - Informática complementar');
 
         $this->assertSame('complementary', $type);
+    }
+
+    public function test_parser_accepts_common_spreadsheet_duration_formats(): void
+    {
+        $parser = app(CourseSpreadsheetParser::class);
+        $method = new \ReflectionMethod($parser, 'parseLessonMinutes');
+        $method->setAccessible(true);
+
+        $this->assertSame(30, $method->invoke($parser, '30'));
+        $this->assertSame(30, $method->invoke($parser, '30 min'));
+        $this->assertSame(90, $method->invoke($parser, '1h30'));
+        $this->assertSame(30, $method->invoke($parser, '00:30'));
+        $this->assertSame(75, $method->invoke($parser, '1:15'));
+        $this->assertSame(30, $method->invoke($parser, '0.0208333333'));
+    }
+
+    public function test_xlsx_import_without_importable_lessons_does_not_replace_existing_course_structure(): void
+    {
+        $course = Course::factory()->create(['name' => 'Curso Existente']);
+        $existingModule = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Módulo que deve permanecer',
+            'sort_order' => 1,
+        ]);
+        $course->modules()->attach($existingModule->id, ['sort_order' => 1]);
+
+        $path = $this->createMinimalCourseSpreadsheet([
+            'sheetName' => 'Português',
+            'rows' => [
+                ['A' => 'Aula sem minutos', 'B' => 'tempo'],
+            ],
+        ]);
+
+        try {
+            app(CourseSpreadsheetImporter::class)->importInto($course, $path);
+            $this->fail('A importação deveria recusar XLSX sem aulas importáveis.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('A planilha não possui módulos e aulas importáveis.', $exception->getMessage());
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertTrue($course->modules()->whereKey($existingModule->id)->exists());
+    }
+
+    public function test_spreadsheet_import_clears_course_catalog_cache(): void
+    {
+        $course = Course::factory()->create([
+            'name' => 'Curso Cache',
+            'slug' => 'curso-cache',
+        ]);
+        Cache::put("course:{$course->id}:catalog-modules:v2", collect(['stale']), 600);
+        Cache::put("course:{$course->id}:published-lessons-count:v2", 99, 600);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-cache-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes',
+            'Curso Cache,Português,basic,1,Classes de palavras,30',
+        ]));
+
+        try {
+            app(CourseSpreadsheetImporter::class)->importInto($course, $path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertFalse(Cache::has("course:{$course->id}:catalog-modules:v2"));
+        $this->assertFalse(Cache::has("course:{$course->id}:published-lessons-count:v2"));
     }
 
     public function test_importer_creates_course_modules_and_official_study_track(): void
@@ -1145,5 +1215,39 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($track->lessons()->whereKey($pptLesson->id)->exists());
         $this->assertFalse($track->lessons()->whereKey($excelLesson->id)->exists());
         $this->assertSame(1, $track->lessons()->count());
+    }
+
+    protected function createMinimalCourseSpreadsheet(array $options = []): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'course-import-empty-').'.xlsx';
+        $zip = new \ZipArchive();
+        $zip->open($path, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+
+        $sheetName = $options['sheetName'] ?? 'Português';
+        $rows = $options['rows'] ?? [];
+
+        $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>');
+        $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+        $zip->addFromString('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="'.e($sheetName).'" sheetId="1" r:id="rId1"/></sheets></workbook>');
+        $zip->addFromString('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>');
+        $zip->addFromString('xl/worksheets/sheet1.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'.$this->worksheetRowsXml($rows).'</sheetData></worksheet>');
+        $zip->close();
+
+        return $path;
+    }
+
+    protected function worksheetRowsXml(array $rows): string
+    {
+        return collect($rows)
+            ->values()
+            ->map(function (array $row, int $index): string {
+                $rowNumber = $index + 1;
+                $cells = collect($row)
+                    ->map(fn (string $value, string $column): string => '<c r="'.$column.$rowNumber.'" t="inlineStr"><is><t>'.e($value).'</t></is></c>')
+                    ->implode('');
+
+                return '<row r="'.$rowNumber.'">'.$cells.'</row>';
+            })
+            ->implode('');
     }
 }
