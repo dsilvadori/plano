@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Http\Controllers\CourseCatalogController;
+use App\Jobs\RefreshActiveCourseStudyPlans;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
@@ -19,6 +20,8 @@ class CourseSpreadsheetImporter
 {
     protected ?Collection $reusableLessonCandidates = null;
 
+    protected array $reusableLessonCandidateCache = [];
+
     protected array $matchKeyCache = [];
 
     protected array $leadingNumberCache = [];
@@ -27,7 +30,6 @@ class CourseSpreadsheetImporter
 
     public function __construct(
         protected CourseSpreadsheetParser $parser,
-        protected ActiveStudyPlanRefresher $activeStudyPlanRefresher,
     ) {}
 
     public function preview(string $path, ?Course $course = null): array
@@ -90,7 +92,7 @@ class CourseSpreadsheetImporter
 
             $this->importStructure($course, $payload, $payload['study_track_name']);
             CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
-            $this->activeStudyPlanRefresher->refreshCourseFromNextWeek($course);
+            RefreshActiveCourseStudyPlans::dispatch((int) $course->id)->afterCommit();
 
             return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
@@ -107,7 +109,7 @@ class CourseSpreadsheetImporter
 
             $this->importStructure($course, $payload, $studyTrackName);
             CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
-            $this->activeStudyPlanRefresher->refreshCourseFromNextWeek($course);
+            RefreshActiveCourseStudyPlans::dispatch((int) $course->id)->afterCommit();
 
             return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
@@ -726,7 +728,7 @@ class CourseSpreadsheetImporter
 
         $fallbackLesson ??= $lesson;
 
-        return $this->reusableLessonCandidates()
+        return $this->reusableLessonCandidatesFor($title, $module, $track, $lessonData)
             ->when($excludeLessonIds !== [], fn (Collection $lessons) => $lessons->whereNotIn('id', $excludeLessonIds))
             ->map(fn (Lesson $lesson): array => [
                 'lesson' => $lesson,
@@ -927,9 +929,121 @@ class CourseSpreadsheetImporter
             ->get();
     }
 
+    protected function reusableLessonCandidatesFor(string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $lessonData = []): Collection
+    {
+        $cacheKey = implode('|', [
+            $this->matchKey($title),
+            $this->matchKey($module->name, 'module-'.$module->id),
+            $track ? $this->matchKey($track->name, 'track-'.$track->id) : '',
+            (string) max(0, (int) ($lessonData['minutes'] ?? 0)),
+        ]);
+
+        if (array_key_exists($cacheKey, $this->reusableLessonCandidateCache)) {
+            return $this->reusableLessonCandidateCache[$cacheKey];
+        }
+
+        $titleTokens = $this->candidateTitleSearchTokens($title);
+        $contextTokens = count($titleTokens) < 2 ? $this->candidateContextSearchTokens($module, $track) : [];
+
+        if ($titleTokens === [] && $contextTokens === []) {
+            return $this->reusableLessonCandidateCache[$cacheKey] = collect();
+        }
+
+        $expectedSeconds = max(0, (int) ($lessonData['minutes'] ?? 0)) * 60;
+
+        return $this->reusableLessonCandidateCache[$cacheKey] = Lesson::query()
+            ->select([
+                'id',
+                'course_id',
+                'course_module_id',
+                'course_module_track_id',
+                'title',
+                'slug',
+                'description',
+                'type',
+                'thumbnail_url',
+                'duration_seconds',
+                'sort_order',
+                'status',
+                'panda_video_id',
+                'panda_embed_url',
+                'panda_player_url',
+                'google_doc_url',
+                'source_status',
+                'metadata',
+            ])
+            ->when($expectedSeconds > 0, function ($query) use ($expectedSeconds): void {
+                $minimumSeconds = (int) floor($expectedSeconds * 0.5);
+                $maximumSeconds = (int) ceil($expectedSeconds * 1.5);
+
+                $query->where(function ($query) use ($minimumSeconds, $maximumSeconds): void {
+                    $query->where('duration_seconds', 0)
+                        ->orWhereBetween('duration_seconds', [$minimumSeconds, $maximumSeconds]);
+                });
+            })
+            ->when($titleTokens !== [], function ($query) use ($titleTokens): void {
+                foreach ($titleTokens as $token) {
+                    $query->where(function ($query) use ($token): void {
+                        $query->where('title', 'like', '%'.$token.'%')
+                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%');
+                    });
+                }
+            })
+            ->when($titleTokens === [] && $contextTokens !== [], function ($query) use ($contextTokens): void {
+                $query->where(function ($query) use ($contextTokens): void {
+                    foreach ($contextTokens as $token) {
+                        $query->orWhere('title', 'like', '%'.$token.'%')
+                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
+                            ->orWhere('metadata->drive_source_folder_path', 'like', '%'.$token.'%');
+                    }
+                });
+            })
+            ->orderByRaw("(case when panda_video_id is not null or panda_embed_url is not null or panda_player_url is not null then 0 when source_status = 'media_ready' then 1 else 2 end)")
+            ->orderBy('id')
+            ->limit(80)
+            ->get();
+    }
+
+    protected function candidateTitleSearchTokens(string $title): array
+    {
+        return $this->filterCandidateSearchTokens($this->comparisonTokens($this->matchKey($title)), 4);
+    }
+
+    protected function candidateContextSearchTokens(CourseModule $module, ?CourseModuleTrack $track = null): array
+    {
+        $tokens = $track ? $this->comparisonTokens($this->matchKey($track->name, 'track-'.$track->id)) : [];
+        $tokens = array_merge($tokens, $this->comparisonTokens($this->matchKey($module->name, 'module-'.$module->id)));
+
+        return $this->filterCandidateSearchTokens($tokens, 3);
+    }
+
+    protected function filterCandidateSearchTokens(array $tokens, int $limit): array
+    {
+        return collect($tokens)
+            ->map(fn (string $token): string => trim($token))
+            ->reject(fn (string $token): bool => in_array($token, ['aula', 'video'], true))
+            ->filter(fn (string $token): bool => mb_strlen($token) >= 4)
+            ->unique()
+            ->take($limit)
+            ->values()
+            ->all();
+    }
+
     protected function rememberReusableLessonCandidate(?Lesson $lesson): void
     {
         if (! $lesson || ! $this->reusableLessonCandidates instanceof Collection) {
+            foreach ($this->reusableLessonCandidateCache as $key => $candidates) {
+                if (! $candidates instanceof Collection) {
+                    continue;
+                }
+
+                $this->reusableLessonCandidateCache[$key] = $candidates
+                    ->reject(fn (Lesson $candidate): bool => (int) $candidate->id === (int) $lesson->id)
+                    ->push($lesson)
+                    ->sortBy('id')
+                    ->values();
+            }
+
             return;
         }
 
@@ -943,6 +1057,7 @@ class CourseSpreadsheetImporter
     protected function resetImportCaches(): void
     {
         $this->reusableLessonCandidates = null;
+        $this->reusableLessonCandidateCache = [];
         $this->matchKeyCache = [];
         $this->leadingNumberCache = [];
         $this->removedStructureModuleIds = [];

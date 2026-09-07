@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\Courses\Pages\EditCourse;
+use App\Jobs\RefreshActiveCourseStudyPlans;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
@@ -15,6 +16,7 @@ use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
 use RuntimeException;
@@ -177,6 +179,30 @@ class CourseSpreadsheetImportTest extends TestCase
 
         $this->assertFalse(Cache::has("course:{$course->id}:catalog-modules:v2"));
         $this->assertFalse(Cache::has("course:{$course->id}:published-lessons-count:v2"));
+    }
+
+    public function test_spreadsheet_import_queues_active_study_plan_refresh_after_structure_is_saved(): void
+    {
+        Queue::fake();
+
+        $course = Course::factory()->create([
+            'name' => 'Curso Fila',
+            'slug' => 'curso-fila',
+        ]);
+        $path = tempnam(sys_get_temp_dir(), 'course-import-queue-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes',
+            'Curso Fila,Português,basic,1,Classes de palavras,30',
+        ]));
+
+        try {
+            app(CourseSpreadsheetImporter::class)->importInto($course, $path);
+        } finally {
+            @unlink($path);
+        }
+
+        Queue::assertPushed(RefreshActiveCourseStudyPlans::class, fn (RefreshActiveCourseStudyPlans $job): bool => $job->courseId === $course->id);
+        $this->assertTrue($course->modules()->where('name', 'Português')->exists());
     }
 
     public function test_importer_creates_course_modules_and_official_study_track(): void
