@@ -542,7 +542,7 @@ class StudyPlanGenerator
                     $this->attachOnlineLessonsToItem($item, $module, $lessonNames, $this->trackNamesForPlanItem($module, $item));
                 });
 
-            return $studyPlan->fresh(['items.courseModule', 'items.lessons', 'course', 'studyTrack', 'user']);
+            return $studyPlan->withoutRelations()->fresh(['course', 'studyTrack', 'user']);
         });
     }
 

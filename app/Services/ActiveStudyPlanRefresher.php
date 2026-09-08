@@ -27,32 +27,36 @@ class ActiveStudyPlanRefresher
         $course->studyPlans()
             ->where('status', 'active')
             ->with(['course', 'studyTrack', 'user'])
-            ->get()
-            ->each(function ($plan) use ($course, $cutoff, $replaceRemovedModulesFrom, &$refreshed): void {
-                if (! $plan->user) {
-                    return;
-                }
+            ->orderBy('id')
+            ->chunkById(25, function (Collection $plans) use ($course, $cutoff, $replaceRemovedModulesFrom, &$refreshed): void {
+                $officialStudyTrack = $this->officialStudyTrackFor($course);
 
-                $examDate = $plan->exam_date_confirmed && $plan->exam_date
-                    ? $plan->exam_date->toDateString()
-                    : null;
-                $studyTrack = $plan->studyTrack ?: $this->officialStudyTrackFor($course);
+                $plans->each(function ($plan) use ($course, $cutoff, $replaceRemovedModulesFrom, $officialStudyTrack, &$refreshed): void {
+                    if (! $plan->user) {
+                        return;
+                    }
 
-                $this->generator->regenerateFromDate(
-                    $plan,
-                    $plan->course ?: $course,
-                    $studyTrack,
-                    $examDate,
-                    $plan->start_date?->toDateString() ?? now()->toDateString(),
-                    $plan->available_days ?? [],
-                    $plan->available_minutes_by_day ?? [],
-                    $plan->intensity,
-                    $cutoff->toDateString(),
-                    false,
-                    $replaceRemovedModulesFrom->toDateString(),
-                );
+                    $examDate = $plan->exam_date_confirmed && $plan->exam_date
+                        ? $plan->exam_date->toDateString()
+                        : null;
+                    $studyTrack = $plan->studyTrack ?: $officialStudyTrack;
 
-                $refreshed++;
+                    $this->generator->regenerateFromDate(
+                        $plan,
+                        $plan->course ?: $course,
+                        $studyTrack,
+                        $examDate,
+                        $plan->start_date?->toDateString() ?? now()->toDateString(),
+                        $plan->available_days ?? [],
+                        $plan->available_minutes_by_day ?? [],
+                        $plan->intensity,
+                        $cutoff->toDateString(),
+                        false,
+                        $replaceRemovedModulesFrom->toDateString(),
+                    );
+
+                    $refreshed++;
+                });
             });
 
         return $refreshed;
