@@ -506,7 +506,7 @@ class StudyPlanGenerator
     public function syncPublishedLessonsForPlan(StudyPlan $studyPlan): StudyPlan
     {
         return DB::transaction(function () use ($studyPlan): StudyPlan {
-            $studyPlan->loadMissing(['course', 'items.courseModule.onlineLessons']);
+            $studyPlan->loadMissing(['course']);
 
             if (! $studyPlan->course) {
                 return $studyPlan;
@@ -516,22 +516,20 @@ class StudyPlanGenerator
 
             $lessonIndexes = [];
             $items = $studyPlan->items()
-                ->with('courseModule.onlineLessons')
+                ->with('courseModule')
                 ->orderBy('scheduled_date')
                 ->orderBy('sort_order')
                 ->orderBy('id')
                 ->get();
-            $this->loadModulePlanningRelations(
-                $items->pluck('courseModule')->filter()->unique('id')->values(),
-                $studyPlan->course,
-            );
 
-            $items->each(function (StudyPlanItem $item) use (&$lessonIndexes): void {
+            $items->each(function (StudyPlanItem $item) use (&$lessonIndexes, $studyPlan): void {
                     $module = $item->courseModule;
 
                     if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
                         return;
                     }
+
+                    $this->loadModulePlanningRelations(collect([$module]), $studyPlan->course);
 
                     $lessonNames = $this->lessonNamesFromPlanItemDescription((string) $item->description)
                         ?: $this->lessonNamesForPlanItem($module, $item, $lessonIndexes);
@@ -661,7 +659,17 @@ class StudyPlanGenerator
     protected function loadModulePlanningRelations(Collection $modules, Course $course): Collection
     {
         $modules->each(function (CourseModule $module) use ($course): void {
-            $module->loadMissing('onlineLessons');
+            $module->loadMissing(['onlineLessons' => fn ($query) => $query
+                ->select([
+                    'lessons.id',
+                    'lessons.course_id',
+                    'lessons.course_module_id',
+                    'lessons.course_module_track_id',
+                    'lessons.title',
+                    'lessons.duration_seconds',
+                    'lessons.status',
+                    'lessons.sort_order',
+                ])]);
             $module->setRelation('tracks', $module->tracks()
                 ->where('status', 'published')
                 ->where(function ($query) use ($course): void {
@@ -669,7 +677,18 @@ class StudyPlanGenerator
                         ->whereDoesntHave('courses')
                         ->orWhereHas('courses', fn ($query) => $query->whereKey($course->id));
                 })
-                ->with(['lessons' => fn ($query) => $query->where('lessons.status', '!=', 'archived')])
+                ->with(['lessons' => fn ($query) => $query
+                    ->select([
+                        'lessons.id',
+                        'lessons.course_id',
+                        'lessons.course_module_id',
+                        'lessons.course_module_track_id',
+                        'lessons.title',
+                        'lessons.duration_seconds',
+                        'lessons.status',
+                        'lessons.sort_order',
+                    ])
+                    ->where('lessons.status', '!=', 'archived')])
                 ->orderBy('sort_order')
                 ->orderBy('name')
                 ->get());

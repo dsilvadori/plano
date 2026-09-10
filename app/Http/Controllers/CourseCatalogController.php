@@ -1161,7 +1161,17 @@ class CourseCatalogController extends Controller
     protected function loadSidebarPlanningRelations(Collection $modules, Course $course): void
     {
         $modules->each(function (CourseModule $module) use ($course): void {
-            $module->loadMissing('onlineLessons');
+            $module->loadMissing(['onlineLessons' => fn ($query) => $query
+                ->select([
+                    'lessons.id',
+                    'lessons.course_id',
+                    'lessons.course_module_id',
+                    'lessons.course_module_track_id',
+                    'lessons.title',
+                    'lessons.duration_seconds',
+                    'lessons.status',
+                    'lessons.sort_order',
+                ])]);
             $module->setRelation('tracks', $module->tracks()
                 ->where('status', 'published')
                 ->where(function (Builder $query) use ($course): void {
@@ -1169,7 +1179,18 @@ class CourseCatalogController extends Controller
                         ->whereDoesntHave('courses')
                         ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id));
                 })
-                ->with(['lessons' => fn ($query) => $query->where('lessons.status', '!=', 'archived')])
+                ->with(['lessons' => fn ($query) => $query
+                    ->select([
+                        'lessons.id',
+                        'lessons.course_id',
+                        'lessons.course_module_id',
+                        'lessons.course_module_track_id',
+                        'lessons.title',
+                        'lessons.duration_seconds',
+                        'lessons.status',
+                        'lessons.sort_order',
+                    ])
+                    ->where('lessons.status', '!=', 'archived')])
                 ->orderBy('sort_order')
                 ->orderBy('name')
                 ->get());
