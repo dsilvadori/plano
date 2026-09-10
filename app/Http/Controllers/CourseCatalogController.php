@@ -22,6 +22,7 @@ use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
 use App\Services\PandaVideoClient;
 use App\Services\StudyPlanGenerator;
+use App\Support\LessonTitleNormalizer;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -1018,18 +1019,12 @@ class CourseCatalogController extends Controller
             ->orderBy('id')
             ->get();
 
-        $dayItems->each(function (StudyPlanItem $item) use ($course, $studyPlanGenerator): void {
-            $resolvedLessons = $studyPlanGenerator->resolveOnlineLessonsForItem($item, $course);
-
-            if ($resolvedLessons->count() > $item->lessons->count()) {
-                $item->setRelation('lessons', $resolvedLessons);
-            }
-        });
+        $lessonRowsByItemId = $this->planSidebarLessonRowsByItemId($currentItem->studyPlan, $dayItems, $course);
 
         $completedLessonIds = LessonProgress::query()
             ->where('user_id', $user->id)
             ->where('status', 'completed')
-            ->whereIn('lesson_id', $dayItems->flatMap->lessons->pluck('id')->unique())
+            ->whereIn('lesson_id', collect($lessonRowsByItemId)->flatMap(fn (array $rows): array => collect($rows)->pluck('id')->filter()->all())->unique())
             ->pluck('lesson_id')
             ->all();
 
@@ -1038,8 +1033,274 @@ class CourseCatalogController extends Controller
             'current_item_id' => $currentItem->id,
             'date_label' => $currentItem->scheduled_date->translatedFormat('d/m/Y'),
             'items' => $dayItems,
+            'lesson_rows_by_item_id' => $lessonRowsByItemId,
             'completed_lesson_ids' => $completedLessonIds,
         ];
+    }
+
+    protected function planSidebarLessonRowsByItemId(StudyPlan $plan, Collection $dayItems, Course $course): array
+    {
+        $weekNumber = (int) ($dayItems->first()?->week_number ?? 0);
+
+        if ($weekNumber <= 0) {
+            return [];
+        }
+
+        $weekItems = StudyPlanItem::query()
+            ->where('study_plan_id', $plan->id)
+            ->where('week_number', $weekNumber)
+            ->with(['courseModule.onlineLessons', 'lessons'])
+            ->orderBy('scheduled_date')
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        $modules = $weekItems->pluck('courseModule')->filter()->unique('id')->values();
+        $this->loadSidebarPlanningRelations($modules, $course);
+
+        $lessonStates = [];
+        $rowsByItemId = [];
+        $dayItemIds = $dayItems->pluck('id')->flip();
+
+        foreach ($weekItems as $item) {
+            $module = $item->courseModule;
+            $isDayItem = $dayItemIds->has($item->id);
+            $linkedRows = $item->lessons->isNotEmpty()
+                ? $this->sidebarRowsFromLessons($item->orderedLessonsForDisplay(), $course)
+                : [];
+
+            if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
+                if ($isDayItem && $linkedRows !== []) {
+                    $rowsByItemId[$item->id] = $linkedRows;
+                }
+
+                continue;
+            }
+
+            $moduleId = (int) $module->id;
+            $lessonStates[$moduleId] ??= [
+                'index' => 0,
+                'lessons' => $this->sidebarPlanningLessonsForModule($module),
+            ];
+            $selection = $this->buildSidebarLessonSelection($module, (int) $item->estimated_minutes, $lessonStates[$moduleId], $course);
+            $lessonStates[$moduleId] = $selection['state'];
+            $computedRows = $selection['lessons'];
+
+            if ($computedRows === []) {
+                $computedRows = $this->sidebarLessonRowsFromDescription($module, $item, $course);
+            }
+
+            if (! $isDayItem) {
+                continue;
+            }
+
+            $rowsByItemId[$item->id] = count($linkedRows) >= count($computedRows) && $linkedRows !== []
+                ? $linkedRows
+                : $this->resolveSidebarRows($computedRows, $module, $course);
+        }
+
+        return $rowsByItemId;
+    }
+
+    protected function loadSidebarPlanningRelations(Collection $modules, Course $course): void
+    {
+        $modules->each(function (CourseModule $module) use ($course): void {
+            $module->loadMissing('onlineLessons');
+            $module->setRelation('tracks', $module->tracks()
+                ->where('status', 'published')
+                ->where(function (Builder $query) use ($course): void {
+                    $query
+                        ->whereDoesntHave('courses')
+                        ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id));
+                })
+                ->with(['lessons' => fn ($query) => $query->where('lessons.status', '!=', 'archived')])
+                ->orderBy('sort_order')
+                ->orderBy('name')
+                ->get());
+        });
+    }
+
+    protected function sidebarPlanningLessonsForModule(CourseModule $module): array
+    {
+        $trackLessons = $module->tracks
+            ->sortBy([
+                ['sort_order', 'asc'],
+                ['name', 'asc'],
+            ])
+            ->flatMap(function (CourseModuleTrack $track): Collection {
+                return $track->lessons
+                    ->map(fn (Lesson $lesson, int $index): array => [
+                        'lesson_id' => $lesson->id,
+                        'name' => trim((string) $lesson->title) ?: ($track->name.' - Aula '.($index + 1)),
+                        'minutes' => max(1, (int) $lesson->duration_minutes),
+                        'track_name' => (string) $track->name,
+                    ])
+                    ->filter(fn (array $lesson): bool => $lesson['minutes'] > 0)
+                    ->values();
+            })
+            ->values()
+            ->all();
+
+        if ($trackLessons !== []) {
+            return $trackLessons;
+        }
+
+        $availableLessons = $this->sidebarAvailableLessonsForModule($module);
+
+        return collect($module->planning_lessons)
+            ->map(function (array $lesson) use ($availableLessons): array {
+                $matchedLesson = $availableLessons->first(fn (Lesson $candidate): bool => $this->sidebarLessonKey($candidate->title) === $this->sidebarLessonKey((string) ($lesson['name'] ?? '')));
+
+                return [
+                    'lesson_id' => $matchedLesson?->id,
+                    'name' => (string) ($lesson['name'] ?? ''),
+                    'minutes' => $matchedLesson ? max(1, (int) $matchedLesson->duration_minutes) : max(1, (int) ($lesson['minutes'] ?? 0)),
+                    'track_name' => '',
+                ];
+            })
+            ->filter(fn (array $lesson): bool => $lesson['name'] !== '' && $lesson['minutes'] > 0)
+            ->values()
+            ->all();
+    }
+
+    protected function buildSidebarLessonSelection(CourseModule $module, int $availableMinutes, array $state, Course $course): array
+    {
+        $lessons = $state['lessons'] ?? [];
+        $index = (int) ($state['index'] ?? 0);
+        $minutes = 0;
+        $itemLessons = [];
+        $currentTrackName = null;
+
+        while ($index < count($lessons)) {
+            $lesson = $lessons[$index];
+            $lessonMinutes = (int) ($lesson['minutes'] ?? 0);
+            $lessonTrackName = trim((string) ($lesson['track_name'] ?? ''));
+
+            if ($lessonMinutes <= 0) {
+                $index++;
+
+                continue;
+            }
+
+            if ($minutes > 0 && $currentTrackName !== null && $lessonTrackName !== '' && $lessonTrackName !== $currentTrackName) {
+                break;
+            }
+
+            if ($currentTrackName === null && $lessonTrackName !== '') {
+                $currentTrackName = $lessonTrackName;
+            }
+
+            $remainingBlockMinutes = max(0, $availableMinutes - $minutes);
+
+            if ($remainingBlockMinutes <= 0) {
+                break;
+            }
+
+            $displayMinutes = min($lessonMinutes, $remainingBlockMinutes);
+            $lessonName = (string) ($lesson['name'] ?? $module->name);
+            $itemLessons[] = [
+                'id' => $lesson['lesson_id'] ?? null,
+                'name' => $lessonName,
+                'minutes' => $displayMinutes,
+                'url' => isset($lesson['lesson_id']) ? route('courses.lessons.show', [$course->slug, $lesson['lesson_id']]) : null,
+            ];
+
+            $minutes += $displayMinutes;
+
+            if ($displayMinutes < $lessonMinutes) {
+                $lessons[$index]['minutes'] = $lessonMinutes - $displayMinutes;
+                $lessons[$index]['name'] = 'Continuação: '.preg_replace('/^Continuação:\s*/u', '', $lessonName);
+                $state['lessons'] = $lessons;
+
+                break;
+            }
+
+            $index++;
+        }
+
+        $state['index'] = $index;
+
+        return [
+            'lessons' => $itemLessons,
+            'state' => $state,
+        ];
+    }
+
+    protected function sidebarLessonRowsFromDescription(CourseModule $module, StudyPlanItem $item, Course $course): array
+    {
+        if (! preg_match('/Aulas do bloco:\s*(.+)$/u', (string) $item->description, $matches)) {
+            return [];
+        }
+
+        $lessonNames = collect(preg_split('/,\s*|\s+e\s+(?=\d{1,3}\s+-)/u', $matches[1]) ?: [])
+            ->map(fn (string $name): string => trim($name, " \t\n\r\0\x0B."))
+            ->filter()
+            ->values();
+        $availableLessons = $this->sidebarAvailableLessonsForModule($module);
+
+        return $lessonNames
+            ->map(function (string $lessonName) use ($availableLessons, $course): array {
+                $matchedLesson = $availableLessons->first(fn (Lesson $lesson): bool => $this->sidebarLessonKey($lesson->title) === $this->sidebarLessonKey($lessonName));
+
+                return [
+                    'id' => $matchedLesson?->id,
+                    'name' => $matchedLesson?->title ?? $lessonName,
+                    'minutes' => $matchedLesson ? max(1, (int) $matchedLesson->duration_minutes) : 0,
+                    'url' => $matchedLesson ? route('courses.lessons.show', [$course->slug, $matchedLesson]) : null,
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    protected function resolveSidebarRows(array $rows, CourseModule $module, Course $course): array
+    {
+        $availableLessons = $this->sidebarAvailableLessonsForModule($module);
+
+        return collect($rows)
+            ->map(function (array $row) use ($availableLessons, $course): array {
+                $lessonId = (int) ($row['id'] ?? $row['lesson_id'] ?? 0);
+                $matchedLesson = $lessonId > 0
+                    ? $availableLessons->first(fn (Lesson $lesson): bool => (int) $lesson->id === $lessonId)
+                    : $availableLessons->first(fn (Lesson $lesson): bool => $this->sidebarLessonKey($lesson->title) === $this->sidebarLessonKey((string) ($row['name'] ?? '')));
+
+                return [
+                    'id' => $matchedLesson?->id,
+                    'name' => $matchedLesson?->title ?? (string) ($row['name'] ?? ''),
+                    'minutes' => $matchedLesson ? max(1, (int) $matchedLesson->duration_minutes) : max(0, (int) ($row['minutes'] ?? 0)),
+                    'url' => $matchedLesson ? route('courses.lessons.show', [$course->slug, $matchedLesson]) : null,
+                ];
+            })
+            ->filter(fn (array $row): bool => $row['name'] !== '')
+            ->values()
+            ->all();
+    }
+
+    protected function sidebarRowsFromLessons(Collection $lessons, Course $course): array
+    {
+        return $lessons
+            ->map(fn (Lesson $lesson): array => [
+                'id' => $lesson->id,
+                'name' => $lesson->title,
+                'minutes' => max(1, (int) $lesson->duration_minutes),
+                'url' => route('courses.lessons.show', [$course->slug, $lesson]),
+            ])
+            ->values()
+            ->all();
+    }
+
+    protected function sidebarAvailableLessonsForModule(CourseModule $module): Collection
+    {
+        return ($module->relationLoaded('onlineLessons') ? $module->onlineLessons : collect())
+            ->merge($module->relationLoaded('tracks') ? $module->tracks->flatMap->lessons : collect())
+            ->unique('id')
+            ->filter(fn (Lesson $lesson): bool => $lesson->status !== 'archived')
+            ->values();
+    }
+
+    protected function sidebarLessonKey(string $name): string
+    {
+        return LessonTitleNormalizer::matchKey(preg_replace('/^Continuação:\s*/u', '', $name) ?: $name);
     }
 
     protected function trackLessonContextForLesson(Course $course, Lesson $lesson): ?array

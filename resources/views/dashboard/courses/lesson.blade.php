@@ -853,20 +853,24 @@
 
                     <div class="mt-5 space-y-3">
                         @foreach ($planLessonContext['items'] as $planItem)
+                            @php
+                                $planLessonRows = $planLessonContext['lesson_rows_by_item_id'][$planItem->id] ?? [];
+                            @endphp
                             <div class="rounded-2xl border {{ $planItem->id === $planLessonContext['current_item_id'] ? 'border-amber-300/40 bg-amber-300/10' : 'border-white/10 bg-white/5' }} p-4">
                                 <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{{ $planItem->display_title }}</p>
 
-                                @if ($planItem->lessons->isNotEmpty())
+                                @if ($planLessonRows !== [])
                                     <div class="mt-3 space-y-2">
-                                        @foreach ($planItem->orderedLessonsForDisplay() as $planLesson)
+                                        @foreach ($planLessonRows as $planLessonRow)
                                             @php
-                                                $isCurrentPlanLesson = $planLesson->is($lesson);
-                                                $isCompletedPlanLesson = in_array($planLesson->id, $planLessonContext['completed_lesson_ids'], true);
+                                                $planLessonId = (int) ($planLessonRow['id'] ?? 0);
+                                                $isCurrentPlanLesson = $planLessonId > 0 && $planLessonId === (int) $lesson->id;
+                                                $isCompletedPlanLesson = $planLessonId > 0 && in_array($planLessonId, $planLessonContext['completed_lesson_ids'], true);
                                             @endphp
-                                            <a href="{{ route('courses.lessons.show', [$course->slug, $planLesson]) }}" class="block rounded-xl border px-3 py-2 text-sm {{ $isCurrentPlanLesson ? 'border-amber-300/40 bg-amber-300/15 text-amber-100' : 'border-white/10 bg-slate-950/40 text-slate-200' }}">
-                                                <span class="block font-semibold">{{ $planLesson->title }}</span>
+                                            <a href="{{ $planLessonRow['url'] ?? '#' }}" class="block rounded-xl border px-3 py-2 text-sm {{ $isCurrentPlanLesson ? 'border-amber-300/40 bg-amber-300/15 text-amber-100' : 'border-white/10 bg-slate-950/40 text-slate-200' }}">
+                                                <span class="block font-semibold">{{ $planLessonRow['name'] }}</span>
                                                 <span class="mt-1 block text-xs {{ $isCurrentPlanLesson ? 'text-amber-100/80' : 'text-slate-400' }}">
-                                                    {{ $planLesson->duration_minutes }} min{{ $isCompletedPlanLesson ? ' · concluída' : '' }}
+                                                    {{ $planLessonRow['minutes'] }} min{{ $isCompletedPlanLesson ? ' · concluída' : '' }}
                                                 </span>
                                             </a>
                                         @endforeach
