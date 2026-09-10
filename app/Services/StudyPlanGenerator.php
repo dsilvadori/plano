@@ -547,6 +547,32 @@ class StudyPlanGenerator
         });
     }
 
+    public function resolveOnlineLessonsForItem(StudyPlanItem $item, Course $course): Collection
+    {
+        $item->loadMissing('courseModule.onlineLessons');
+        $module = $item->courseModule;
+
+        if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
+            return collect();
+        }
+
+        $this->loadModulePlanningRelations(collect([$module]), $course);
+
+        $lessonIndexes = [];
+        $lessonNames = $this->lessonNamesFromPlanItemDescription((string) $item->description)
+            ?: $this->lessonNamesForPlanItem($module, $item, $lessonIndexes);
+
+        if ($lessonNames === []) {
+            return collect();
+        }
+
+        return $this->matchedOnlineLessonsForItem(
+            $module,
+            $lessonNames,
+            $this->trackNamesForPlanItem($module, $item),
+        );
+    }
+
     protected function buildPlanPayload(
         Course $course,
         ?StudyTrack $studyTrack,
@@ -1330,6 +1356,22 @@ class StudyPlanGenerator
 
     protected function attachOnlineLessonsToItem(StudyPlanItem $item, CourseModule $module, array $lessonNames, array $trackNames = [], array $lessonIds = []): void
     {
+        $matchedLessons = $this->matchedOnlineLessonsForItem($module, $lessonNames, $trackNames, $lessonIds);
+
+        if ($matchedLessons->isEmpty()) {
+            return;
+        }
+
+        $syncPayload = $matchedLessons
+            ->values()
+            ->mapWithKeys(fn (Lesson $lesson, int $index) => [$lesson->id => ['sort_order' => $index + 1]])
+            ->all();
+
+        $item->lessons()->sync($syncPayload);
+    }
+
+    protected function matchedOnlineLessonsForItem(CourseModule $module, array $lessonNames, array $trackNames = [], array $lessonIds = []): Collection
+    {
         $normalizedLessonNames = collect($lessonNames)
             ->map(fn (string $lessonName) => $this->normalizeLessonName($lessonName))
             ->filter()
@@ -1340,7 +1382,7 @@ class StudyPlanGenerator
             ->values();
 
         if ($normalizedLessonNames->isEmpty() && $lessonIds->isEmpty()) {
-            return;
+            return collect();
         }
 
         $normalizedTrackNames = collect($trackNames)
@@ -1370,7 +1412,7 @@ class StudyPlanGenerator
             ->values();
 
         if ($onlineLessons->isEmpty()) {
-            return;
+            return collect();
         }
 
         $matchedLessons = collect();
@@ -1407,16 +1449,7 @@ class StudyPlanGenerator
             }
         }
 
-        if ($matchedLessons->isEmpty()) {
-            return;
-        }
-
-        $syncPayload = $matchedLessons
-            ->values()
-            ->mapWithKeys(fn (Lesson $lesson, int $index) => [$lesson->id => ['sort_order' => $index + 1]])
-            ->all();
-
-        $item->lessons()->sync($syncPayload);
+        return $matchedLessons->values();
     }
 
     protected function lessonNamesForPlanItem(CourseModule $module, StudyPlanItem $item, array &$lessonIndexes): array

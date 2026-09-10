@@ -1018,6 +1018,14 @@ class CourseCatalogController extends Controller
             ->orderBy('id')
             ->get();
 
+        $dayItems->each(function (StudyPlanItem $item) use ($course, $studyPlanGenerator): void {
+            $resolvedLessons = $studyPlanGenerator->resolveOnlineLessonsForItem($item, $course);
+
+            if ($resolvedLessons->count() > $item->lessons->count()) {
+                $item->setRelation('lessons', $resolvedLessons);
+            }
+        });
+
         $completedLessonIds = LessonProgress::query()
             ->where('user_id', $user->id)
             ->where('status', 'completed')
