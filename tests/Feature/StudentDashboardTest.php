@@ -676,6 +676,84 @@ class StudentDashboardTest extends TestCase
         );
     }
 
+    public function test_lesson_page_uses_exact_plan_item_context_when_same_lesson_appears_on_multiple_days(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 42,
+            'sort_order' => 1,
+        ]);
+
+        $sharedLesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras - Conjunção integrante',
+            'duration_seconds' => 12 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $preposition = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras - Preposição',
+            'duration_seconds' => 14 * 60,
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $dayTenItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-09-10',
+            'week_number' => 1,
+            'day_of_week' => 'thursday',
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 12 minutos para estudar Português. Aulas do bloco: Classes de palavras - Conjunção integrante.',
+            'type' => 'basic',
+            'estimated_minutes' => 12,
+            'sort_order' => 1,
+        ]);
+        $dayTwelveItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-09-12',
+            'week_number' => 1,
+            'day_of_week' => 'saturday',
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 26 minutos para estudar Português. Aulas do bloco: Classes de palavras - Conjunção integrante, Classes de palavras - Preposição.',
+            'type' => 'basic',
+            'estimated_minutes' => 26,
+            'sort_order' => 1,
+        ]);
+
+        $dayTenItem->lessons()->sync([$sharedLesson->id => ['sort_order' => 1]]);
+        $dayTwelveItem->lessons()->sync([
+            $sharedLesson->id => ['sort_order' => 1],
+            $preposition->id => ['sort_order' => 2],
+        ]);
+
+        $this->actingAs($student)
+            ->followingRedirects()
+            ->get(route('study-plans.items.lessons.show', [$plan, $dayTenItem, $sharedLesson]))
+            ->assertOk()
+            ->assertSee('Trilha do plano')
+            ->assertSee('10/09/2026')
+            ->assertDontSee('12/09/2026')
+            ->assertSee('Classes de palavras - Conjunção integrante')
+            ->assertDontSee('Classes de palavras - Preposição');
+    }
+
     public function test_student_can_delete_own_plan(): void
     {
         ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();

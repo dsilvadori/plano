@@ -299,13 +299,13 @@ class StudyPlanGeneratorTest extends TestCase
 
         $this->assertSame([$firstModule->id, $secondModule->id], $items->take(2)->pluck('course_module_id')->all());
         $this->assertSame(['basic', 'specific', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame(67, $items[0]->estimated_minutes);
-        $this->assertSame(68, $items[1]->estimated_minutes);
-        $this->assertSame(23, $items[2]->estimated_minutes);
-        $this->assertSame(22, $items[3]->estimated_minutes);
+        $this->assertSame(60, $items[0]->estimated_minutes);
+        $this->assertSame(60, $items[1]->estimated_minutes);
+        $this->assertSame(30, $items[2]->estimated_minutes);
+        $this->assertSame(30, $items[3]->estimated_minutes);
     }
 
-    public function test_generator_continues_lesson_later_when_next_part_does_not_fit_in_remaining_time(): void
+    public function test_generator_moves_whole_lesson_later_when_it_does_not_fit_in_remaining_time(): void
     {
         $course = Course::factory()->create();
         $student = User::factory()->create();
@@ -338,12 +338,13 @@ class StudyPlanGeneratorTest extends TestCase
         $tuesdayItems = $plan->items()->where('day_of_week', 'tuesday')->orderBy('sort_order')->get()->values();
 
         $this->assertSame($module->id, $mondayItems[0]->course_module_id);
-        $this->assertSame(60, $mondayItems[0]->estimated_minutes);
+        $this->assertSame(50, $mondayItems[0]->estimated_minutes);
         $this->assertStringContainsString('Classe de Palavras - Aula 1', $mondayItems[0]->description);
-        $this->assertStringContainsString('Classe de Palavras - Aula 2', $mondayItems[0]->description);
+        $this->assertStringNotContainsString('Classe de Palavras - Aula 2', $mondayItems[0]->description);
         $this->assertSame($module->id, $tuesdayItems[0]->course_module_id);
-        $this->assertSame(5, $tuesdayItems[0]->estimated_minutes);
-        $this->assertStringContainsString('Continuação: Classe de Palavras - Aula 2', $tuesdayItems[0]->description);
+        $this->assertSame(15, $tuesdayItems[0]->estimated_minutes);
+        $this->assertStringContainsString('Classe de Palavras - Aula 2', $tuesdayItems[0]->description);
+        $this->assertStringNotContainsString('Continuação:', $tuesdayItems[0]->description);
     }
 
     public function test_generator_keeps_daily_questions_and_review_at_ten_minutes_each_when_day_has_one_hour(): void
@@ -572,7 +573,7 @@ class StudyPlanGeneratorTest extends TestCase
 
         $this->assertSame([$basicModule->id, $specificModule->id], $items->take(2)->pluck('course_module_id')->all());
         $this->assertSame(['basic', 'specific', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame([90, 90, 30, 30], $items->pluck('estimated_minutes')->all());
+        $this->assertSame([60, 60, 60, 60], $items->pluck('estimated_minutes')->all());
     }
 
     public function test_generator_respects_track_order_and_finishes_current_track_before_next_track(): void
@@ -977,7 +978,7 @@ class StudyPlanGeneratorTest extends TestCase
         $items = $plan->items()->where('day_of_week', 'saturday')->orderBy('sort_order')->get()->values();
 
         $this->assertSame(['basic', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame([45, 23, 22], $items->pluck('estimated_minutes')->all());
+        $this->assertSame([60, 15, 15], $items->pluck('estimated_minutes')->all());
     }
 
     public function test_generator_uses_saturday_only_for_review_and_questions_after_week_reaches_theory_target(): void
@@ -1053,9 +1054,9 @@ class StudyPlanGeneratorTest extends TestCase
                 ->values()
                 ->all();
 
-            $this->assertSame(['basic', 'questions', 'review', 'basic', 'questions', 'review', 'questions', 'review', 'questions', 'review'], $items->pluck('type')->all());
-            $this->assertSame([3, 4], $reserveOnlyWeeks);
-            $this->assertSame('2026-09-07', $items->max('scheduled_date')->toDateString());
+            $this->assertSame(['basic', 'questions', 'review', 'questions', 'review'], $items->pluck('type')->all());
+            $this->assertSame([2, 3], $reserveOnlyWeeks);
+            $this->assertSame('2026-08-31', $items->max('scheduled_date')->toDateString());
             $this->assertStringContainsString('limita revisão e questões a duas semanas', $plan->viability_message);
             $this->assertStringContainsString('simulados', $plan->viability_message);
             $this->assertStringContainsString('aulas ao vivo', $plan->viability_message);
@@ -1402,7 +1403,7 @@ class StudyPlanGeneratorTest extends TestCase
                 'course_id' => $course->id,
                 'name' => 'Português',
                 'type' => 'basic',
-                'workload_minutes' => 240,
+                'workload_minutes' => 600,
                 'sort_order' => 1,
             ]);
 

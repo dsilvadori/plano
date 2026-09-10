@@ -66,7 +66,7 @@ Artisan::command('courses:ensure-start-here {--course-id=* : Limita a atualizaç
     return 0;
 })->purpose('Garante módulo, trilha e aula Comece por aqui em todos os cursos');
 
-Artisan::command('study-plans:refresh-active {--course-id=* : Limita a atualização a um ou mais cursos} {--dry-run}', function (ActiveStudyPlanRefresher $refresher) {
+Artisan::command('study-plans:refresh-active {--course-id=* : Limita a atualização a um ou mais cursos} {--from-date= : Regera itens não concluídos a partir desta data, no formato YYYY-MM-DD} {--dry-run}', function (ActiveStudyPlanRefresher $refresher) {
     $courseIds = collect((array) $this->option('course-id'))
         ->filter()
         ->map(fn ($id): int => (int) $id)
@@ -86,7 +86,10 @@ Artisan::command('study-plans:refresh-active {--course-id=* : Limita a atualiza�
         DB::beginTransaction();
     }
 
-    $refreshed = $courses->sum(fn (Course $course): int => $refresher->refreshCourseFromNextWeek($course));
+    $fromDate = filled($this->option('from-date')) ? (string) $this->option('from-date') : null;
+    $refreshed = $courses->sum(fn (Course $course): int => $fromDate
+        ? $refresher->refreshCourseFromDate($course, $fromDate)
+        : $refresher->refreshCourseFromNextWeek($course));
 
     if ($this->option('dry-run')) {
         DB::rollBack();

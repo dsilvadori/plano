@@ -470,8 +470,8 @@ class StudyPlanViewer extends Component
             });
 
         return collect($lessonsByItem)
-            ->map(fn (array $lessons): array => collect($lessons)
-                ->map(fn (array $lesson): array => $this->withResolvedLessonUrl($lesson))
+            ->map(fn (array $lessons, int|string $itemId): array => collect($lessons)
+                ->map(fn (array $lesson): array => $this->withResolvedLessonUrl($lesson, (int) $itemId))
                 ->values()
                 ->all())
             ->all();
@@ -680,7 +680,11 @@ class StudyPlanViewer extends Component
                 break;
             }
 
-            $displayMinutes = min($lessonMinutes, $remainingBlockMinutes);
+            if ($lessonMinutes > $remainingBlockMinutes && $minutes > 0) {
+                break;
+            }
+
+            $displayMinutes = $lessonMinutes;
             $lessonName = (string) ($lesson['name'] ?? $module->name);
 
             $itemLessons[] = [
@@ -691,15 +695,6 @@ class StudyPlanViewer extends Component
             ];
 
             $minutes += $displayMinutes;
-
-            if ($displayMinutes < $lessonMinutes) {
-                $lessons[$index]['minutes'] = $lessonMinutes - $displayMinutes;
-                $lessons[$index]['name'] = 'Continuação: '.preg_replace('/^Continuação:\s*/u', '', $lessonName);
-                $state['lessons'] = $lessons;
-
-                break;
-            }
-
             $index++;
         }
 
@@ -742,7 +737,7 @@ class StudyPlanViewer extends Component
             ->all();
     }
 
-    protected function withResolvedLessonUrl(array $lesson): array
+    protected function withResolvedLessonUrl(array $lesson, ?int $itemId = null): array
     {
         if (! empty($lesson['url'])) {
             return $lesson;
@@ -755,7 +750,9 @@ class StudyPlanViewer extends Component
         }
 
         return array_merge($lesson, [
-            'url' => route('courses.lessons.show', [$this->studyPlan->course->slug, $lessonId]),
+            'url' => $itemId
+                ? route('study-plans.items.lessons.show', [$this->studyPlan, $itemId, $lessonId])
+                : route('courses.lessons.show', [$this->studyPlan->course->slug, $lessonId]),
             'is_online' => true,
         ]);
     }

@@ -951,7 +951,7 @@ class StudyPlanGenerator
                 $weeklyTheoryMinutes[$weekNumber] = ($weeklyTheoryMinutes[$weekNumber] ?? 0) + $balancedAllocated;
             }
 
-            while ($theoryBudget >= 15 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
+            while ($balancedAllocated === 0 && $theoryBudget >= 15 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
                 $allocated = $this->createInterleavedStudyItem(
                     $plan,
                     $date,
@@ -1738,11 +1738,6 @@ class StudyPlanGenerator
                 $index++;
             }
 
-            if ($completedMinutes > 0 && $index < count($lessons)) {
-                $lessons[$index]['minutes'] = max(1, (int) $lessons[$index]['minutes'] - $completedMinutes);
-                $lessons[$index]['name'] = 'Continuação: '.$lessons[$index]['name'];
-            }
-
             return [$module->id => [
                 'lessons' => $lessons,
                 'index' => $index,
@@ -1783,19 +1778,15 @@ class StudyPlanGenerator
             }
 
             if (($totalMinutes + $lessonMinutes) > $maxBlockMinutes) {
-                $remainingBlockMinutes = $maxBlockMinutes - $totalMinutes;
-
-                if ($remainingBlockMinutes <= 0) {
+                if ($totalMinutes > 0) {
                     break;
                 }
 
                 $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
                 $lessonIds[] = $lesson['lesson_id'] ?? null;
                 $trackNames[] = $lessonTrackName;
-                $totalMinutes += $remainingBlockMinutes;
-                $lessons[$index + $consumedLessons]['minutes'] = $lessonMinutes - $remainingBlockMinutes;
-                $lessons[$index + $consumedLessons]['name'] = 'Continuação: '.preg_replace('/^Continuação:\s*/', '', (string) ($lesson['name'] ?? $module->name));
-                $state['lessons'] = $lessons;
+                $totalMinutes += $lessonMinutes;
+                $consumedLessons++;
 
                 break;
             }

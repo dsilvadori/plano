@@ -996,7 +996,7 @@ class CourseCatalogController extends Controller
             ->get()
             ->each(fn (StudyPlan $plan) => $studyPlanGenerator->syncPublishedLessonsForPlan($plan));
 
-        $currentItem = StudyPlanItem::query()
+        $currentItem = $this->planItemFromRequestContext($user, $course, $lesson) ?? StudyPlanItem::query()
             ->whereHas('studyPlan', fn (Builder $query) => $query
                 ->where('user_id', $user->id)
                 ->where('course_id', $course->id)
@@ -1038,6 +1038,42 @@ class CourseCatalogController extends Controller
         ];
     }
 
+    protected function planItemFromRequestContext(User $user, Course $course, Lesson $lesson): ?StudyPlanItem
+    {
+        $planId = (int) request()->query('plan_id', 0);
+        $itemId = (int) request()->query('plan_item_id', 0);
+
+        if ($planId <= 0 || $itemId <= 0) {
+            return null;
+        }
+
+        $item = StudyPlanItem::query()
+            ->whereKey($itemId)
+            ->where('study_plan_id', $planId)
+            ->whereHas('studyPlan', fn (Builder $query) => $query
+                ->where('user_id', $user->id)
+                ->where('course_id', $course->id)
+                ->where('status', 'active'))
+            ->with('studyPlan')
+            ->first();
+
+        if (! $item) {
+            return null;
+        }
+
+        if ($item->lessons()->whereKey($lesson->id)->exists()) {
+            return $item;
+        }
+
+        if ((int) $lesson->course_module_id === (int) $item->course_module_id) {
+            return $item;
+        }
+
+        return $item->course_module_id && $lesson->modules()->whereKey($item->course_module_id)->exists()
+            ? $item
+            : null;
+    }
+
     protected function planSidebarLessonRowsByItemId(StudyPlan $plan, Collection $dayItems, Course $course): array
     {
         $weekNumber = (int) ($dayItems->first()?->week_number ?? 0);
@@ -1071,7 +1107,7 @@ class CourseCatalogController extends Controller
 
             if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
                 if ($isDayItem && $linkedRows !== []) {
-                    $rowsByItemId[$item->id] = $linkedRows;
+                    $rowsByItemId[$item->id] = $this->withPlanSidebarUrls($linkedRows, $plan, $item);
                 }
 
                 continue;
@@ -1094,12 +1130,32 @@ class CourseCatalogController extends Controller
                 continue;
             }
 
-            $rowsByItemId[$item->id] = count($linkedRows) >= count($computedRows) && $linkedRows !== []
+            $rows = count($linkedRows) >= count($computedRows) && $linkedRows !== []
                 ? $linkedRows
                 : $this->resolveSidebarRows($computedRows, $module, $course);
+
+            $rowsByItemId[$item->id] = $this->withPlanSidebarUrls($rows, $plan, $item);
         }
 
         return $rowsByItemId;
+    }
+
+    protected function withPlanSidebarUrls(array $rows, StudyPlan $plan, StudyPlanItem $item): array
+    {
+        return collect($rows)
+            ->map(function (array $row) use ($plan, $item): array {
+                $lessonId = (int) ($row['id'] ?? 0);
+
+                if ($lessonId <= 0) {
+                    return $row;
+                }
+
+                return array_merge($row, [
+                    'url' => route('study-plans.items.lessons.show', [$plan, $item, $lessonId]),
+                ]);
+            })
+            ->values()
+            ->all();
     }
 
     protected function loadSidebarPlanningRelations(Collection $modules, Course $course): void
@@ -1196,7 +1252,11 @@ class CourseCatalogController extends Controller
                 break;
             }
 
-            $displayMinutes = min($lessonMinutes, $remainingBlockMinutes);
+            if ($lessonMinutes > $remainingBlockMinutes && $minutes > 0) {
+                break;
+            }
+
+            $displayMinutes = $lessonMinutes;
             $lessonName = (string) ($lesson['name'] ?? $module->name);
             $itemLessons[] = [
                 'id' => $lesson['lesson_id'] ?? null,
@@ -1206,15 +1266,6 @@ class CourseCatalogController extends Controller
             ];
 
             $minutes += $displayMinutes;
-
-            if ($displayMinutes < $lessonMinutes) {
-                $lessons[$index]['minutes'] = $lessonMinutes - $displayMinutes;
-                $lessons[$index]['name'] = 'Continuação: '.preg_replace('/^Continuação:\s*/u', '', $lessonName);
-                $state['lessons'] = $lessons;
-
-                break;
-            }
-
             $index++;
         }
 

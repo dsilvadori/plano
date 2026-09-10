@@ -199,13 +199,19 @@ class CourseModule extends Model
 
     public function getPlanningLessonsAttribute(): array
     {
+        $onlineLessonsByKey = ($this->relationLoaded('onlineLessons') ? $this->onlineLessons : $this->onlineLessons()->get())
+            ->filter(fn (Lesson $lesson): bool => $lesson->status !== 'archived')
+            ->keyBy(fn (Lesson $lesson): string => $this->lessonMediaKey((string) $lesson->title));
+
         $lessons = $this->sortLessonsNaturally(collect($this->lessons ?? [])
-            ->map(function (array $lesson, int $index) {
+            ->map(function (array $lesson, int $index) use ($onlineLessonsByKey) {
                 $minutes = (int) ($lesson['minutes'] ?? 0);
+                $name = trim((string) ($lesson['name'] ?? '')) ?: ($this->name.' - Aula '.($index + 1));
+                $onlineLesson = $onlineLessonsByKey->get($this->lessonMediaKey($name));
 
                 return [
-                    'name' => trim((string) ($lesson['name'] ?? '')) ?: ($this->name.' - Aula '.($index + 1)),
-                    'minutes' => max(0, $minutes),
+                    'name' => $onlineLesson?->title ?: $name,
+                    'minutes' => $onlineLesson ? max(1, (int) $onlineLesson->duration_minutes) : max(0, $minutes),
                     '_index' => $index,
                 ];
             })
@@ -221,7 +227,8 @@ class CourseModule extends Model
             return $lessons;
         }
 
-        $onlineLessons = $this->sortLessonsNaturally(($this->relationLoaded('onlineLessons') ? $this->onlineLessons : $this->onlineLessons()->get())
+        $onlineLessons = $this->sortLessonsNaturally($onlineLessonsByKey
+            ->values()
             ->map(function (Lesson $lesson, int $index) {
                 return [
                     'name' => trim((string) $lesson->title) ?: ($this->name.' - Aula '.($index + 1)),

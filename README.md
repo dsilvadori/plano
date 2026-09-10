@@ -111,9 +111,12 @@ Senha: password
 
 - A trilha lateral da página da aula deve refletir `study_plan_item_lessons`.
 - Quando o item do plano tiver aulas reais vinculadas, a minutagem exibida deve vir de `lessons.duration_seconds`, não da estimativa antiga importada no plano.
+- O plano não deve dividir aulas entre dias. Se a próxima aula não couber inteira no bloco disponível, ela fica para o próximo bloco da mesma matéria, e os minutos restantes do dia vão para resolução de questões e revisão.
+- Quando a aula for aberta a partir do plano, a URL deve preservar `plan_id` e `plan_item_id`; isso evita que uma aula repetida em mais de um dia mostre o bloco errado na lateral.
 - Em planos antigos, o título do bloco pode ser mais genérico que a trilha real; a sincronização deve cair para todas as aulas publicadas do módulo quando o filtro por trilha não encontrar correspondência.
 - Ao alterar geração, reequilíbrio ou edição manual do plano, valide juntos `/dashboard/plano/{id}` e `/dashboard/cursos/{course:slug}/aulas/{lesson}`.
 - Para atualizar vínculos de aulas sem regenerar cronograma: `php artisan study-plans:sync-active-lessons`.
+- Para regenerar cronograma de planos ativos a partir de uma data específica: `php artisan study-plans:refresh-active --from-date=YYYY-MM-DD`.
 
 ## Webhook da Tutory
 

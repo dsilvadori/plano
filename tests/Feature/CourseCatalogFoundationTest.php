@@ -1489,7 +1489,12 @@ class CourseCatalogFoundationTest extends TestCase
 
         $this->actingAs($student)
             ->get(route('study-plans.items.lessons.show', [$plan, $item, $lesson]))
-            ->assertRedirect(route('courses.lessons.show', [$course->slug, $lesson]));
+            ->assertRedirect(route('courses.lessons.show', [
+                $course->slug,
+                $lesson,
+                'plan_id' => $plan->id,
+                'plan_item_id' => $item->id,
+            ]));
 
         $this->actingAs($student)
             ->followingRedirects()
@@ -1582,7 +1587,12 @@ class CourseCatalogFoundationTest extends TestCase
 
         $this->actingAs($student)
             ->get(route('study-plans.items.lessons.show', [$plan, $item, $lesson]))
-            ->assertRedirect(route('courses.lessons.show', [$planCourse->slug, $lesson]));
+            ->assertRedirect(route('courses.lessons.show', [
+                $planCourse->slug,
+                $lesson,
+                'plan_id' => $plan->id,
+                'plan_item_id' => $item->id,
+            ]));
     }
 
     public function test_lesson_page_shows_track_sidebar_without_plan_and_hides_spreadsheet_import_description(): void

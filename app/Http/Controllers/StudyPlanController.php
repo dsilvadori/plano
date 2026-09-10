@@ -165,11 +165,35 @@ class StudyPlanController extends Controller
     {
         $this->authorize('view', $studyPlan);
         abort_unless($item->study_plan_id === $studyPlan->id, 404);
-        abort_unless($item->lessons()->whereKey($lesson->id)->exists(), 404);
 
         abort_unless($studyPlan->course, 404);
+        abort_unless($this->lessonBelongsToPlanItem($item, $lesson), 404);
 
-        return redirect()->route('courses.lessons.show', [$studyPlan->course->slug, $lesson]);
+        return redirect()->route('courses.lessons.show', [
+            $studyPlan->course->slug,
+            $lesson,
+            'plan_id' => $studyPlan->id,
+            'plan_item_id' => $item->id,
+        ]);
+    }
+
+    protected function lessonBelongsToPlanItem(StudyPlanItem $item, Lesson $lesson): bool
+    {
+        if ($item->lessons()->whereKey($lesson->id)->exists()) {
+            return true;
+        }
+
+        if (! $item->course_module_id) {
+            return false;
+        }
+
+        if ((int) $lesson->course_module_id === (int) $item->course_module_id) {
+            return true;
+        }
+
+        return $lesson->modules()
+            ->whereKey($item->course_module_id)
+            ->exists();
     }
 
     public function destroy(StudyPlan $studyPlan): RedirectResponse

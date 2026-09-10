@@ -22,6 +22,19 @@ class ActiveStudyPlanRefresher
     {
         $replaceRemovedModulesFrom = $this->nextWeekStart($referenceDate);
         $cutoff = $this->thirdWeekStart($referenceDate);
+
+        return $this->refreshCourseFromCutoff($course, $cutoff, $replaceRemovedModulesFrom);
+    }
+
+    public function refreshCourseFromDate(Course $course, string $fromDate): int
+    {
+        $cutoff = Carbon::parse($fromDate)->startOfDay();
+
+        return $this->refreshCourseFromCutoff($course, $cutoff, $cutoff);
+    }
+
+    protected function refreshCourseFromCutoff(Course $course, CarbonInterface $cutoff, CarbonInterface $replaceRemovedModulesFrom): int
+    {
         $refreshed = 0;
 
         $course->studyPlans()
