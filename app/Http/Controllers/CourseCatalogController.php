@@ -988,6 +988,13 @@ class CourseCatalogController extends Controller
 
     protected function planLessonContextForLesson(User $user, Course $course, Lesson $lesson, StudyPlanGenerator $studyPlanGenerator): ?array
     {
+        $user->studyPlans()
+            ->where('course_id', $course->id)
+            ->where('status', 'active')
+            ->orderBy('id')
+            ->get()
+            ->each(fn (StudyPlan $plan) => $studyPlanGenerator->syncPublishedLessonsForPlan($plan));
+
         $currentItem = StudyPlanItem::query()
             ->whereHas('studyPlan', fn (Builder $query) => $query
                 ->where('user_id', $user->id)
@@ -1002,8 +1009,6 @@ class CourseCatalogController extends Controller
         if (! $currentItem || ! $currentItem->scheduled_date) {
             return null;
         }
-
-        $studyPlanGenerator->syncPublishedLessonsForPlan($currentItem->studyPlan);
 
         $dayItems = StudyPlanItem::query()
             ->where('study_plan_id', $currentItem->study_plan_id)

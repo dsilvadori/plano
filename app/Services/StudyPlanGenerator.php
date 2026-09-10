@@ -533,7 +533,8 @@ class StudyPlanGenerator
                         return;
                     }
 
-                    $lessonNames = $this->lessonNamesForPlanItem($module, $item, $lessonIndexes);
+                    $lessonNames = $this->lessonNamesFromPlanItemDescription((string) $item->description)
+                        ?: $this->lessonNamesForPlanItem($module, $item, $lessonIndexes);
 
                     if ($lessonNames === []) {
                         return;
@@ -1346,6 +1347,10 @@ class StudyPlanGenerator
             ->map(fn ($trackName): string => $this->normalizeLessonName((string) $trackName))
             ->filter()
             ->values();
+        $allTrackLessons = $module->relationLoaded('tracks')
+            ? $module->tracks
+                ->flatMap(fn ($track) => $track->relationLoaded('lessons') ? $track->lessons : $track->lessons()->get())
+            : collect();
         $trackLessons = $module->relationLoaded('tracks')
             ? $module->tracks
                 ->when($normalizedTrackNames->isNotEmpty(), fn (Collection $tracks) => $tracks->filter(
@@ -1353,12 +1358,13 @@ class StudyPlanGenerator
                 ))
                 ->flatMap(fn ($track) => $track->relationLoaded('lessons') ? $track->lessons : $track->lessons()->get())
             : collect();
+        $trackLessons = $trackLessons->isNotEmpty() ? $trackLessons : $allTrackLessons;
 
-        $onlineLessons = ($normalizedTrackNames->isNotEmpty()
-            ? $trackLessons
-            : ($module->relationLoaded('onlineLessons')
-                ? $module->onlineLessons
-                : $module->onlineLessons()->get())->merge($trackLessons))
+        $moduleLessons = $module->relationLoaded('onlineLessons')
+            ? $module->onlineLessons
+            : $module->onlineLessons()->get();
+        $onlineLessons = $moduleLessons
+            ->merge($trackLessons)
             ->unique('id')
             ->filter(fn (Lesson $lesson): bool => $lesson->status === 'published')
             ->values();
@@ -1452,6 +1458,19 @@ class StudyPlanGenerator
         $lessonIndexes[$moduleId] = $index;
 
         return array_values(array_filter($lessonNames));
+    }
+
+    protected function lessonNamesFromPlanItemDescription(string $description): array
+    {
+        if (! preg_match('/Aulas do bloco:\s*(.+?)(?:\.|$)/u', $description, $matches)) {
+            return [];
+        }
+
+        return collect(preg_split('/,\s*|\s+e\s+(?=\d{1,3}\s+-)/u', $matches[1]) ?: [])
+            ->map(fn (string $name): string => trim($name))
+            ->filter()
+            ->values()
+            ->all();
     }
 
     protected function trackNamesForPlanItem(CourseModule $module, StudyPlanItem $item): array

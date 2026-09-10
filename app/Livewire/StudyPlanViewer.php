@@ -459,7 +459,7 @@ class StudyPlanViewer extends Component
                         ->values()
                         ->all();
 
-                    if ($matchedLinkedLessons === 0) {
+                    if ($matchedLinkedLessons === 0 || $matchedLinkedLessons < count($linkedLessons)) {
                         $lessonsByItem[$item->id] = $linkedLessons;
                     }
 

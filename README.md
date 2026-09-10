@@ -111,7 +111,9 @@ Senha: password
 
 - A trilha lateral da página da aula deve refletir `study_plan_item_lessons`.
 - Quando o item do plano tiver aulas reais vinculadas, a minutagem exibida deve vir de `lessons.duration_seconds`, não da estimativa antiga importada no plano.
+- Em planos antigos, o título do bloco pode ser mais genérico que a trilha real; a sincronização deve cair para todas as aulas publicadas do módulo quando o filtro por trilha não encontrar correspondência.
 - Ao alterar geração, reequilíbrio ou edição manual do plano, valide juntos `/dashboard/plano/{id}` e `/dashboard/cursos/{course:slug}/aulas/{lesson}`.
+- Para atualizar vínculos de aulas sem regenerar cronograma: `php artisan study-plans:sync-active-lessons`.
 
 ## Webhook da Tutory
 

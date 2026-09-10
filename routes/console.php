@@ -1,16 +1,19 @@
 <?php
 
+use App\Http\Controllers\CourseCatalogController;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\QuestionBank;
+use App\Models\StudyPlan;
 use App\Services\ActiveStudyPlanRefresher;
 use App\Services\CourseAccessResolver;
 use App\Services\CourseLessonMediaImporter;
 use App\Services\LessonCourseLinker;
 use App\Services\PandaVideoClient;
 use App\Services\QuestionPdfImporter;
+use App\Services\StudyPlanGenerator;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -94,6 +97,54 @@ Artisan::command('study-plans:refresh-active {--course-id=* : Limita a atualiza�
 
     return 0;
 })->purpose('Atualiza planos ativos preservando progresso e semanas próximas');
+
+Artisan::command('study-plans:sync-active-lessons {--course-id=* : Limita a atualização a um ou mais cursos} {--dry-run}', function (StudyPlanGenerator $generator) {
+    $courseIds = collect((array) $this->option('course-id'))
+        ->filter()
+        ->map(fn ($id): int => (int) $id)
+        ->values();
+    $query = StudyPlan::query()
+        ->where('status', 'active')
+        ->with(['course'])
+        ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('course_id', $courseIds));
+
+    $total = (clone $query)->count();
+
+    if ($total === 0) {
+        $this->warn('Nenhum plano ativo encontrado para sincronizar.');
+
+        return 0;
+    }
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+    }
+
+    $synced = 0;
+
+    $query
+        ->orderBy('id')
+        ->chunkById(25, function ($plans) use ($generator, &$synced): void {
+            foreach ($plans as $plan) {
+                $generator->syncPublishedLessonsForPlan($plan);
+
+                if ($plan->course) {
+                    CourseCatalogController::forgetCourseCatalogCache((int) $plan->course->id);
+                }
+
+                $synced++;
+            }
+        });
+
+    if ($this->option('dry-run')) {
+        DB::rollBack();
+        $this->info('Simulação concluída. Nada foi gravado.');
+    }
+
+    $this->info("Planos ativos sincronizados: {$synced} de {$total}.");
+
+    return 0;
+})->purpose('Sincroniza aulas reais dos itens de todos os planos ativos sem regenerar o cronograma');
 
 Artisan::command('courses:expand-combo {comboName}', function (string $comboName) {
     $comboCourses = app(CourseAccessResolver::class)->coursesForCombo($comboName);
