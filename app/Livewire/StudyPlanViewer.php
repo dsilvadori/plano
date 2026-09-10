@@ -288,13 +288,16 @@ class StudyPlanViewer extends Component
 
             if ($existingItem) {
                 $existingItem->forceFill($attributes)->save();
+                $this->syncManualItemLesson($existingItem, $lesson);
             } else {
-                $this->studyPlan->items()->create($attributes);
+                $newItem = $this->studyPlan->items()->create($attributes);
+                $this->syncManualItemLesson($newItem, $lesson);
             }
         }
 
         foreach ($swaps['updates'] as $swap) {
             $swap['item']->forceFill($swap['attributes'])->save();
+            $this->syncManualItemLesson($swap['item'], $swap['lesson'] ?? null);
         }
 
         $this->studyPlan = $this->studyPlan->fresh(['items.courseModule', 'course', 'studyTrack']);
@@ -312,15 +315,20 @@ class StudyPlanViewer extends Component
             ->map(fn ($items) => $items->groupBy(fn ($item) => $item->scheduled_date->format('d/m/Y')));
 
         $selectedWeekItems = $orderedItems->where('week_number', $this->selectedWeek);
+        $itemLessons = $this->buildItemLessons();
+        $itemDisplayMinutes = $orderedItems
+            ->mapWithKeys(fn (StudyPlanItem $item): array => [
+                $item->id => $this->displayMinutesForItem($item, $itemLessons[$item->id] ?? []),
+            ]);
         $weeklySummary = [
-            'total_minutes' => (int) $selectedWeekItems->sum('estimated_minutes'),
-            'review_minutes' => (int) $selectedWeekItems->where('type', 'review')->sum('estimated_minutes'),
-            'questions_minutes' => (int) $selectedWeekItems->where('type', 'questions')->sum('estimated_minutes'),
+            'total_minutes' => (int) $selectedWeekItems->sum(fn (StudyPlanItem $item): int => (int) ($itemDisplayMinutes[$item->id] ?? $item->estimated_minutes)),
+            'review_minutes' => (int) $selectedWeekItems->where('type', 'review')->sum(fn (StudyPlanItem $item): int => (int) ($itemDisplayMinutes[$item->id] ?? $item->estimated_minutes)),
+            'questions_minutes' => (int) $selectedWeekItems->where('type', 'questions')->sum(fn (StudyPlanItem $item): int => (int) ($itemDisplayMinutes[$item->id] ?? $item->estimated_minutes)),
             'tasks' => $selectedWeekItems->count(),
         ];
         $completedItems = $orderedItems->whereNotNull('completed_at');
-        $completedMinutes = (int) $completedItems->sum('estimated_minutes');
-        $pendingMinutes = (int) $orderedItems->whereNull('completed_at')->sum('estimated_minutes');
+        $completedMinutes = (int) $completedItems->sum(fn (StudyPlanItem $item): int => (int) ($itemDisplayMinutes[$item->id] ?? $item->estimated_minutes));
+        $pendingMinutes = (int) $orderedItems->whereNull('completed_at')->sum(fn (StudyPlanItem $item): int => (int) ($itemDisplayMinutes[$item->id] ?? $item->estimated_minutes));
         $overviewSummary = [
             'tasks_total' => $this->studyPlan->items->count(),
             'tasks_completed' => $completedItems->count(),
@@ -338,11 +346,11 @@ class StudyPlanViewer extends Component
             'other' => 'Complementar',
         ];
         $typeOverview = collect($typeLabels)
-            ->map(function (string $label, string $type) use ($orderedItems) {
+            ->map(function (string $label, string $type) use ($orderedItems, $itemDisplayMinutes) {
                 $items = $orderedItems->where('type', $type);
                 $completedItems = $items->whereNotNull('completed_at');
-                $totalMinutes = (int) $items->sum('estimated_minutes');
-                $completedMinutes = (int) $completedItems->sum('estimated_minutes');
+                $totalMinutes = (int) $items->sum(fn (StudyPlanItem $item): int => (int) ($itemDisplayMinutes[$item->id] ?? $item->estimated_minutes));
+                $completedMinutes = (int) $completedItems->sum(fn (StudyPlanItem $item): int => (int) ($itemDisplayMinutes[$item->id] ?? $item->estimated_minutes));
                 $pendingMinutes = max(0, $totalMinutes - $completedMinutes);
                 $progress = match (true) {
                     $totalMinutes <= 0 => 0,
@@ -380,7 +388,6 @@ class StudyPlanViewer extends Component
             : 'Assim que o plano tiver blocos nesta semana, mostramos a distribuição aqui.';
 
         $selectedWeekRange = null;
-        $itemLessons = $this->buildItemLessons();
         $itemQuestionLinks = $this->buildItemQuestionLinks($selectedWeekItems->where('type', 'questions')->values());
 
         if ($selectedWeekItems->isNotEmpty()) {
@@ -401,6 +408,7 @@ class StudyPlanViewer extends Component
             'weeklyBreakdownMessage' => $weeklyBreakdownMessage,
             'selectedWeekRange' => $selectedWeekRange,
             'itemLessons' => $itemLessons,
+            'itemDisplayMinutes' => $itemDisplayMinutes->all(),
             'itemQuestionLinks' => $itemQuestionLinks,
             'editableModules' => $this->editableModules(),
         ]);
@@ -443,7 +451,7 @@ class StudyPlanViewer extends Component
 
                             $matchedLinkedLessons++;
 
-                            return array_merge($lesson, [
+                            return array_merge($lesson, $linkedLesson, [
                                 'url' => $linkedLesson['url'] ?? null,
                                 'is_online' => true,
                             ]);
@@ -467,6 +475,15 @@ class StudyPlanViewer extends Component
                 ->values()
                 ->all())
             ->all();
+    }
+
+    protected function displayMinutesForItem(StudyPlanItem $item, array $lessons): int
+    {
+        $onlineLessonMinutes = collect($lessons)
+            ->filter(fn (array $lesson): bool => (bool) ($lesson['is_online'] ?? false))
+            ->sum(fn (array $lesson): int => max(0, (int) ($lesson['minutes'] ?? 0)));
+
+        return $onlineLessonMinutes > 0 ? (int) $onlineLessonMinutes : (int) $item->estimated_minutes;
     }
 
     protected function buildItemQuestionLinks(Collection $questionItems): array
@@ -890,6 +907,7 @@ class StudyPlanViewer extends Component
                     $blockNumber,
                     (int) $targetItem->sort_order,
                 ),
+                'lesson' => $originalLesson,
             ];
         }
 
@@ -922,6 +940,21 @@ class StudyPlanViewer extends Component
     protected function lessonSwapLabel(CourseModule $module, array $lesson): string
     {
         return $module->name.' - '.((string) ($lesson['name'] ?? 'Aula'));
+    }
+
+    protected function syncManualItemLesson(StudyPlanItem $item, ?array $lesson): void
+    {
+        $lessonId = (int) ($lesson['lesson_id'] ?? 0);
+
+        if ($lessonId <= 0) {
+            $item->lessons()->sync([]);
+
+            return;
+        }
+
+        $item->lessons()->sync([
+            $lessonId => ['sort_order' => 1],
+        ]);
     }
 
     protected function loadModulePlanningRelations(CourseModule $module): void

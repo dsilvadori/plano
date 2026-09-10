@@ -655,6 +655,72 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertStringContainsString('Licitação 01', $theoryDescriptions[3]);
     }
 
+    public function test_sync_published_lessons_attaches_every_track_lesson_that_fits_inside_one_plan_block(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de Palavras',
+            'slug' => 'classes-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $lessons = collect([
+            ['Classes de Palavras - Substantivo e Adjetivo', 10],
+            ['Classes de Palavras - Advérbio', 11],
+            ['Classes de palavras - Conjunção subordinativa adverbial', 16],
+            ['Classes de palavras - Conjunção integrante', 8],
+        ])->map(function (array $payload, int $index): Lesson {
+            return Lesson::factory()->create([
+                'course_id' => null,
+                'course_module_id' => null,
+                'course_module_track_id' => null,
+                'title' => $payload[0],
+                'duration_seconds' => $payload[1] * 60,
+                'sort_order' => $index + 1,
+                'status' => 'published',
+            ]);
+        });
+
+        foreach ($lessons as $index => $lesson) {
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = \App\Models\StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 45 minutos para estudar Português.',
+            'type' => 'basic',
+            'estimated_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+
+        app(StudyPlanGenerator::class)->syncPublishedLessonsForPlan($plan);
+        $item->load('lessons');
+
+        $this->assertSame($lessons->pluck('id')->all(), $item->lessons->pluck('id')->all());
+    }
+
     public function test_generator_does_not_mix_lessons_from_different_tracks_in_the_same_block(): void
     {
         $course = Course::factory()->create();

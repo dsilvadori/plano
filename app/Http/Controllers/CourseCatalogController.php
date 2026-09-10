@@ -21,6 +21,7 @@ use App\Services\LessonSummaryPdfGenerator;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
 use App\Services\PandaVideoClient;
+use App\Services\StudyPlanGenerator;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -245,7 +246,7 @@ class CourseCatalogController extends Controller
         ]);
     }
 
-    public function lesson(Course $course, Lesson $lesson, PandaVideoClient $panda, PandaTutorActivator $tutor): View
+    public function lesson(Course $course, Lesson $lesson, PandaVideoClient $panda, PandaTutorActivator $tutor, StudyPlanGenerator $studyPlanGenerator): View
     {
         $user = request()->user();
 
@@ -304,7 +305,7 @@ class CourseCatalogController extends Controller
         $orderedLessons = $this->publishedLessonsForCourse($course)->get();
         $currentIndex = $orderedLessons->search(fn (Lesson $orderedLesson) => $orderedLesson->is($lesson));
 
-        $planLessonContext = $this->planLessonContextForLesson($user, $course, $lesson);
+        $planLessonContext = $this->planLessonContextForLesson($user, $course, $lesson, $studyPlanGenerator);
 
         return view('dashboard.courses.lesson', [
             'course' => $course,
@@ -985,7 +986,7 @@ class CourseCatalogController extends Controller
             ->all();
     }
 
-    protected function planLessonContextForLesson(User $user, Course $course, Lesson $lesson): ?array
+    protected function planLessonContextForLesson(User $user, Course $course, Lesson $lesson, StudyPlanGenerator $studyPlanGenerator): ?array
     {
         $currentItem = StudyPlanItem::query()
             ->whereHas('studyPlan', fn (Builder $query) => $query
@@ -1001,6 +1002,8 @@ class CourseCatalogController extends Controller
         if (! $currentItem || ! $currentItem->scheduled_date) {
             return null;
         }
+
+        $studyPlanGenerator->syncPublishedLessonsForPlan($currentItem->studyPlan);
 
         $dayItems = StudyPlanItem::query()
             ->where('study_plan_id', $currentItem->study_plan_id)

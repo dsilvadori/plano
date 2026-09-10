@@ -376,6 +376,132 @@ class StudentDashboardTest extends TestCase
             ->assertDontSee('Descrição antiga com aulas em texto corrido.');
     }
 
+    public function test_study_plan_viewer_prefers_linked_lesson_video_duration_over_planned_minutes(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Administração Geral',
+            'type' => 'specific',
+            'lessons' => [
+                ['name' => '03 - Teorias da Administração - Teoria das Relações Humanas', 'minutes' => 4],
+            ],
+            'workload_minutes' => 4,
+            'sort_order' => 1,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '03 - Teorias da Administração - Teoria das Relações Humanas',
+            'duration_seconds' => 19 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 2 · Conhecimentos Específicos: Administração Geral',
+            'description' => 'Bloco de até 4 minutos para estudar Administração Geral.',
+            'type' => 'specific',
+            'estimated_minutes' => 4,
+            'sort_order' => 1,
+        ]);
+        $item->lessons()->attach($lesson->id, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee('19 min')
+            ->assertDontSee('4 min');
+    }
+
+    public function test_lesson_page_plan_track_resyncs_all_lessons_from_the_study_plan_item(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Português',
+            'slug' => 'portugues',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $lessonPayloads = [
+            ['Classes de Palavras - Substantivo e Adjetivo', 10],
+            ['Classes de Palavras - Advérbio', 11],
+            ['Classes de palavras - Conjunção subordinativa adverbial', 16],
+            ['Classes de palavras - Conjunção integrante', 8],
+        ];
+        $lessons = collect($lessonPayloads)->map(function (array $payload, int $index): Lesson {
+            return Lesson::factory()->create([
+                'course_id' => null,
+                'course_module_id' => null,
+                'course_module_track_id' => null,
+                'title' => $payload[0],
+                'duration_seconds' => $payload[1] * 60,
+                'sort_order' => $index + 1,
+                'status' => 'published',
+            ]);
+        });
+
+        foreach ($lessons as $index => $lesson) {
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 45 minutos para estudar Português. Aulas do bloco: '.$lessons->pluck('title')->join(', ').'.',
+            'type' => 'basic',
+            'estimated_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+        $item->lessons()->sync($lessons->take(3)->mapWithKeys(fn (Lesson $lesson, int $index): array => [
+            $lesson->id => ['sort_order' => $index + 1],
+        ])->all());
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lessons->first()]))
+            ->assertOk()
+            ->assertSee('Classes de palavras - Conjunção integrante')
+            ->assertSee('8 min');
+
+        $this->assertSame(
+            $lessons->pluck('id')->all(),
+            $item->fresh()->lessons()->pluck('lessons.id')->all(),
+        );
+    }
+
     public function test_student_can_delete_own_plan(): void
     {
         ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();

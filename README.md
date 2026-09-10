@@ -107,6 +107,12 @@ Senha: password
 - Criação de plano em `/dashboard/plano/novo`
 - Visualização do plano em `/dashboard/plano/{id}`
 
+## Manutenção do plano de estudos
+
+- A trilha lateral da página da aula deve refletir `study_plan_item_lessons`.
+- Quando o item do plano tiver aulas reais vinculadas, a minutagem exibida deve vir de `lessons.duration_seconds`, não da estimativa antiga importada no plano.
+- Ao alterar geração, reequilíbrio ou edição manual do plano, valide juntos `/dashboard/plano/{id}` e `/dashboard/cursos/{course:slug}/aulas/{lesson}`.
+
 ## Webhook da Tutory
 
 Endpoint local:

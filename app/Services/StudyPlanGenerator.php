@@ -1277,7 +1277,7 @@ class StudyPlanGenerator
             'sort_order' => $sortOrder++,
         ]);
 
-        $this->attachOnlineLessonsToItem($item, $module, $lessonNames, $lessonBlock['track_names'] ?? []);
+        $this->attachOnlineLessonsToItem($item, $module, $lessonNames, $lessonBlock['track_names'] ?? [], $lessonBlock['lesson_ids'] ?? []);
 
         $remainingByModule[$module->id] -= $estimatedMinutes;
         $lessonStates[$module->id] = $lessonBlock['state'];
@@ -1327,14 +1327,18 @@ class StudyPlanGenerator
         ]);
     }
 
-    protected function attachOnlineLessonsToItem(StudyPlanItem $item, CourseModule $module, array $lessonNames, array $trackNames = []): void
+    protected function attachOnlineLessonsToItem(StudyPlanItem $item, CourseModule $module, array $lessonNames, array $trackNames = [], array $lessonIds = []): void
     {
         $normalizedLessonNames = collect($lessonNames)
             ->map(fn (string $lessonName) => $this->normalizeLessonName($lessonName))
             ->filter()
             ->values();
+        $lessonIds = collect($lessonIds)
+            ->map(fn ($lessonId): int => (int) $lessonId)
+            ->filter()
+            ->values();
 
-        if ($normalizedLessonNames->isEmpty()) {
+        if ($normalizedLessonNames->isEmpty() && $lessonIds->isEmpty()) {
             return;
         }
 
@@ -1364,6 +1368,20 @@ class StudyPlanGenerator
         }
 
         $matchedLessons = collect();
+
+        foreach ($lessonIds as $lessonId) {
+            $matchedLesson = $onlineLessons->first(function (Lesson $lesson) use ($lessonId, $matchedLessons) {
+                if ($matchedLessons->contains(fn (Lesson $matched) => $matched->is($lesson))) {
+                    return false;
+                }
+
+                return (int) $lesson->id === $lessonId;
+            });
+
+            if ($matchedLesson) {
+                $matchedLessons->push($matchedLesson);
+            }
+        }
 
         foreach ($normalizedLessonNames as $lessonName) {
             $matchedLesson = $onlineLessons->first(function (Lesson $lesson) use ($lessonName, $matchedLessons) {
@@ -1687,6 +1705,7 @@ class StudyPlanGenerator
         $index = (int) ($state['index'] ?? 0);
         $maxBlockMinutes = min(90, $availableMinutes);
         $lessonNames = [];
+        $lessonIds = [];
         $trackNames = [];
         $currentTrackName = null;
         $totalMinutes = 0;
@@ -1719,6 +1738,7 @@ class StudyPlanGenerator
                 }
 
                 $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
+                $lessonIds[] = $lesson['lesson_id'] ?? null;
                 $trackNames[] = $lessonTrackName;
                 $totalMinutes += $remainingBlockMinutes;
                 $lessons[$index + $consumedLessons]['minutes'] = $lessonMinutes - $remainingBlockMinutes;
@@ -1729,6 +1749,7 @@ class StudyPlanGenerator
             }
 
             $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
+            $lessonIds[] = $lesson['lesson_id'] ?? null;
             $trackNames[] = $lessonTrackName;
             $totalMinutes += $lessonMinutes;
             $consumedLessons++;
@@ -1748,6 +1769,7 @@ class StudyPlanGenerator
         return [
             'minutes' => $totalMinutes,
             'lesson_names' => $lessonNames,
+            'lesson_ids' => collect($lessonIds)->filter()->values()->all(),
             'track_names' => collect($trackNames)->filter()->unique()->values()->all(),
             'completed_module' => $state['index'] >= count($lessons),
             'state' => $state,
@@ -1783,6 +1805,7 @@ class StudyPlanGenerator
                 return $lessons
                     ->map(function (Lesson $lesson, int $index) use ($track): array {
                         return [
+                            'lesson_id' => $lesson->id,
                             'name' => trim((string) $lesson->title) ?: ($track->name.' - Aula '.($index + 1)),
                             'minutes' => max(1, (int) $lesson->duration_minutes),
                             'track_name' => (string) $track->name,

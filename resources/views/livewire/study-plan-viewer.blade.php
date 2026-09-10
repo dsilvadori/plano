@@ -321,7 +321,7 @@
                                             <div class="flex flex-wrap items-center gap-2">
                                                 <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-200">Bloco {{ $loop->iteration }}</span>
                                                 <span class="badge-chip {{ $typeBadgeClasses[$item->type] ?? $typeBadgeClasses['other'] }}">{{ $typeLabels[$item->type] ?? $item->type }}</span>
-                                                <span class="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-200">{{ $item->estimated_minutes }} min</span>
+                                                <span class="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-200">{{ $itemDisplayMinutes[$item->id] ?? $item->estimated_minutes }} min</span>
                                             </div>
                                             <p class="mt-3 text-sm font-semibold text-white">{{ $item->display_title }}</p>
                                             @if (! empty($itemLessons[$item->id]))
