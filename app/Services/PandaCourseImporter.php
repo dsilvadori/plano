@@ -253,7 +253,7 @@ class PandaCourseImporter
         return $run->fresh(['items']);
     }
 
-    public function importLessons(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $folderId, string $lessonStatus = 'draft'): PandaImportRun
+    public function importLessons(?Course $course, ?CourseModule $module, ?CourseModuleTrack $track, string $folderId, string $lessonStatus = 'draft', ?PandaImportRun $run = null): PandaImportRun
     {
         $folderReference = $folderId;
         $folderId = $this->client->resolveFolderReference($folderId);
@@ -274,12 +274,18 @@ class PandaCourseImporter
             ]);
         }
 
-        $run = PandaImportRun::create([
+        $run ??= PandaImportRun::create([
             'course_id' => $course?->id,
             'panda_folder_id' => $folderId,
             'status' => 'running',
             'started_at' => now(),
         ]);
+        $run->forceFill([
+            'course_id' => $course?->id,
+            'panda_folder_id' => $folderId,
+            'status' => 'running',
+            'started_at' => $run->started_at ?: now(),
+        ])->save();
 
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));

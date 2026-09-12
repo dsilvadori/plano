@@ -4,10 +4,11 @@ namespace App\Filament\Resources\Lessons\Pages;
 
 use App\Filament\Resources\Lessons\LessonResource;
 use App\Jobs\ImportGoogleDriveLessons;
+use App\Jobs\ImportPandaLessons;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\GoogleDriveImportRun;
-use App\Services\PandaCourseImporter;
+use App\Models\PandaImportRun;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
 use Filament\Forms\Components\Select;
@@ -71,22 +72,33 @@ class ListLessons extends ListRecords
                         ->default('published')
                         ->required(),
                 ])
-                ->action(function (array $data, PandaCourseImporter $importer): void {
+                ->action(function (array $data): void {
                     try {
                         $course = null;
                         [$module, $track] = $this->resolveImportStructure($data, $course);
+                        $run = PandaImportRun::query()->create([
+                            'course_id' => $course?->id,
+                            'panda_folder_id' => (string) $data['panda_folder_id'],
+                            'status' => 'pending',
+                            'summary' => [
+                                'module_id' => $module?->id,
+                                'track_id' => $track?->id,
+                                'source' => 'admin_lessons',
+                            ],
+                        ]);
 
-                        $run = $importer->importLessons(
-                            $course,
-                            $module,
-                            $track,
+                        ImportPandaLessons::dispatch(
+                            $course?->id,
+                            $module?->id,
+                            $track?->id,
                             (string) $data['panda_folder_id'],
                             (string) ($data['lesson_status'] ?? 'published'),
+                            $run->id,
                         );
 
                         Notification::make()
-                            ->title('Aulas importadas do Panda.')
-                            ->body('Vídeos: '.($run->summary['videos'] ?? 0).'. Criadas: '.($run->summary['created'] ?? 0).'. Atualizadas: '.($run->summary['updated'] ?? 0).'.')
+                            ->title('Importação Panda enfileirada.')
+                            ->body('A importação continuará em segundo plano. Acompanhe pelo histórico de importações.')
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {

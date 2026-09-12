@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\ImportPandaLessons;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
@@ -1321,6 +1322,54 @@ class PandaImportTest extends TestCase
         $this->assertSame($folderId, $run->panda_folder_id);
         $this->assertSame($folderId, $lesson->metadata['folder_id']);
         $this->assertSame($folderUrl, $lesson->metadata['folder_reference']);
+    }
+
+    public function test_panda_lessons_import_job_finishes_pending_run_without_blocking_admin_request(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'queued-panda-video-1',
+                        'title' => '01 - Aula Enfileirada',
+                        'duration_seconds' => 780,
+                        'status' => 'CONVERTED',
+                        'embed_url' => 'https://player.test/queued-panda-video-1',
+                        'folder_id' => 'queued-folder',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Aulas enfileiradas',
+        ]);
+        $run = PandaImportRun::query()->create([
+            'panda_folder_id' => 'queued-folder',
+            'status' => 'pending',
+        ]);
+
+        (new ImportPandaLessons(
+            null,
+            $module->id,
+            null,
+            'queued-folder',
+            'published',
+            $run->id,
+        ))->handle(app(PandaCourseImporter::class));
+
+        $lesson = Lesson::query()->where('panda_video_id', 'queued-panda-video-1')->firstOrFail();
+
+        $this->assertSame('finished', $run->fresh()->status);
+        $this->assertSame(1, $run->fresh()->summary['videos']);
+        $this->assertTrue($module->fresh()->onlineLessons()->whereKey($lesson->id)->exists());
     }
 
     public function test_single_lesson_panda_import_accepts_full_video_url(): void
