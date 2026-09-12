@@ -94,7 +94,9 @@ class ListLessons extends ListRecords
                             (string) $data['panda_folder_id'],
                             (string) ($data['lesson_status'] ?? 'published'),
                             $run->id,
-                        );
+                        )
+                            ->onConnection('database')
+                            ->onQueue('default');
 
                         Notification::make()
                             ->title('Importação Panda enfileirada.')
@@ -187,7 +189,9 @@ class ListLessons extends ListRecords
                             (bool) ($data['create_panda_folder'] ?? true),
                             (bool) ($data['upload_panda_videos'] ?? true),
                             $run->id,
-                        )->afterResponse();
+                        )
+                            ->onConnection('database')
+                            ->onQueue('default');
 
                         Notification::make()
                             ->title('Importação de aulas enviada para a fila.')

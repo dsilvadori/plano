@@ -1960,9 +1960,11 @@ Falha conhecida corrigida:
 
 - Logs Apache/PHP-FPM como `AH01075: Error dispatching request to : (polling)` com referer `/admin/lessons` indicam timeout da requisicao web do admin.
 - A tela `Admin > Aulas > Importar Panda` nao deve importar a pasta inteira durante a requisicao HTTP.
-- O comportamento correto e criar um `panda_import_run` com status `pending`, enfileirar `ImportPandaLessons` e responder rapidamente ao admin.
+- O comportamento correto e criar um `panda_import_run` com status `pending`, enfileirar `ImportPandaLessons` na conexao `database` e responder rapidamente ao admin.
+- A tela `Admin > Aulas > Importar Drive`, quando enviar videos ao Panda, tambem deve enfileirar `ImportGoogleDriveLessons` na conexao `database`; nao usar `afterResponse` para trabalho pesado.
 - O worker deve processar a pasta Panda em segundo plano e atualizar o mesmo `panda_import_run` para `running`, `finished` ou `failed`.
 - Para importacoes grandes, aumentar timeout do worker e nao do painel web. A requisicao do admin deve continuar curta.
+- Se `QUEUE_CONNECTION=sync` estiver no `.env` de producao, jobs podem rodar dentro da requisicao e causar timeout. Em producao, usar `QUEUE_CONNECTION=database` ou garantir que as acoes pesadas chamem `onConnection('database')`.
 
 Regras que nao podem ser quebradas durante correcao:
 
