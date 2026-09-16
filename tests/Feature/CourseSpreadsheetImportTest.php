@@ -148,12 +148,67 @@ class CourseSpreadsheetImportTest extends TestCase
             app(CourseSpreadsheetImporter::class)->importInto($course, $path);
             $this->fail('A importação deveria recusar XLSX sem aulas importáveis.');
         } catch (RuntimeException $exception) {
-            $this->assertStringContainsString('A planilha não possui módulos e aulas importáveis.', $exception->getMessage());
+            $this->assertStringContainsString('A planilha não possui módulos, trilhas ou aulas importáveis.', $exception->getMessage());
         } finally {
             @unlink($path);
         }
 
         $this->assertTrue($course->modules()->whereKey($existingModule->id)->exists());
+    }
+
+    public function test_xlsx_parser_preserves_explicit_tracks_without_lessons(): void
+    {
+        $path = $this->createMinimalCourseSpreadsheet([
+            'sheetName' => 'Conhecimentos Específicos',
+            'rows' => [
+                ['A' => 'Módulo - Conhecimentos Específicos'],
+                ['A' => 'Trilha - Legislação Municipal'],
+                ['A' => 'Lei Orgânica', 'B' => '30'],
+                ['A' => 'Trilha - Fiscalização Ambiental'],
+            ],
+        ]);
+
+        try {
+            $payload = app(CourseSpreadsheetParser::class)->parse($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = collect($payload['modules'])->firstWhere('name', 'Conhecimentos Específicos');
+
+        $this->assertNotNull($module);
+        $this->assertSame(['Legislação Municipal', 'Fiscalização Ambiental'], collect($module['tracks'])->pluck('name')->all());
+        $this->assertSame([], $module['tracks'][1]['lessons']);
+        $this->assertSame(0, $module['tracks'][1]['workload_minutes']);
+    }
+
+    public function test_spreadsheet_import_creates_explicit_tracks_without_lessons(): void
+    {
+        $path = $this->createMinimalCourseSpreadsheet([
+            'sheetName' => 'Conhecimentos Específicos',
+            'rows' => [
+                ['A' => 'Módulo - Conhecimentos Específicos'],
+                ['A' => 'Trilha - Legislação Municipal'],
+                ['A' => 'Lei Orgânica', 'B' => '30'],
+                ['A' => 'Trilha - Fiscalização Ambiental'],
+            ],
+        ]);
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Conhecimentos Específicos')->firstOrFail();
+
+        $this->assertTrue($module->tracks()->where('name', 'Legislação Municipal')->exists());
+        $this->assertTrue($module->tracks()->where('name', 'Fiscalização Ambiental')->exists());
+
+        $emptyTrack = $module->tracks()->where('name', 'Fiscalização Ambiental')->firstOrFail();
+
+        $this->assertSame(0, $emptyTrack->lessons()->count());
+        $this->assertTrue($emptyTrack->courses()->whereKey($course->id)->exists());
     }
 
     public function test_spreadsheet_import_clears_course_catalog_cache(): void

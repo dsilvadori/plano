@@ -118,10 +118,11 @@ class CourseSpreadsheetImporter
     protected function ensurePayloadHasImportableStructure(array $payload): void
     {
         $modules = $payload['modules'] ?? [];
+        $trackCount = collect($modules)->sum(fn (array $module): int => count($module['tracks'] ?? []));
         $lessonCount = collect($modules)->sum(fn (array $module): int => count($this->lessonsFromModuleData($module)));
 
-        if ($modules === [] || $lessonCount === 0) {
-            throw new RuntimeException('A planilha não possui módulos e aulas importáveis. Confira se as aulas estão na coluna A e a carga horária/minutos na coluna B.');
+        if ($modules === [] || ($trackCount === 0 && $lessonCount === 0)) {
+            throw new RuntimeException('A planilha não possui módulos, trilhas ou aulas importáveis. Confira se as trilhas estão identificadas e se as aulas estão na coluna A com carga horária/minutos na coluna B.');
         }
     }
 

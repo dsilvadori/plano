@@ -94,7 +94,8 @@ class CourseSpreadsheetParser
         $firstRow = $rows[0];
         $courseName = $firstRow['course_name'] ?? $firstRow['curso'] ?? $this->fallbackCourseNameFromPath($path);
         $groupedRows = collect($rows)
-            ->filter(fn (array $row) => filled($row['module_name'] ?? $row['modulo'] ?? null) && filled($row['lesson_title'] ?? $row['aula'] ?? null))
+            ->filter(fn (array $row) => filled($row['module_name'] ?? $row['modulo'] ?? null)
+                && (filled($row['lesson_title'] ?? $row['aula'] ?? null) || filled($row['track_name'] ?? $row['trilha'] ?? null)))
             ->groupBy(fn (array $row) => $row['module_name'] ?? $row['modulo']);
 
         if ($groupedRows->isEmpty()) {
@@ -111,6 +112,7 @@ class CourseSpreadsheetParser
                     ->groupBy(fn (array $row) => $row['track_name'] ?? $row['trilha'] ?? $moduleName)
                     ->map(function (Collection $trackRows, string $trackName) use (&$trackSortOrder) {
                         $firstTrackRow = $trackRows->first();
+                        $hasExplicitTrack = filled($firstTrackRow['track_name'] ?? $firstTrackRow['trilha'] ?? null);
                         $lessons = $trackRows
                             ->values()
                             ->map(function (array $row, int $index) {
@@ -144,9 +146,10 @@ class CourseSpreadsheetParser
                             'panda_folder_id' => $firstTrackRow['panda_folder_id'] ?? null,
                             'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
                             'lessons' => $lessons,
+                            'has_explicit_track' => $hasExplicitTrack,
                         ];
                     })
-                    ->filter(fn (array $track) => filled($track['name']) && $track['lessons'] !== [])
+                    ->filter(fn (array $track) => filled($track['name']) && ($track['lessons'] !== [] || ($track['has_explicit_track'] ?? false)))
                     ->sortBy('sort_order')
                     ->values()
                     ->all();
@@ -198,14 +201,16 @@ class CourseSpreadsheetParser
                 $groupName = $this->normalizeSheetName($sheet['name']);
                 $currentModuleTeacherName = null;
                 $currentTrackName = null;
+                $currentTrackIsExplicit = false;
                 $currentTeacherName = null;
                 $currentLessons = [];
                 $tracks = [];
                 $trackSortOrder = 1;
 
-                $flushTrack = function () use (&$tracks, &$currentTrackName, &$currentTeacherName, &$currentLessons, &$trackSortOrder): void {
-                    if (blank($currentTrackName) || empty($currentLessons)) {
+                $flushTrack = function () use (&$tracks, &$currentTrackName, &$currentTrackIsExplicit, &$currentTeacherName, &$currentLessons, &$trackSortOrder): void {
+                    if (blank($currentTrackName) || (empty($currentLessons) && ! $currentTrackIsExplicit)) {
                         $currentTrackName = null;
+                        $currentTrackIsExplicit = false;
                         $currentTeacherName = null;
                         $currentLessons = [];
 
@@ -221,6 +226,7 @@ class CourseSpreadsheetParser
                     ];
 
                     $currentTrackName = null;
+                    $currentTrackIsExplicit = false;
                     $currentTeacherName = null;
                     $currentLessons = [];
                 };
@@ -247,6 +253,7 @@ class CourseSpreadsheetParser
                     if (Str::startsWith($firstCell, 'Trilha - ')) {
                         $flushTrack();
                         $currentTrackName = trim(Str::after($firstCell, 'Trilha - '));
+                        $currentTrackIsExplicit = true;
                         $currentTeacherName = $this->resolveTeacherName([
                             'professor' => Arr::get($row, 'C'),
                         ]);
@@ -270,6 +277,7 @@ class CourseSpreadsheetParser
 
                     if ($currentTrackName === null) {
                         $currentTrackName = $groupName;
+                        $currentTrackIsExplicit = false;
                     }
 
                     $minutes = $this->parseLessonMinutes($minutesCell);

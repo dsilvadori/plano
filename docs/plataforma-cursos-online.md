@@ -1911,6 +1911,7 @@ php artisan view:cache
 ### Importacao por planilha
 
 - O importador por planilha foi ajustado para montar cursos, modulos, trilhas e aulas.
+- Trilhas explicitamente declaradas na planilha devem ser importadas mesmo quando ainda nao possuem aulas; elas entram publicadas para aparecer como `Aulas disponiveis em breve` no painel do aluno.
 - A importacao por planilha e capaz de vincular aulas existentes pelo nome, priorizando aulas que ja possuem midia.
 - A correspondencia de nomes de aulas passou a ser aproximada e ignora numeracao quando necessario.
 - A normalizacao de nomes remove extensoes, caracteres tecnicos de arquivo e padroniza numeracao com duas casas quando aplicavel.
