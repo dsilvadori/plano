@@ -81,7 +81,7 @@
                     Instalar aplicativo
                 </button>
                 <p data-ios-install-hint class="hidden mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
-                    No iPhone ou iPad, toque em compartilhar e depois em “Adicionar à Tela de Início”.
+                    No iPhone ou iPad, abra pelo Safari, toque em Compartilhar e depois em Adicionar à Tela de Início.
                 </p>
             </div>
 
@@ -124,7 +124,7 @@
                 Instalar aplicativo
             </button>
             <p data-ios-install-hint class="hidden rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
-                No iPhone ou iPad, toque em compartilhar e depois em “Adicionar à Tela de Início”.
+                No iPhone ou iPad, abra pelo Safari, toque em Compartilhar e depois em Adicionar à Tela de Início.
             </p>
             <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
             <form method="POST" action="{{ route('logout') }}">

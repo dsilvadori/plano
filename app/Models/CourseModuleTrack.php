@@ -37,12 +37,14 @@ class CourseModuleTrack extends Model
         'thumbnail_path',
         'sort_order',
         'status',
+        'available_from',
         'panda_folder_id',
         'google_doc_url',
         'metadata',
     ];
 
     protected $casts = [
+        'available_from' => 'date',
         'metadata' => 'array',
     ];
 

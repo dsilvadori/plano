@@ -73,6 +73,7 @@
                             $trackCompletedCount = $track->lessons->filter(fn ($lesson) => $completedLessonIds->contains($lesson->id))->count();
                             $trackProgress = $trackLessonCount > 0 ? (int) round(($trackCompletedCount / $trackLessonCount) * 100) : 0;
                             $trackEntryLesson = $trackEntryLessons->get($track->id);
+                            $availableFromLabel = $track->available_from?->translatedFormat('d/m/Y');
                         @endphp
 
                         <article data-carousel-item class="card-subtle course-carousel-card course-track-card flex flex-col overflow-hidden p-0">
@@ -91,8 +92,22 @@
                                     <span>{{ $trackLessonCount }} aula(s)</span>
                                     @if ($hasAccess && $trackLessonCount > 0)
                                         <span>{{ $trackProgress }}%</span>
+                                    @elseif ($trackLessonCount === 0)
+                                        <span class="text-amber-200">Em breve</span>
                                     @endif
                                 </div>
+
+                                @if ($availableFromLabel)
+                                    <p class="mt-3 text-xs font-semibold text-amber-200">
+                                        Previsão: {{ $availableFromLabel }}
+                                    </p>
+                                @endif
+
+                                @if ($trackLessonCount === 0)
+                                    <p class="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                                        Aulas disponíveis em breve.
+                                    </p>
+                                @endif
 
                                 @if ($hasAccess && $trackLessonCount > 0)
                                     <div class="mt-3">
@@ -108,7 +123,7 @@
 
                                 <div class="mt-auto pt-3">
                                     <a href="{{ $trackEntryLesson ? route('courses.lessons.show', [$course->slug, $trackEntryLesson]) : route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]) }}" class="inline-flex w-full justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-400/20">
-                                        Ver aulas
+                                        {{ $trackLessonCount > 0 ? 'Ver aulas' : 'Ver previsão' }}
                                     </a>
                                 </div>
                             </div>

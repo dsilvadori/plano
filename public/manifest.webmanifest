@@ -1,7 +1,9 @@
 {
   "name": "Plataforma Vencendo Concursos",
   "short_name": "Plataforma VC",
+  "id": "/dashboard",
   "start_url": "/dashboard",
+  "scope": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "minimal-ui", "browser"],
   "orientation": "portrait-primary",

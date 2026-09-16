@@ -174,6 +174,9 @@ if ('serviceWorker' in navigator && isServiceWorkerDisabled) {
 let deferredInstallPrompt = null;
 
 const installButtons = () => Array.from(document.querySelectorAll('[data-install-app-button]'));
+const iosInstallHints = () => Array.from(document.querySelectorAll('[data-ios-install-hint]'));
+const isIosDevice = () => /iphone|ipad|ipod/i.test(window.navigator.userAgent)
+    || (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1);
 
 const isRunningAsInstalledApp = () => {
     return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
@@ -182,6 +185,24 @@ const isRunningAsInstalledApp = () => {
 const updateInstallButtons = () => {
     installButtons().forEach((installButton) => {
         if (isRunningAsInstalledApp()) {
+            installButton.classList.add('hidden');
+            installButton.onclick = null;
+            return;
+        }
+
+        if (isIosDevice()) {
+            installButton.classList.remove('hidden');
+            installButton.textContent = 'Instalar no iPhone';
+            installButton.onclick = () => {
+                iosInstallHints().forEach((iosHint) => {
+                    iosHint.classList.toggle('hidden');
+                });
+            };
+
+            return;
+        }
+
+        if (!deferredInstallPrompt) {
             installButton.classList.add('hidden');
             installButton.onclick = null;
             return;
@@ -218,11 +239,10 @@ window.addEventListener('appinstalled', () => {
 });
 
 window.addEventListener('load', () => {
-    const isIos = /iphone|ipad|ipod/i.test(window.navigator.userAgent);
     const isInStandaloneMode = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
 
-    if (isIos && !isInStandaloneMode) {
-        document.querySelectorAll('[data-ios-install-hint]').forEach((iosHint) => {
+    if (isIosDevice() && !isInStandaloneMode) {
+        iosInstallHints().forEach((iosHint) => {
             iosHint.classList.remove('hidden');
         });
     }

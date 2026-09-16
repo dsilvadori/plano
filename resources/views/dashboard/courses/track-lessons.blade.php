@@ -2,6 +2,7 @@
     $trackLessonCount = $track->lessons->count();
     $trackCompletedCount = $track->lessons->filter(fn ($lesson) => $completedLessonIds->contains($lesson->id))->count();
     $trackProgress = $trackLessonCount > 0 ? (int) round(($trackCompletedCount / $trackLessonCount) * 100) : 0;
+    $availableFromLabel = $track->available_from?->translatedFormat('d/m/Y');
 @endphp
 
 <x-app-layout>
@@ -28,7 +29,16 @@
             <div>
                 <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Aulas</p>
                 <h2 class="mt-2 text-2xl font-semibold text-white">Aulas desta trilha</h2>
-                <p class="mt-2 text-sm text-slate-300">{{ $trackLessonCount }} aula(s) em {{ $course->name }}.</p>
+                @if ($availableFromLabel)
+                    <p class="mt-2 text-sm font-semibold text-amber-200">Previsão: {{ $availableFromLabel }}</p>
+                @endif
+                <p class="mt-2 text-sm text-slate-300">
+                    @if ($trackLessonCount > 0)
+                        {{ $trackLessonCount }} aula(s) em {{ $course->name }}.
+                    @else
+                        As aulas desta trilha estarão disponíveis em breve.
+                    @endif
+                </p>
             </div>
             @if ($hasAccess && $trackLessonCount > 0)
                 <span class="rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
@@ -118,8 +128,12 @@
                 </div>
             </div>
         @else
-            <div class="mt-6 card-subtle">
-                <p class="text-sm text-slate-400">Nenhuma aula publicada nesta trilha ainda.</p>
+            <div class="mt-6 rounded-3xl border border-amber-300/20 bg-amber-300/10 p-6">
+                <p class="text-sm font-semibold uppercase tracking-[0.2em] text-amber-200">Em breve</p>
+                <h3 class="mt-3 text-xl font-semibold text-white">Aulas disponíveis em breve</h3>
+                <p class="mt-2 max-w-2xl text-sm leading-6 text-amber-50/80">
+                    Estamos preparando esta trilha. Quando as aulas forem publicadas, elas aparecerão aqui automaticamente{{ $availableFromLabel ? ' perto da previsão de '.$availableFromLabel : '' }}.
+                </p>
             </div>
         @endif
     </section>

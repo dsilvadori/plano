@@ -82,6 +82,7 @@ Unificar em uma mesma experiencia:
    - `thumbnail_path`
    - `sort_order`
    - `status`: draft, published, archived
+   - `available_from`: data opcional de previsao de disponibilidade das aulas da trilha
    - `panda_folder_id`: pasta/playlist no Panda, quando houver
    - `google_doc_url`: documento/base editorial usada para preparar a trilha, quando houver
    - `metadata`
@@ -376,6 +377,8 @@ Ao importar por planilha, a aula pode nascer sem video, sem PDF e sem Panda ID. 
 
 Quando o video ou PDF for enviado depois, o admin deve poder vincular a midia a uma aula placeholder existente, sem recriar a aula e sem quebrar plano de estudos/progresso.
 
+Trilhas publicadas tambem podem existir antes de qualquer aula estar gravada ou publicada. Nesse caso, o aluno deve ver a trilha normalmente no curso, com a mensagem `Aulas disponiveis em breve`. Quando `course_module_tracks.available_from` estiver preenchido, a previsao deve aparecer diretamente nos cards/listas da area do aluno e na pagina da trilha.
+
 ### Thumbnails de Trilhas
 
 Trilhas precisam ter thumbnail propria porque funcionam como playlists visuais para o aluno. A origem pode ser:
@@ -417,7 +420,8 @@ Reimportar a mesma planilha deve ser idempotente:
 5. Admin confirma a importacao.
 6. Sistema cria/atualiza a estrutura em rascunho.
 7. Admin envia/vincula Google Docs, PDFs ou videos Panda depois.
-8. Admin publica trilhas/aulas quando a midia estiver pronta.
+8. Admin pode publicar uma trilha ainda sem aulas disponiveis e preencher a previsao de disponibilidade para orientar o aluno.
+9. Admin publica trilhas/aulas quando a midia estiver pronta.
 
 ### Google Docs e Panda
 
@@ -1869,8 +1873,40 @@ Esta secao registra o que ja foi aplicado na plataforma ate a fase atual, para s
 - A estrutura de exibicao do curso no painel do aluno usa modulos em acordeon, fechados por padrao.
 - Trilhas sao exibidas como cards com thumbnail em carrossel.
 - O clique na trilha leva para a aula em que o aluno parou ou para a primeira aula da trilha.
+- Trilhas publicadas sem aulas aparecem para o aluno como `Aulas disponiveis em breve`; quando houver previsao cadastrada, exibem `Previsao: dd/mm/aaaa` diretamente no card e na pagina da trilha.
 - Na lista administrativa de aulas, as colunas podem ser exibidas ou ocultadas pelo seletor de colunas.
 - `Curso`, `Modulo`, `Trilha` e `ID do provedor` ficam ocultos por padrao na listagem de aulas.
+
+### PWA e instalacao em iPhone
+
+- O manifesto PWA define `id`, `scope`, `start_url`, nome curto e modo standalone.
+- Layouts autenticado e convidado incluem metadados de web app mobile e `apple-touch-icon`.
+- O botao `Instalar aplicativo` usa o prompt nativo quando o navegador suporta `beforeinstallprompt`.
+- No iPhone/iPad, onde o prompt nativo nao e exposto da mesma forma, o botao vira `Instalar no iPhone` e mostra a instrucao para abrir pelo Safari, tocar em Compartilhar e usar `Adicionar a Tela de Inicio`.
+
+### Comandos de deploy / Laravel Toolkit
+
+Executar apos publicar a versao no ambiente:
+
+```bash
+php artisan migrate --force
+npm ci
+npm run build
+php artisan optimize:clear
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+```
+
+Se o ambiente ja instalar dependencias e compilar assets em outro passo do pipeline, manter pelo menos:
+
+```bash
+php artisan migrate --force
+php artisan optimize:clear
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+```
 
 ### Importacao por planilha
 

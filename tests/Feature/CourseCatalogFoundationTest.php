@@ -554,6 +554,57 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('https://player.test/substantivo', false);
     }
 
+    public function test_student_sees_coming_soon_track_with_available_from_forecast(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com trilha futura',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Informática',
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Excel 2026',
+            'slug' => 'excel-2026',
+            'sort_order' => 1,
+            'status' => 'published',
+            'available_from' => '2026-11-20',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->attach($course->id, ['sort_order' => 1]);
+        $track->courses()->attach($course->id, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Excel 2026')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertSee('Previsão: 20/11/2026')
+            ->assertSee('Ver previsão');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
+            ->assertOk()
+            ->assertSee('Excel 2026')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertSee('Previsão: 20/11/2026')
+            ->assertSee('Ver previsão');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
+            ->assertSee('Excel 2026')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertSee('Previsão: 20/11/2026')
+            ->assertDontSee('Nenhuma aula publicada nesta trilha ainda.');
+    }
+
     public function test_course_catalog_uses_uploaded_thumbnail_before_external_url(): void
     {
         $student = User::factory()->create(['role' => 'student']);
@@ -978,13 +1029,15 @@ class CourseCatalogFoundationTest extends TestCase
             ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
             ->assertOk()
             ->assertSee('Teorias da Administração')
-            ->assertSee('Ver aulas')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertSee('Ver previsão')
             ->assertDontSee('Começar');
 
         $this->actingAs($student)
             ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
             ->assertOk()
-            ->assertSee('Nenhuma aula publicada nesta trilha ainda.')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertDontSee('Nenhuma aula publicada nesta trilha ainda.')
             ->assertDontSee('Começar');
     }
 

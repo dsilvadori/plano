@@ -16,6 +16,7 @@ use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Placeholder;
@@ -144,6 +145,11 @@ class CourseModuleTrackResource extends Resource
                 ])
                 ->default('draft')
                 ->required(),
+            DatePicker::make('available_from')
+                ->label('Previsão de disponibilidade')
+                ->native(false)
+                ->displayFormat('d/m/Y')
+                ->helperText('Opcional. Aparece para o aluno quando a trilha ainda não tiver aulas disponíveis.'),
             TextInput::make('panda_folder_id')
                 ->label('ID da pasta/playlist no Panda'),
             TextInput::make('google_doc_url')
@@ -171,6 +177,7 @@ class CourseModuleTrackResource extends Resource
                 TextColumn::make('courses_count')->label('Cursos')->counts('courses'),
                 TextColumn::make('lessons_count')->label('Aulas')->counts('lessons'),
                 TextColumn::make('status')->label('Status')->badge(),
+                TextColumn::make('available_from')->label('Previsão')->date('d/m/Y')->sortable(),
                 TextColumn::make('sort_order')->label('Ordem')->sortable(),
                 TextColumn::make('panda_folder_id')->label('Pasta Panda')->toggleable(),
             ])
