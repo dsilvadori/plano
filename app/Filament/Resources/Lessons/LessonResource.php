@@ -400,7 +400,7 @@ class LessonResource extends Resource
                     ->visible(fn (Lesson $record): bool => self::hasPandaVideo($record))
                     ->action(function (Lesson $record, PandaAiResourceActivator $activator): void {
                         try {
-                            $result = $activator->generate($record);
+                            $result = $activator->reprocess($record);
 
                             self::notifyPandaAiResult($result);
                         } catch (Throwable $exception) {
@@ -410,8 +410,25 @@ class LessonResource extends Resource
                                 ->title('Não foi possível ativar a IA do Panda')
                                 ->body($exception->getMessage())
                                 ->danger()
-                                ->send();
+                            ->send();
                         }
+                    }),
+                Action::make('clearPandaAiCache')
+                    ->label('Limpar cache da IA')
+                    ->icon('heroicon-o-trash')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->modalHeading('Limpar recursos de IA em cache')
+                    ->modalDescription('Remove os resumos, questões, mapas mentais e payload do Panda salvos para esta aula. Depois use "Gerar Recursos de IA" para solicitar uma nova geração.')
+                    ->visible(fn (Lesson $record): bool => self::hasPandaVideo($record))
+                    ->action(function (Lesson $record, PandaAiResourceActivator $activator): void {
+                        $deleted = $activator->clearCachedArtifacts($record);
+
+                        Notification::make()
+                            ->title('Cache da IA limpo')
+                            ->body("{$deleted} recurso(s) de IA foram removidos desta aula.")
+                            ->success()
+                            ->send();
                     }),
                 Action::make('activatePandaTutor')
                     ->label('Ativar Tutor IA')
@@ -471,7 +488,7 @@ class LessonResource extends Resource
                                 }
 
                                 try {
-                                    $result = $activator->generate($record);
+                                    $result = $activator->reprocess($record);
                                     $requested += $result['requested'] ? 1 : 0;
                                     $pending += $result['pending'] ? 1 : 0;
                                     $syncedArtifacts += (int) $result['created_artifacts'];
@@ -487,6 +504,44 @@ class LessonResource extends Resource
                                 ->body("Solicitadas: {$requested}. Aguardando Panda: {$pending}. Já disponíveis: {$alreadyReady}. Artefatos sincronizados: {$syncedArtifacts}. Ignoradas sem vídeo Panda: {$skipped}. Falhas: {$failed}.");
 
                             ($failed > 0 ? $notification->warning() : $notification->success())->send();
+                        })
+                        ->deselectRecordsAfterCompletion(),
+                    BulkAction::make('clearPandaAiCache')
+                        ->label('Limpar cache da IA')
+                        ->icon('heroicon-o-trash')
+                        ->color('warning')
+                        ->requiresConfirmation()
+                        ->modalHeading('Limpar recursos de IA em cache')
+                        ->modalDescription('Remove resumos, questões, mapas mentais e payload do Panda salvos para as aulas selecionadas.')
+                        ->action(function (Collection $records, PandaAiResourceActivator $activator): void {
+                            if ($records->isEmpty()) {
+                                Notification::make()
+                                    ->title('Nenhuma aula selecionada')
+                                    ->body('Selecione uma ou mais aulas na tabela antes de usar a ação em massa.')
+                                    ->warning()
+                                    ->send();
+
+                                return;
+                            }
+
+                            $deleted = 0;
+                            $skipped = 0;
+
+                            foreach ($records as $record) {
+                                if (! self::hasPandaVideo($record)) {
+                                    $skipped++;
+
+                                    continue;
+                                }
+
+                                $deleted += $activator->clearCachedArtifacts($record);
+                            }
+
+                            Notification::make()
+                                ->title('Cache da IA limpo')
+                                ->body("Recursos removidos: {$deleted}. Ignoradas sem vídeo Panda: {$skipped}.")
+                                ->success()
+                                ->send();
                         })
                         ->deselectRecordsAfterCompletion(),
                     BulkAction::make('activatePandaTutor')

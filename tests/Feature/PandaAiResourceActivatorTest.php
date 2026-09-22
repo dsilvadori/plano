@@ -9,6 +9,7 @@ use App\Services\PandaAiResourceActivator;
 use App\Services\PandaVideoClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Mockery;
 use Tests\TestCase;
 
@@ -123,6 +124,83 @@ class PandaAiResourceActivatorTest extends TestCase
         $this->assertNotNull(data_get($lesson->metadata, 'panda_ai.last_auto_sync_attempt_at'));
 
         Bus::assertDispatched(SyncPandaAiArtifacts::class, fn (SyncPandaAiArtifacts $job): bool => $job->lessonId === $lesson->id);
+    }
+
+    public function test_reprocess_replaces_existing_ready_artifacts_even_when_all_are_available(): void
+    {
+        Bus::fake();
+
+        $lesson = Lesson::factory()->create([
+            'panda_video_id' => 'video-123',
+            'metadata' => [],
+        ]);
+
+        foreach (['summary', 'quiz', 'mindmap', 'panda_payload'] as $type) {
+            AiArtifact::query()->create([
+                'source_type' => Lesson::class,
+                'source_id' => $lesson->id,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+                'status' => 'ready',
+                'content' => ['text' => "Conteudo antigo {$type}"],
+                'metadata' => [],
+            ]);
+        }
+
+        $panda = Mockery::mock(PandaVideoClient::class);
+        $panda->shouldNotReceive('aiPackage');
+        $panda->shouldReceive('createAiPackage')
+            ->once()
+            ->with('video-123')
+            ->andReturn(['ok' => true]);
+
+        $result = app(PandaAiResourceActivator::class, ['panda' => $panda])->reprocess($lesson);
+
+        $lesson->refresh();
+
+        $this->assertTrue($result['requested']);
+        $this->assertTrue($result['replaced_existing']);
+        $this->assertSame(0, AiArtifact::query()->where('source_id', $lesson->id)->count());
+        $this->assertSame('regenerating', data_get($lesson->metadata, 'panda_ai.last_payload_status'));
+
+        Bus::assertDispatched(SyncPandaAiArtifacts::class, fn (SyncPandaAiArtifacts $job): bool => $job->lessonId === $lesson->id);
+    }
+
+    public function test_clear_cached_artifacts_removes_panda_artifacts_and_cache_keys(): void
+    {
+        $lesson = Lesson::factory()->create([
+            'panda_video_id' => 'video-123',
+        ]);
+
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'summary',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => ['text' => 'Resumo antigo'],
+            'metadata' => [],
+        ]);
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'summary',
+            'provider' => 'manual',
+            'status' => 'ready',
+            'content' => ['text' => 'Resumo manual'],
+            'metadata' => [],
+        ]);
+
+        Cache::put("lesson:{$lesson->id}:ai-artifacts", ['cached'], 600);
+        Cache::put("lesson:{$lesson->id}:ai-payload", ['cached'], 600);
+
+        $deleted = app(PandaAiResourceActivator::class)->clearCachedArtifacts($lesson);
+
+        $this->assertSame(1, $deleted);
+        $this->assertFalse(Cache::has("lesson:{$lesson->id}:ai-artifacts"));
+        $this->assertFalse(Cache::has("lesson:{$lesson->id}:ai-payload"));
+        $this->assertFalse(AiArtifact::query()->where('source_id', $lesson->id)->where('provider', 'panda')->exists());
+        $this->assertTrue(AiArtifact::query()->where('source_id', $lesson->id)->where('provider', 'manual')->exists());
     }
 
     public function test_generate_keeps_existing_ready_artifacts_instead_of_requesting_regeneration(): void

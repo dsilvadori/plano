@@ -86,7 +86,7 @@ class EditLesson extends EditRecord
                 ->visible(fn (): bool => LessonResource::hasPandaVideo($this->record))
                 ->action(function (PandaAiResourceActivator $activator): void {
                     try {
-                        $result = $activator->generate($this->record);
+                        $result = $activator->reprocess($this->record);
 
                         LessonResource::notifyPandaAiResult($result);
                     } catch (Throwable $exception) {
@@ -98,6 +98,23 @@ class EditLesson extends EditRecord
                             ->danger()
                             ->send();
                     }
+                }),
+            Action::make('clearPandaAiCache')
+                ->label('Limpar cache da IA')
+                ->icon('heroicon-o-trash')
+                ->color('warning')
+                ->requiresConfirmation()
+                ->modalHeading('Limpar recursos de IA em cache')
+                ->modalDescription('Remove os resumos, questões, mapas mentais e payload do Panda salvos para esta aula. Depois disso, use "Gerar Recursos de IA" para solicitar uma nova geração.')
+                ->visible(fn (): bool => LessonResource::hasPandaVideo($this->record))
+                ->action(function (PandaAiResourceActivator $activator): void {
+                    $deleted = $activator->clearCachedArtifacts($this->record);
+
+                    Notification::make()
+                        ->title('Cache da IA limpo')
+                        ->body("{$deleted} recurso(s) de IA foram removidos desta aula.")
+                        ->success()
+                        ->send();
                 }),
             Action::make('activatePandaTutor')
                 ->label('Ativar Tutor IA')

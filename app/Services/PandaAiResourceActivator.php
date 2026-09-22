@@ -133,6 +133,16 @@ class PandaAiResourceActivator
         ];
     }
 
+    public function reprocess(Lesson $lesson): array
+    {
+        return $this->activate($lesson, forceRequest: true, replaceExisting: true);
+    }
+
+    public function clearCachedArtifacts(Lesson $lesson): int
+    {
+        return $this->deleteExistingPandaArtifacts($lesson);
+    }
+
     protected function hasPendingGeneration(Lesson $lesson): bool
     {
         $metadata = $lesson->metadata ?? [];
@@ -149,9 +159,9 @@ class PandaAiResourceActivator
             ->first() ?? 300;
     }
 
-    protected function deleteExistingPandaArtifacts(Lesson $lesson): void
+    protected function deleteExistingPandaArtifacts(Lesson $lesson): int
     {
-        AiArtifact::query()
+        $deleted = AiArtifact::query()
             ->where('source_type', Lesson::class)
             ->where('source_id', $lesson->id)
             ->where('provider', 'panda')
@@ -161,6 +171,8 @@ class PandaAiResourceActivator
         Cache::forget("lesson:{$lesson->id}:ai-artifacts");
         Cache::forget("lesson:{$lesson->id}:ai-payload");
         $lesson->unsetRelation('aiArtifacts');
+
+        return $deleted;
     }
 
     public function syncReadyArtifacts(Lesson $lesson): int

@@ -680,6 +680,8 @@ Se o Panda disponibilizar transcricao, resumo ou questoes por IA:
 - Salvar o resultado bruto em `ai_artifacts`.
 - Marcar origem como `panda`.
 - Permitir revisao do admin antes de publicar para o aluno.
+- Reprocessamento manual deve remover os artefatos Panda anteriores (`summary`, `quiz`, `mindmap` e `panda_payload`) antes de solicitar nova geracao, garantindo que o proximo cache venha do novo payload.
+- O admin deve ter acao explicita para limpar o cache/artefatos de IA da aula sem necessariamente solicitar nova geracao.
 - Se a funcionalidade nao estiver disponivel, usar nossa propria fila de IA com transcricao/material local.
 
 ## Integracao com API de IA
@@ -1149,6 +1151,7 @@ Usar a mesma planilha do plano para montar cursos, modulos e aulas.
 - Status.
 - Ordenacao.
 - Gerar/resincronizar IA.
+- Limpar cache dos recursos de IA da aula.
 
 ### Banco de Questoes
 
