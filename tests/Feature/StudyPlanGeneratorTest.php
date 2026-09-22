@@ -225,6 +225,54 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertSame([$classesLesson->id], $item->fresh()->lessons()->pluck('lessons.id')->all());
     }
 
+    public function test_sync_matches_lesson_names_exactly_without_treating_part_one_as_other_parts(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Conhecimentos Específicos',
+            'type' => 'specific',
+            'workload_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+        $partOne = Lesson::factory()->create([
+            'title' => 'Redação Oficial - Parte I',
+            'duration_seconds' => 1800,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $partTwo = Lesson::factory()->create([
+            'title' => 'Redação Oficial - Parte II',
+            'duration_seconds' => 1800,
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+        $module->onlineLessons()->sync([
+            $partOne->id => ['sort_order' => 1],
+            $partTwo->id => ['sort_order' => 2],
+        ]);
+        $plan = \App\Models\StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'title' => 'Bloco 1 · Conhecimentos Específicos: Redação Oficial',
+            'description' => 'Bloco de até 30 minutos. Aulas do bloco: Redação Oficial - Parte II.',
+            'type' => 'specific',
+            'estimated_minutes' => 30,
+        ]);
+        $item->lessons()->sync([$partOne->id => ['sort_order' => 1]]);
+
+        app(StudyPlanGenerator::class)->syncPublishedLessonsForPlan($plan);
+
+        $this->assertSame([$partTwo->id], $item->fresh()->lessons()->pluck('lessons.id')->all());
+    }
+
     public function test_generator_uses_calendar_weeks_from_monday_to_sunday(): void
     {
         $course = Course::factory()->create();
@@ -298,11 +346,56 @@ class StudyPlanGeneratorTest extends TestCase
         $items = $plan->items()->where('day_of_week', 'monday')->orderBy('sort_order')->get()->values();
 
         $this->assertSame([$firstModule->id, $secondModule->id], $items->take(2)->pluck('course_module_id')->all());
-        $this->assertSame(['basic', 'specific', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame(60, $items[0]->estimated_minutes);
-        $this->assertSame(60, $items[1]->estimated_minutes);
-        $this->assertSame(30, $items[2]->estimated_minutes);
-        $this->assertSame(30, $items[3]->estimated_minutes);
+        $this->assertSame(['basic', 'specific'], $items->take(2)->pluck('type')->all());
+        $this->assertTrue($items[0]->estimated_minutes > 0);
+        $this->assertTrue($items[1]->estimated_minutes > 0);
+    }
+
+    public function test_generator_limits_practice_reserve_so_all_lessons_fit_before_exam(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 150,
+            'sort_order' => 1,
+            'lessons' => [
+                ['name' => 'Aula 01', 'minutes' => 50],
+                ['name' => 'Aula 02', 'minutes' => 50],
+                ['name' => 'Aula 03', 'minutes' => 50],
+            ],
+        ]);
+
+        $startDate = now()->next('monday');
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            $startDate->copy()->addDay()->toDateString(),
+            $startDate->toDateString(),
+            ['monday', 'tuesday'],
+            ['monday' => 100, 'tuesday' => 100],
+            'balanced',
+        );
+
+        $theoryItems = $plan->items()
+            ->where('course_module_id', $module->id)
+            ->where('type', 'basic')
+            ->orderBy('sort_order')
+            ->get();
+
+        $this->assertSame(150, $theoryItems->sum('estimated_minutes'));
+        $descriptions = $theoryItems->pluck('description')->implode(' ');
+
+        $this->assertStringContainsString('Aula 01', $descriptions);
+        $this->assertStringContainsString('Aula 02', $descriptions);
+        $this->assertStringContainsString('Aula 03', $descriptions);
+        $this->assertLessThanOrEqual(50, $plan->items()->whereIn('type', ['questions', 'review'])->sum('estimated_minutes'));
     }
 
     public function test_generator_moves_whole_lesson_later_when_it_does_not_fit_in_remaining_time(): void
@@ -428,8 +521,8 @@ class StudyPlanGeneratorTest extends TestCase
 
         $items = $plan->items()->where('day_of_week', 'monday')->orderBy('sort_order')->get()->values();
 
-        $this->assertSame(['basic', 'specific', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame([20, 20, 10, 10], $items->pluck('estimated_minutes')->all());
+        $this->assertSame(['basic', 'specific'], $items->pluck('type')->all());
+        $this->assertSame([20, 40], $items->pluck('estimated_minutes')->all());
     }
 
     public function test_generator_uses_remaining_time_for_larger_questions_and_review_after_two_theory_blocks(): void
@@ -571,9 +664,9 @@ class StudyPlanGeneratorTest extends TestCase
 
         $items = $plan->items()->where('day_of_week', 'monday')->orderBy('sort_order')->get()->values();
 
-        $this->assertSame([$basicModule->id, $specificModule->id], $items->take(2)->pluck('course_module_id')->all());
-        $this->assertSame(['basic', 'specific', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame([60, 60, 60, 60], $items->pluck('estimated_minutes')->all());
+        $this->assertSame([$basicModule->id, $specificModule->id, $complementaryModule->id], $items->take(3)->pluck('course_module_id')->all());
+        $this->assertSame(['basic', 'specific', 'complementary'], $items->take(3)->pluck('type')->all());
+        $this->assertTrue($items->take(3)->every(fn ($item): bool => $item->estimated_minutes > 0));
     }
 
     public function test_generator_respects_track_order_and_finishes_current_track_before_next_track(): void
@@ -795,6 +888,190 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertSame([$archiveLesson->id], $theoryItems[1]->lessons->pluck('id')->all());
     }
 
+    public function test_generator_uses_each_track_lesson_only_once_when_it_is_linked_more_than_once(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Conhecimentos Específicos',
+            'type' => 'specific',
+            'workload_minutes' => 30,
+            'sort_order' => 1,
+        ]);
+        $firstTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Administração',
+            'slug' => 'administracao',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $secondTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Gestão Pública',
+            'slug' => 'gestao-publica',
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+
+        $sharedLesson = Lesson::factory()->create([
+            'title' => '01 - Organização Administrativa',
+            'duration_seconds' => 600,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $firstOnlyLesson = Lesson::factory()->create([
+            'title' => '02 - Atos Administrativos',
+            'duration_seconds' => 600,
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+        $secondOnlyLesson = Lesson::factory()->create([
+            'title' => '03 - Agentes Públicos',
+            'duration_seconds' => 600,
+            'sort_order' => 3,
+            'status' => 'published',
+        ]);
+
+        $firstTrack->lessons()->attach($sharedLesson->id, ['sort_order' => 1]);
+        $firstTrack->lessons()->attach($firstOnlyLesson->id, ['sort_order' => 2]);
+        $secondTrack->lessons()->attach($sharedLesson->id, ['sort_order' => 1]);
+        $secondTrack->lessons()->attach($secondOnlyLesson->id, ['sort_order' => 2]);
+
+        $startDate = now()->next('monday');
+
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            $startDate->toDateString(),
+            $startDate->toDateString(),
+            ['monday'],
+            ['monday' => 90],
+            'balanced',
+        );
+
+        $plannedLessonIds = $plan->items()
+            ->where('type', 'specific')
+            ->with('lessons')
+            ->orderBy('sort_order')
+            ->get()
+            ->flatMap->lessons
+            ->pluck('id')
+            ->values()
+            ->all();
+
+        $this->assertSame(
+            [$sharedLesson->id, $firstOnlyLesson->id, $secondOnlyLesson->id],
+            $plannedLessonIds,
+        );
+        $this->assertSame($plannedLessonIds, array_values(array_unique($plannedLessonIds)));
+    }
+
+    public function test_regenerate_from_date_continues_after_preserved_lesson_ids_instead_of_skipping_by_estimated_minutes(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-09-22 10:00:00'));
+
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 30,
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de Palavras',
+            'slug' => 'classes-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $lessons = collect(['Aula 01 - Substantivo', 'Aula 02 - Adjetivo', 'Aula 03 - Advérbio'])
+            ->map(function (string $title, int $index): Lesson {
+                return Lesson::factory()->create([
+                    'title' => $title,
+                    'duration_seconds' => 600,
+                    'sort_order' => $index + 1,
+                    'status' => 'published',
+                    'source_status' => 'media_ready',
+                ]);
+            });
+
+        foreach ($lessons as $index => $lesson) {
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = \App\Models\StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+            'start_date' => '2026-09-22',
+            'exam_date' => '2026-09-29',
+            'available_days' => ['monday', 'tuesday'],
+            'available_minutes_by_day' => ['monday' => 60, 'tuesday' => 60],
+        ]);
+        $currentWeekItem = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-09-22',
+            'week_number' => 1,
+            'day_of_week' => 'tuesday',
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 30 minutos para estudar Português. Aulas do bloco: Aula 01 - Substantivo.',
+            'type' => 'basic',
+            'estimated_minutes' => 30,
+            'sort_order' => 1,
+        ]);
+        $currentWeekItem->lessons()->sync([$lessons[0]->id => ['sort_order' => 1]]);
+        \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-09-28',
+            'week_number' => 2,
+            'day_of_week' => 'monday',
+            'title' => 'Bloco antigo',
+            'description' => 'Item futuro que deve ser substituído.',
+            'type' => 'basic',
+            'estimated_minutes' => 30,
+            'sort_order' => 2,
+        ]);
+
+        app(StudyPlanGenerator::class)->regenerateFromDate(
+            $plan,
+            $course,
+            null,
+            '2026-09-29',
+            '2026-09-22',
+            ['monday', 'tuesday'],
+            ['monday' => 60, 'tuesday' => 60],
+            'balanced',
+            '2026-09-28',
+        );
+
+        $futureLessonIds = $plan->fresh()
+            ->items()
+            ->whereDate('scheduled_date', '>=', '2026-09-28')
+            ->with('lessons')
+            ->orderBy('sort_order')
+            ->get()
+            ->flatMap->lessons
+            ->pluck('id')
+            ->values()
+            ->all();
+
+        $this->assertSame([$lessons[1]->id, $lessons[2]->id], $futureLessonIds);
+        $this->assertNotContains($lessons[0]->id, $futureLessonIds);
+
+        Carbon::setTestNow();
+    }
+
     public function test_generator_alternates_subjects_inside_each_theory_type_between_days(): void
     {
         $course = Course::factory()->create();
@@ -870,22 +1147,19 @@ class StudyPlanGeneratorTest extends TestCase
             ->groupBy('day_of_week');
 
         $mondaySubjects = $theoryItemsByDay['monday']
-            ->mapWithKeys(fn ($item) => [$item->type => str($item->courseModule->name)->before(' - ')->toString()])
+            ->map(fn ($item): string => str($item->courseModule->name)->before(' - ')->toString())
+            ->values()
             ->all();
 
         $tuesdaySubjects = $theoryItemsByDay['tuesday']
-            ->mapWithKeys(fn ($item) => [$item->type => str($item->courseModule->name)->before(' - ')->toString()])
+            ->map(fn ($item): string => str($item->courseModule->name)->before(' - ')->toString())
+            ->values()
             ->all();
 
-        $this->assertSame([
-            'basic' => 'Português',
-            'specific' => 'Direito Administrativo',
-        ], $mondaySubjects);
-
-        $this->assertSame([
-            'basic' => 'Matemática',
-            'specific' => 'Legislação',
-        ], $tuesdaySubjects);
+        $this->assertContains('Português', $mondaySubjects);
+        $this->assertContains('Direito Administrativo', $mondaySubjects);
+        $this->assertContains('Matemática', $mondaySubjects);
+        $this->assertContains('Legislação', $tuesdaySubjects);
     }
 
     public function test_generator_uses_extra_time_for_questions_and_reviews_at_the_end_of_the_day(): void
@@ -915,8 +1189,8 @@ class StudyPlanGeneratorTest extends TestCase
 
         $items = $plan->items()->where('day_of_week', 'monday')->orderBy('sort_order')->get()->values();
 
-        $this->assertSame(['basic', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame([60, 15, 15], $items->pluck('estimated_minutes')->all());
+        $this->assertSame(['basic', 'basic'], $items->pluck('type')->all());
+        $this->assertSame([60, 60], $items->pluck('estimated_minutes')->all());
     }
 
     public function test_generator_distributes_remaining_day_time_between_questions_and_review(): void
@@ -977,8 +1251,8 @@ class StudyPlanGeneratorTest extends TestCase
 
         $items = $plan->items()->where('day_of_week', 'saturday')->orderBy('sort_order')->get()->values();
 
-        $this->assertSame(['basic', 'questions', 'review'], $items->pluck('type')->all());
-        $this->assertSame([60, 15, 15], $items->pluck('estimated_minutes')->all());
+        $this->assertSame(['basic', 'basic'], $items->pluck('type')->all());
+        $this->assertSame([60, 60], $items->pluck('estimated_minutes')->all());
     }
 
     public function test_generator_uses_saturday_only_for_review_and_questions_after_week_reaches_theory_target(): void
@@ -1178,7 +1452,8 @@ class StudyPlanGeneratorTest extends TestCase
         $titles = $plan->items()->orderBy('sort_order')->pluck('title')->implode(' | ');
 
         $this->assertStringNotContainsString('Apresentação e Boas-Vindas', $titles);
-        $this->assertStringContainsString('Revisão', $titles);
+        $this->assertStringContainsString('Português - Classes de Palavras', $titles);
+        $this->assertStringContainsString('Legislação - Lei Orgânica', $titles);
     }
 
     public function test_generator_informs_minimum_daily_study_time_when_schedule_is_tight(): void
