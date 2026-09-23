@@ -194,8 +194,8 @@ class ListCourses extends ListRecords
                     }
 
                     Notification::make()
-                        ->title('Importação enviada para a fila.')
-                        ->body('Acompanhe em Operação > Importações de planilhas.')
+                        ->title('Importação iniciada em segundo plano.')
+                        ->body('Acompanhe o progresso no curso importado.')
                         ->success()
                         ->send();
                 }),

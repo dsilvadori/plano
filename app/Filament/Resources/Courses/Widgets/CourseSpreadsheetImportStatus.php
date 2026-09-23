@@ -6,7 +6,6 @@ use App\Models\Course;
 use App\Models\CourseSpreadsheetImportRun;
 use Filament\Widgets\Concerns\CanPoll;
 use Filament\Widgets\Widget;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Attributes\On;
 
@@ -53,10 +52,6 @@ class CourseSpreadsheetImportStatus extends Widget
 
         if (filled($run->stored_path) && ! Storage::disk('local')->exists($run->stored_path)) {
             return 'Esta importação não pode iniciar porque a planilha temporária não existe mais. Reenvie o arquivo.';
-        }
-
-        if (DB::table('jobs')->count() === 0) {
-            return 'Esta importação está marcada como fila, mas não há job pendente para o worker executar. Reenvie a planilha.';
         }
 
         return null;

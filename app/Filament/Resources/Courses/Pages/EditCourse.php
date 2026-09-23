@@ -271,7 +271,7 @@ class EditCourse extends EditRecord
                     }
 
                     Notification::make()
-                        ->title('Importação enviada para a fila.')
+                        ->title('Importação iniciada em segundo plano.')
                         ->body('Acompanhe o progresso nesta tela.')
                         ->success()
                         ->send();
