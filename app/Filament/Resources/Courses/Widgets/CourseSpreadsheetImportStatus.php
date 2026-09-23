@@ -35,7 +35,7 @@ class CourseSpreadsheetImportStatus extends Widget
             ->latest()
             ->first();
 
-        if ($run && in_array($run->status, ['queued', 'running'], true)) {
+        if ($run && in_array($run->status, ['queued', 'running', 'failed'], true)) {
             $run = app(CourseSpreadsheetImporter::class)->processImportRun($run);
         }
 

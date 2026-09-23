@@ -207,6 +207,35 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($run->course->modules()->where('name', 'Português')->exists());
     }
 
+    public function test_course_spreadsheet_import_run_recovers_when_structure_was_already_imported(): void
+    {
+        $course = app(CourseSpreadsheetImporter::class)->import(
+            base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx'),
+        );
+
+        $run = CourseSpreadsheetImportRun::query()->create([
+            'course_id' => $course->id,
+            'course_name' => $course->name,
+            'file_name' => 'oficial.xlsx',
+            'stored_path' => 'imports/courses/oficial.xlsx',
+            'status' => 'failed',
+            'total_modules' => 8,
+            'processed_modules' => 0,
+            'total_tracks' => 12,
+            'total_lessons' => 24,
+            'latest_message' => 'A planilha temporária não existe mais.',
+            'error_message' => 'Reenvie a planilha para criar uma nova importação.',
+        ]);
+
+        $run = app(CourseSpreadsheetImporter::class)->processImportRun($run);
+
+        $this->assertSame('finished', $run->status);
+        $this->assertSame(8, $run->processed_modules);
+        $this->assertSame('100% concluído', $run->progress_label);
+        $this->assertNull($run->error_message);
+        $this->assertTrue($run->summary['recovered_from_completed_structure']);
+    }
+
     public function test_parser_detects_complementary_module_type(): void
     {
         $parser = app(CourseSpreadsheetParser::class);

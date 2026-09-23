@@ -152,11 +152,21 @@ class CourseSpreadsheetImporter
     {
         $run = $run->fresh();
 
-        if (! $run || in_array($run->status, ['finished', 'failed'], true)) {
+        if (! $run || $run->status === 'finished') {
             return $run;
         }
 
+        if ($run->status === 'failed') {
+            return $this->recoverCompletedRunIfPossible($run);
+        }
+
         if (blank($run->stored_path) || ! Storage::disk('local')->exists($run->stored_path)) {
+            $recoveredRun = $this->recoverCompletedRunIfPossible($run);
+
+            if ($recoveredRun->status === 'finished') {
+                return $recoveredRun;
+            }
+
             $run->forceFill([
                 'status' => 'failed',
                 'latest_message' => 'A planilha temporária não existe mais.',
@@ -246,6 +256,54 @@ class CourseSpreadsheetImporter
         ])->save();
 
         Storage::disk('local')->delete($run->stored_path);
+
+        return $run->fresh();
+    }
+
+    protected function recoverCompletedRunIfPossible(CourseSpreadsheetImportRun $run): CourseSpreadsheetImportRun
+    {
+        if (! $run->course_id) {
+            return $run;
+        }
+
+        $course = Course::query()->find($run->course_id);
+
+        if (! $course) {
+            return $run;
+        }
+
+        $modules = $course->modules()->with('tracks.lessons')->get();
+        $moduleCount = $modules->reject(fn (CourseModule $module): bool => $module->shouldBeExcludedFromStudyPlan())->count();
+        $trackCount = $modules->sum(fn (CourseModule $module): int => $module->tracks->count());
+        $lessonCount = $modules
+            ->flatMap(fn (CourseModule $module) => $module->tracks->flatMap->lessons)
+            ->pluck('id')
+            ->unique()
+            ->count();
+
+        $hasExpectedStructure = ((int) $run->total_tracks <= 0 || $trackCount >= (int) $run->total_tracks)
+            && ((int) $run->total_lessons <= 0 || $lessonCount >= (int) $run->total_lessons)
+            && ((int) $run->total_modules <= 0 || $moduleCount >= (int) $run->total_modules);
+
+        if (! $hasExpectedStructure) {
+            return $run;
+        }
+
+        $run->forceFill([
+            'status' => 'finished',
+            'processed_modules' => max((int) $run->processed_modules, (int) $run->total_modules),
+            'latest_message' => 'Importação concluída.',
+            'error_message' => null,
+            'finished_at' => $run->finished_at ?: now(),
+            'summary' => [
+                'course_id' => $course->id,
+                'course_name' => $course->name,
+                'modules' => $moduleCount,
+                'tracks' => $trackCount,
+                'lessons' => $lessonCount,
+                'recovered_from_completed_structure' => true,
+            ],
+        ])->save();
 
         return $run->fresh();
     }
