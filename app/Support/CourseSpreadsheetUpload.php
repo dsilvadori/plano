@@ -13,7 +13,7 @@ class CourseSpreadsheetUpload
     {
         $storedPath = self::storedPathFromState($state);
 
-        if ($storedPath !== null) {
+        if ($storedPath !== null && Storage::disk($disk)->exists($storedPath)) {
             return Storage::disk($disk)->path($storedPath);
         }
 
@@ -26,7 +26,7 @@ class CourseSpreadsheetUpload
     {
         $storedPath = self::storedPathFromState($state);
 
-        if ($storedPath !== null) {
+        if ($storedPath !== null && Storage::disk($disk)->exists($storedPath)) {
             return $storedPath;
         }
 
@@ -36,24 +36,29 @@ class CourseSpreadsheetUpload
             return null;
         }
 
-        return $temporaryFile->storeAs(
+        $path = $temporaryFile->storeAs(
             $directory,
             self::storageFilename($temporaryFile),
             ['disk' => $disk],
         );
+
+        return is_string($path) && Storage::disk($disk)->exists($path) ? $path : null;
     }
 
     protected static function storedPathFromState(mixed $state): ?string
     {
         if (is_string($state) && $state !== '') {
-            return $state;
+            return self::isStoredUploadPath($state) ? $state : null;
         }
 
         if (! is_array($state)) {
             return null;
         }
 
-        $value = Arr::first(Arr::flatten($state), fn (mixed $value): bool => is_string($value) && $value !== '');
+        $value = Arr::first(
+            Arr::flatten($state),
+            fn (mixed $value): bool => is_string($value) && self::isStoredUploadPath($value),
+        );
 
         return is_string($value) ? $value : null;
     }
@@ -86,5 +91,12 @@ class CourseSpreadsheetUpload
         $suffix = now()->format('YmdHis').'-'.Str::random(8);
 
         return $safeBasename.'-'.$suffix.($extension ? '.'.$extension : '');
+    }
+
+    protected static function isStoredUploadPath(string $path): bool
+    {
+        return $path !== ''
+            && ! str_starts_with($path, 'livewire-file:')
+            && ! str_contains($path, '..');
     }
 }

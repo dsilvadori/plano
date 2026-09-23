@@ -3,6 +3,8 @@
 namespace App\Filament\Resources\Courses\Pages;
 
 use App\Filament\Resources\Courses\CourseResource;
+use App\Jobs\ImportCourseSpreadsheet;
+use App\Models\CourseSpreadsheetImportRun;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\LessonCourseLinker;
 use App\Support\CourseSpreadsheetUpload;
@@ -15,7 +17,6 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\HtmlString;
 use Throwable;
 
@@ -144,30 +145,59 @@ class ListCourses extends ListRecords
 
                     if ($path === null) {
                         Notification::make()
-                            ->title('Selecione uma planilha válida.')
+                            ->title('Não foi possível preservar a planilha.')
+                            ->body('Reenvie o arquivo e tente novamente. A importação só é enfileirada quando a planilha fica salva no storage local.')
                             ->danger()
                             ->send();
 
                         return;
                     }
 
-                    try {
-                        $course = $importer->import(Storage::disk('local')->path($path));
+                    $previewPath = self::resolveUploadedSpreadsheetPreviewPath($data['spreadsheet'] ?? null);
 
+                    if ($previewPath === null) {
                         Notification::make()
-                            ->title('Curso importado com sucesso.')
-                            ->body("Curso {$course->name} com {$course->modules()->count()} módulos.")
-                            ->success()
-                            ->send();
-                    } catch (Throwable $exception) {
-                        Notification::make()
-                            ->title('Não foi possível importar a planilha.')
-                            ->body($exception->getMessage())
+                            ->title('Não foi possível ler a planilha salva.')
+                            ->body('Reenvie o arquivo e tente novamente.')
                             ->danger()
                             ->send();
-                    } finally {
-                        Storage::disk('local')->delete($path);
+
+                        return;
                     }
+
+                    $preview = $importer->preview($previewPath);
+                    $run = CourseSpreadsheetImportRun::query()->create([
+                        'course_name' => $preview['payload']['course_name'] ?? $preview['course']['name'] ?? null,
+                        'file_name' => basename($path),
+                        'stored_path' => $path,
+                        'status' => 'queued',
+                        'total_modules' => (int) ($preview['modules']['total'] ?? 0),
+                        'processed_modules' => 0,
+                        'total_tracks' => self::countPreviewTracks($preview),
+                        'total_lessons' => (int) ($preview['lessons']['total'] ?? 0),
+                        'total_minutes' => (int) ($preview['total_minutes'] ?? 0),
+                        'latest_message' => 'Aguardando worker para iniciar a importação.',
+                    ]);
+
+                    try {
+                        ImportCourseSpreadsheet::dispatch($path, null, $run->id)
+                            ->onConnection('background');
+                    } catch (Throwable $exception) {
+                        $run->forceFill([
+                            'status' => 'failed',
+                            'latest_message' => 'Não foi possível enfileirar a importação.',
+                            'error_message' => $exception->getMessage(),
+                            'finished_at' => now(),
+                        ])->save();
+
+                        throw $exception;
+                    }
+
+                    Notification::make()
+                        ->title('Importação enviada para a fila.')
+                        ->body('Acompanhe em Operação > Importações de planilhas.')
+                        ->success()
+                        ->send();
                 }),
         ];
     }
@@ -196,6 +226,12 @@ class ListCourses extends ListRecords
     protected static function resolveUploadedSpreadsheetPreviewPath(mixed $state): ?string
     {
         return CourseSpreadsheetUpload::absolutePath($state);
+    }
+
+    protected static function countPreviewTracks(array $preview): int
+    {
+        return collect($preview['payload']['modules'] ?? [])
+            ->sum(fn (array $module): int => count($module['tracks'] ?? []));
     }
 
     protected static function formatSyncStats(array $stats): string

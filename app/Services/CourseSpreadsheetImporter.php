@@ -98,6 +98,26 @@ class CourseSpreadsheetImporter
         });
     }
 
+    public function importWithProgress(string $path, ?callable $progress = null): Course
+    {
+        $payload = $this->parser->parse($path);
+        $this->ensurePayloadHasImportableStructure($payload);
+        $this->resetImportCaches();
+
+        $course = DB::transaction(function () use ($payload) {
+            return Course::updateOrCreate(
+                ['slug' => $payload['course_slug']],
+                [
+                    'name' => $payload['course_name'],
+                    'description' => 'Curso importado por planilha.',
+                    'is_active' => true,
+                ],
+            );
+        });
+
+        return $this->importStructureWithProgress($course, $payload, $payload['study_track_name'], true, $progress);
+    }
+
     public function importInto(Course $course, string $path): Course
     {
         $payload = $this->parser->parse($path);
@@ -113,6 +133,17 @@ class CourseSpreadsheetImporter
 
             return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
+    }
+
+    public function importIntoWithProgress(Course $course, string $path, ?callable $progress = null): Course
+    {
+        $payload = $this->parser->parse($path);
+        $this->ensurePayloadHasImportableStructure($payload);
+        $this->resetImportCaches();
+
+        $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - '.$course->name;
+
+        return $this->importStructureWithProgress($course, $payload, $studyTrackName, true, $progress);
     }
 
     protected function ensurePayloadHasImportableStructure(array $payload): void
@@ -135,44 +166,87 @@ class CourseSpreadsheetImporter
         }
 
         foreach ($payload['modules'] as $moduleData) {
-            if ($this->shouldAttachCompoundTrackModules($moduleData)) {
-                $moduleData = $this->attachCompoundTrackModules($course, $moduleData, $moduleIds);
-            }
-
-            if (empty($moduleData['tracks']) && empty($moduleData['lessons'])) {
-                continue;
-            }
-
-            $module = $this->resolveModuleForImport($course, $moduleData);
-            $moduleTeacherName = filled($moduleData['teacher_name'] ?? null)
-                ? trim((string) $moduleData['teacher_name'])
-                : null;
-            $moduleTeacher = $moduleTeacherName ? $this->resolveTeacher($moduleTeacherName) : null;
-
-            $module->fill([
-                'course_id' => null,
-                'teacher_id' => $moduleTeacher?->id ?: $module->teacher_id,
-                'name' => $module->name ?: $moduleData['name'],
-                'type' => $moduleData['type'],
-                'teacher_name' => $moduleTeacherName ?: $module->teacher_name,
-                'lessons' => $moduleData['lessons'] ?? [],
-                'workload_minutes' => $moduleData['workload_minutes'],
-                'sort_order' => $moduleData['sort_order'],
-                'is_active' => true,
-            ]);
-            $module->save();
-            $module->courses()->syncWithoutDetaching([
-                $course->id => ['sort_order' => $moduleData['sort_order']],
-            ]);
-
-            $this->importTracks($course, $module, $moduleData);
-
-            $moduleIds[$module->id] = [
-                'weight' => 1,
-                'sort_order' => $moduleData['sort_order'],
-            ];
+            $this->importModuleData($course, $moduleData, $moduleIds);
         }
 
+        $this->syncOfficialStudyTrack($course, $studyTrackName, $moduleIds, $replaceTrackModules);
+        Course::ensureStartHereModuleIsAttached($course);
+    }
+
+    protected function importStructureWithProgress(Course $course, array $payload, string $studyTrackName, bool $replaceTrackModules = true, ?callable $progress = null): Course
+    {
+        $moduleIds = [];
+        $modules = array_values($payload['modules'] ?? []);
+        $totalModules = count($modules);
+
+        if ($replaceTrackModules) {
+            DB::transaction(fn () => $this->replaceExistingOfficialStructure($course, $studyTrackName));
+        }
+
+        foreach ($modules as $index => $moduleData) {
+            DB::transaction(fn () => $this->importModuleData($course, $moduleData, $moduleIds));
+
+            $progress?->__invoke([
+                'course_id' => $course->id,
+                'processed_modules' => $index + 1,
+                'total_modules' => $totalModules,
+                'message' => sprintf('Módulo %d/%d importado: %s.', $index + 1, $totalModules, (string) ($moduleData['name'] ?? '')),
+            ]);
+        }
+
+        DB::transaction(function () use ($course, $studyTrackName, $moduleIds, $replaceTrackModules): void {
+            $this->syncOfficialStudyTrack($course, $studyTrackName, $moduleIds, $replaceTrackModules);
+            Course::ensureStartHereModuleIsAttached($course);
+            CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
+        });
+
+        app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($course->fresh());
+
+        return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
+    }
+
+    protected function importModuleData(Course $course, array $moduleData, array &$moduleIds): void
+    {
+        if ($this->shouldAttachCompoundTrackModules($moduleData)) {
+            $moduleData = $this->attachCompoundTrackModules($course, $moduleData, $moduleIds);
+        }
+
+        if (empty($moduleData['tracks']) && empty($moduleData['lessons'])) {
+            return;
+        }
+
+        $module = $this->resolveModuleForImport($course, $moduleData);
+        $moduleTeacherName = filled($moduleData['teacher_name'] ?? null)
+            ? trim((string) $moduleData['teacher_name'])
+            : null;
+        $moduleTeacher = $moduleTeacherName ? $this->resolveTeacher($moduleTeacherName) : null;
+
+        $module->fill([
+            'course_id' => null,
+            'teacher_id' => $moduleTeacher?->id ?: $module->teacher_id,
+            'name' => $module->name ?: $moduleData['name'],
+            'type' => $moduleData['type'],
+            'teacher_name' => $moduleTeacherName ?: $module->teacher_name,
+            'lessons' => $moduleData['lessons'] ?? [],
+            'workload_minutes' => $moduleData['workload_minutes'],
+            'sort_order' => $moduleData['sort_order'],
+            'is_active' => true,
+        ]);
+        $module->save();
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => $moduleData['sort_order']],
+        ]);
+
+        $this->importTracks($course, $module, $moduleData);
+
+        $moduleIds[$module->id] = [
+            'weight' => 1,
+            'sort_order' => $moduleData['sort_order'],
+        ];
+    }
+
+    protected function syncOfficialStudyTrack(Course $course, string $studyTrackName, array $moduleIds, bool $replaceTrackModules): void
+    {
         $studyTrack = StudyTrack::updateOrCreate(
             [
                 'course_id' => $course->id,
@@ -189,8 +263,6 @@ class CourseSpreadsheetImporter
         } else {
             $studyTrack->modules()->syncWithoutDetaching($moduleIds);
         }
-
-        Course::ensureStartHereModuleIsAttached($course);
     }
 
     protected function shouldAttachCompoundTrackModules(array $moduleData): bool
@@ -326,18 +398,30 @@ class CourseSpreadsheetImporter
 
     protected function importTracks(Course $course, CourseModule $module, array $moduleData): void
     {
-        $tracks = $moduleData['tracks'] ?? [[
+        $tracks = array_values($moduleData['tracks'] ?? [[
             'name' => $moduleData['track_name'] ?? 'Aulas',
             'sort_order' => 1,
             'workload_minutes' => $moduleData['workload_minutes'] ?? 0,
             'lessons' => $moduleData['lessons'] ?? [],
-        ]];
+        ]]);
+        $trackSlugCounts = collect($tracks)
+            ->map(function (array $trackData, int $index): string {
+                $trackName = trim((string) ($trackData['name'] ?? '')) ?: 'Aulas';
+                $sortOrder = (int) ($trackData['sort_order'] ?? ($index + 1));
 
-        foreach (array_values($tracks) as $index => $trackData) {
+                return $this->trackSlug($trackName, $sortOrder);
+            })
+            ->countBy();
+        $usedTrackSlugs = [];
+
+        foreach ($tracks as $index => $trackData) {
             $trackName = trim((string) ($trackData['name'] ?? '')) ?: 'Aulas';
             $sortOrder = (int) ($trackData['sort_order'] ?? ($index + 1));
-            $slug = $this->trackSlug($trackName, $sortOrder);
-            $track = $this->resolveTrackForModule($module, $trackName, $slug)
+            $baseSlug = $this->trackSlug($trackName, $sortOrder);
+            $hasDuplicateTrackSlug = (int) ($trackSlugCounts[$baseSlug] ?? 0) > 1;
+            $slug = $this->uniqueTrackSlug($baseSlug, $sortOrder, $usedTrackSlugs, $hasDuplicateTrackSlug);
+            $usedTrackSlugs[$slug] = true;
+            $track = $this->resolveTrackForModule($module, $trackName, $slug, ! $hasDuplicateTrackSlug)
                 ?? new CourseModuleTrack([
                     'course_module_id' => $module->id,
                     'slug' => $slug,
@@ -673,7 +757,20 @@ class CourseSpreadsheetImporter
         return $moduleLessons !== [] ? $moduleLessons : ($trackData['lessons'] ?? []);
     }
 
-    protected function resolveTrackForModule(CourseModule $module, string $trackName, string $slug): ?CourseModuleTrack
+    protected function uniqueTrackSlug(string $baseSlug, int $sortOrder, array $usedTrackSlugs, bool $forceSortOrderSuffix = false): string
+    {
+        $slug = $forceSortOrderSuffix ? $baseSlug.'-'.$sortOrder : $baseSlug;
+        $attempt = 2;
+
+        while (isset($usedTrackSlugs[$slug])) {
+            $slug = $baseSlug.'-'.$sortOrder.'-'.$attempt;
+            $attempt++;
+        }
+
+        return $slug;
+    }
+
+    protected function resolveTrackForModule(CourseModule $module, string $trackName, string $slug, bool $allowNameFallback = true): ?CourseModuleTrack
     {
         $track = $module->tracks()
             ->where('slug', $slug)
@@ -681,6 +778,10 @@ class CourseSpreadsheetImporter
 
         if ($track) {
             return $track;
+        }
+
+        if (! $allowNameFallback) {
+            return null;
         }
 
         $normalizedName = $this->normalizeName($trackName);
@@ -710,6 +811,7 @@ class CourseSpreadsheetImporter
         if ($track) {
             $lesson = $track->lessons()
                 ->where('lessons.slug', $slug)
+                ->when($excludeLessonIds !== [], fn ($query) => $query->whereNotIn('lessons.id', $excludeLessonIds))
                 ->first();
 
             if ($lesson && $this->lessonHasReadyMedia($lesson)) {
@@ -721,6 +823,7 @@ class CourseSpreadsheetImporter
 
         $lesson = $module->onlineLessons()
             ->where('lessons.slug', $slug)
+            ->when($excludeLessonIds !== [], fn ($query) => $query->whereNotIn('lessons.id', $excludeLessonIds))
             ->first();
 
         if ($lesson && $this->lessonHasReadyMedia($lesson)) {

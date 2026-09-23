@@ -3,10 +3,12 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\Courses\Pages\EditCourse;
+use App\Jobs\ImportCourseSpreadsheet;
 use App\Jobs\RefreshActiveCourseStudyPlans;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
+use App\Models\CourseSpreadsheetImportRun;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
 use App\Models\Teacher;
@@ -99,6 +101,73 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertStringStartsWith('imports/courses/oficial-de-administracao-com-aba-', $storedPath);
         $this->assertTrue(Storage::disk('local')->exists($storedPath));
         $this->assertFalse(Storage::disk('local')->exists('livewire-tmp/curso.xlsx'));
+    }
+
+    public function test_course_spreadsheet_import_job_imports_stored_file_and_removes_it_afterwards(): void
+    {
+        Storage::fake('local');
+        Storage::disk('local')->put(
+            'imports/courses/oficial.xlsx',
+            file_get_contents(base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')),
+        );
+
+        app()->call([new ImportCourseSpreadsheet('imports/courses/oficial.xlsx'), 'handle']);
+
+        $this->assertDatabaseHas('courses', [
+            'slug' => 'oficial-de-administracao',
+            'name' => 'Oficial de Administração',
+        ]);
+        $this->assertFalse(Storage::disk('local')->exists('imports/courses/oficial.xlsx'));
+    }
+
+    public function test_course_spreadsheet_import_job_can_import_into_existing_course(): void
+    {
+        Storage::fake('local');
+        Storage::disk('local')->put(
+            'imports/courses/oficial.xlsx',
+            file_get_contents(base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')),
+        );
+        $course = Course::factory()->create([
+            'name' => 'Curso Existente',
+            'slug' => 'curso-existente',
+        ]);
+
+        app()->call([new ImportCourseSpreadsheet('imports/courses/oficial.xlsx', $course->id), 'handle']);
+
+        $this->assertTrue($course->fresh()->modules()->where('name', 'Português')->exists());
+        $this->assertSame('Curso Existente', $course->fresh()->name);
+        $this->assertFalse(Storage::disk('local')->exists('imports/courses/oficial.xlsx'));
+    }
+
+    public function test_course_spreadsheet_import_job_updates_import_run_status_and_duration(): void
+    {
+        Storage::fake('local');
+        Storage::disk('local')->put(
+            'imports/courses/oficial.xlsx',
+            file_get_contents(base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')),
+        );
+        $run = CourseSpreadsheetImportRun::query()->create([
+            'course_name' => 'Oficial de Administração',
+            'file_name' => 'oficial.xlsx',
+            'stored_path' => 'imports/courses/oficial.xlsx',
+            'status' => 'queued',
+            'total_modules' => 8,
+            'total_lessons' => 24,
+            'latest_message' => 'Aguardando worker para iniciar a importação.',
+        ]);
+
+        app()->call([new ImportCourseSpreadsheet('imports/courses/oficial.xlsx', null, $run->id), 'handle']);
+
+        $run->refresh();
+
+        $this->assertSame('finished', $run->status);
+        $this->assertSame('Importação concluída.', $run->latest_message);
+        $this->assertNotNull($run->course_id);
+        $this->assertNotNull($run->started_at);
+        $this->assertNotNull($run->finished_at);
+        $this->assertSame('100% (8/8 módulos)', $run->progress_label);
+        $this->assertIsArray($run->summary);
+        $this->assertSame('Oficial de Administração', $run->summary['course_name']);
     }
 
     public function test_parser_detects_complementary_module_type(): void
@@ -1190,6 +1259,75 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($importedModule->onlineLessons()->whereKey($readyLesson->id)->exists());
         $this->assertTrue($importedTrack->lessons()->whereKey($readyLesson->id)->exists());
         $this->assertFalse($importedTrack->lessons()->whereKey($placeholder->id)->exists());
+    }
+
+    public function test_spreadsheet_import_preserves_repeated_track_names_and_repeated_lesson_titles(): void
+    {
+        $course = Course::factory()->create(['name' => 'Curso Curitiba', 'slug' => 'curso-curitiba']);
+        $payload = [
+            'modules' => [[
+                'name' => 'Conhecimentos Específicos',
+                'type' => 'specific',
+                'sort_order' => 1,
+                'workload_minutes' => 75,
+                'lessons' => [],
+                'tracks' => [
+                    [
+                        'name' => 'Administração Pública',
+                        'sort_order' => 1,
+                        'workload_minutes' => 30,
+                        'lessons' => [
+                            ['name' => 'Administração Pública - Parte 1', 'minutes' => 30, 'sort_order' => 1],
+                        ],
+                    ],
+                    [
+                        'name' => 'Administração Pública',
+                        'sort_order' => 2,
+                        'workload_minutes' => 45,
+                        'lessons' => [
+                            ['name' => 'Administração Pública - Parte 2', 'minutes' => 45, 'sort_order' => 1],
+                        ],
+                    ],
+                ],
+            ], [
+                'name' => 'Português',
+                'type' => 'basic',
+                'sort_order' => 2,
+                'workload_minutes' => 34,
+                'lessons' => [],
+                'tracks' => [[
+                    'name' => 'Interpretação',
+                    'sort_order' => 1,
+                    'workload_minutes' => 34,
+                    'lessons' => [
+                        ['name' => 'Interpretação - Figuras de Linguagem', 'minutes' => 11, 'sort_order' => 1],
+                        ['name' => 'Interpretação - Figuras de Linguagem', 'minutes' => 8, 'sort_order' => 2],
+                        ['name' => 'Interpretação - Figuras de Linguagem', 'minutes' => 15, 'sort_order' => 3],
+                    ],
+                ]],
+            ]],
+        ];
+
+        $method = new \ReflectionMethod(CourseSpreadsheetImporter::class, 'importStructure');
+        $method->setAccessible(true);
+        $method->invoke(app(CourseSpreadsheetImporter::class), $course, $payload, 'Trilha Oficial - Curso Curitiba');
+
+        $specificModule = $course->modules()->where('name', 'Conhecimentos Específicos')->firstOrFail();
+        $repeatedTracks = $specificModule->tracks()->where('name', 'Administração Pública')->orderBy('sort_order')->get();
+
+        $this->assertCount(2, $repeatedTracks);
+        $this->assertSame(['administracao-publica-1', 'administracao-publica-2'], $repeatedTracks->pluck('slug')->all());
+        $this->assertSame([1, 1], $repeatedTracks->map(fn (CourseModuleTrack $track): int => $track->lessons()->count())->all());
+
+        $interpretationTrack = $course->modules()
+            ->where('name', 'Português')
+            ->firstOrFail()
+            ->tracks()
+            ->where('name', 'Interpretação')
+            ->firstOrFail();
+
+        $this->assertSame(3, $interpretationTrack->lessons()->count());
+        $this->assertSame([11, 8, 15], $interpretationTrack->lessons()->get()->map(fn (Lesson $lesson): int => (int) $lesson->duration_minutes)->all());
     }
 
     public function test_catalog_detach_course_bindings_preserves_legacy_direct_links_in_pivots(): void
