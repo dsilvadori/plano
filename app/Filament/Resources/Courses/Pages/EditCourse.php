@@ -4,7 +4,6 @@ namespace App\Filament\Resources\Courses\Pages;
 
 use App\Filament\Resources\Courses\CourseResource;
 use App\Filament\Resources\Courses\Widgets\CourseSpreadsheetImportStatus;
-use App\Jobs\ImportCourseSpreadsheet;
 use App\Models\CourseSpreadsheetImportRun;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\LessonCourseLinker;
@@ -22,7 +21,6 @@ use Filament\Schemas\Components\Utilities\Set;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\HtmlString;
-use Throwable;
 
 class EditCourse extends EditRecord
 {
@@ -245,7 +243,7 @@ class EditCourse extends EditRecord
                         'total_tracks' => self::countPreviewTracks($preview),
                         'total_lessons' => (int) ($preview['lessons']['total'] ?? 0),
                         'total_minutes' => (int) ($preview['total_minutes'] ?? 0),
-                        'latest_message' => 'Aguardando worker para iniciar a importação.',
+                        'latest_message' => 'Importação na fila.',
                     ]);
 
                     self::logCourseDebug('import.queued', [
@@ -256,22 +254,8 @@ class EditCourse extends EditRecord
                         'run_id' => $run->id,
                     ]);
 
-                    try {
-                        ImportCourseSpreadsheet::dispatch($path, (int) $this->record->id, $run->id)
-                            ->onConnection('background');
-                    } catch (Throwable $exception) {
-                        $run->forceFill([
-                            'status' => 'failed',
-                            'latest_message' => 'Não foi possível enfileirar a importação.',
-                            'error_message' => $exception->getMessage(),
-                            'finished_at' => now(),
-                        ])->save();
-
-                        throw $exception;
-                    }
-
                     Notification::make()
-                        ->title('Importação iniciada em segundo plano.')
+                        ->title('Importação iniciada.')
                         ->body('Acompanhe o progresso nesta tela.')
                         ->success()
                         ->send();

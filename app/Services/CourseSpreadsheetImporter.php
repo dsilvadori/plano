@@ -7,12 +7,14 @@ use App\Jobs\RefreshActiveCourseStudyPlans;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
+use App\Models\CourseSpreadsheetImportRun;
 use App\Models\Lesson;
 use App\Models\StudyTrack;
 use App\Models\Teacher;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -144,6 +146,151 @@ class CourseSpreadsheetImporter
         $studyTrackName = $this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - '.$course->name;
 
         return $this->importStructureWithProgress($course, $payload, $studyTrackName, true, $progress);
+    }
+
+    public function processImportRun(CourseSpreadsheetImportRun $run, int $moduleLimit = 1): CourseSpreadsheetImportRun
+    {
+        $run = $run->fresh();
+
+        if (! $run || in_array($run->status, ['finished', 'failed'], true)) {
+            return $run;
+        }
+
+        if (blank($run->stored_path) || ! Storage::disk('local')->exists($run->stored_path)) {
+            $run->forceFill([
+                'status' => 'failed',
+                'latest_message' => 'A planilha temporária não existe mais.',
+                'error_message' => 'Reenvie a planilha para criar uma nova importação.',
+                'finished_at' => now(),
+            ])->save();
+
+            return $run->fresh();
+        }
+
+        $this->resetImportCaches();
+
+        $state = $run->summary['state'] ?? null;
+
+        if (! is_array($state)) {
+            $state = $this->startImportRun($run);
+            $run->refresh();
+        } else {
+            $this->removedStructureModuleIds = array_values($state['removed_structure_module_ids'] ?? []);
+        }
+
+        $payload = $state['payload'] ?? null;
+
+        if (! is_array($payload)) {
+            throw new RuntimeException('O estado da importação está inválido. Reenvie a planilha.');
+        }
+
+        $course = Course::query()->findOrFail($run->course_id);
+        $modules = array_values($payload['modules'] ?? []);
+        $totalModules = count($modules);
+        $processedModules = min((int) $run->processed_modules, $totalModules);
+        $moduleIds = $state['module_ids'] ?? [];
+        $limit = max(1, $moduleLimit);
+
+        for ($index = $processedModules; $index < $totalModules && $index < $processedModules + $limit; $index++) {
+            $moduleData = $modules[$index];
+
+            DB::transaction(fn () => $this->importModuleData($course, $moduleData, $moduleIds));
+
+            $state['module_ids'] = $moduleIds;
+            $run->forceFill([
+                'status' => 'running',
+                'processed_modules' => $index + 1,
+                'latest_message' => sprintf('Módulo %d/%d importado: %s.', $index + 1, $totalModules, (string) ($moduleData['name'] ?? '')),
+                'summary' => ['state' => $state],
+            ])->save();
+        }
+
+        if ((int) $run->processed_modules < $totalModules) {
+            return $run->fresh();
+        }
+
+        $studyTrackName = (string) ($state['study_track_name'] ?? $payload['study_track_name'] ?? 'Trilha Oficial - '.$course->name);
+        $replaceTrackModules = (bool) ($state['replace_track_modules'] ?? true);
+
+        DB::transaction(function () use ($course, $studyTrackName, $moduleIds, $replaceTrackModules): void {
+            $this->syncOfficialStudyTrack($course, $studyTrackName, $moduleIds, $replaceTrackModules);
+            Course::ensureStartHereModuleIsAttached($course);
+            CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
+        });
+
+        app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($course->fresh());
+
+        $modules = $course->modules()->with('tracks.lessons')->get();
+        $moduleCount = $modules->count();
+        $trackCount = $modules->sum(fn (CourseModule $module): int => $module->tracks->count());
+        $lessonCount = $modules
+            ->flatMap(fn (CourseModule $module) => $module->tracks->flatMap->lessons)
+            ->pluck('id')
+            ->unique()
+            ->count();
+
+        $run->forceFill([
+            'status' => 'finished',
+            'course_name' => $run->course_name ?: $course->name,
+            'processed_modules' => $totalModules,
+            'latest_message' => 'Importação concluída.',
+            'error_message' => null,
+            'finished_at' => now(),
+            'summary' => [
+                'course_id' => $course->id,
+                'course_name' => $course->name,
+                'modules' => $moduleCount,
+                'tracks' => $trackCount,
+                'lessons' => $lessonCount,
+            ],
+        ])->save();
+
+        Storage::disk('local')->delete($run->stored_path);
+
+        return $run->fresh();
+    }
+
+    protected function startImportRun(CourseSpreadsheetImportRun $run): array
+    {
+        $payload = $this->parser->parse(Storage::disk('local')->path($run->stored_path));
+        $this->ensurePayloadHasImportableStructure($payload);
+
+        $course = $run->course_id
+            ? Course::query()->findOrFail($run->course_id)
+            : DB::transaction(fn () => Course::updateOrCreate(
+                ['slug' => $payload['course_slug']],
+                [
+                    'name' => $payload['course_name'],
+                    'description' => 'Curso importado por planilha.',
+                    'is_active' => true,
+                ],
+            ));
+
+        $studyTrackName = $run->course_id
+            ? ($this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - '.$course->name)
+            : $payload['study_track_name'];
+
+        DB::transaction(fn () => $this->replaceExistingOfficialStructure($course, $studyTrackName));
+
+        $state = [
+            'payload' => $payload,
+            'study_track_name' => $studyTrackName,
+            'replace_track_modules' => true,
+            'module_ids' => [],
+            'removed_structure_module_ids' => $this->removedStructureModuleIds,
+        ];
+
+        $run->forceFill([
+            'course_id' => $course->id,
+            'course_name' => $run->course_name ?: $course->name,
+            'status' => 'running',
+            'latest_message' => 'Importação em andamento.',
+            'error_message' => null,
+            'started_at' => $run->started_at ?: now(),
+            'summary' => ['state' => $state],
+        ])->save();
+
+        return $state;
     }
 
     protected function ensurePayloadHasImportableStructure(array $payload): void

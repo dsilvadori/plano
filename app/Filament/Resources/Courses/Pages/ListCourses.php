@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\Courses\Pages;
 
 use App\Filament\Resources\Courses\CourseResource;
-use App\Jobs\ImportCourseSpreadsheet;
 use App\Models\CourseSpreadsheetImportRun;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\LessonCourseLinker;
@@ -18,7 +17,6 @@ use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Illuminate\Support\HtmlString;
-use Throwable;
 
 class ListCourses extends ListRecords
 {
@@ -176,26 +174,12 @@ class ListCourses extends ListRecords
                         'total_tracks' => self::countPreviewTracks($preview),
                         'total_lessons' => (int) ($preview['lessons']['total'] ?? 0),
                         'total_minutes' => (int) ($preview['total_minutes'] ?? 0),
-                        'latest_message' => 'Aguardando worker para iniciar a importação.',
+                        'latest_message' => 'Importação na fila.',
                     ]);
 
-                    try {
-                        ImportCourseSpreadsheet::dispatch($path, null, $run->id)
-                            ->onConnection('background');
-                    } catch (Throwable $exception) {
-                        $run->forceFill([
-                            'status' => 'failed',
-                            'latest_message' => 'Não foi possível enfileirar a importação.',
-                            'error_message' => $exception->getMessage(),
-                            'finished_at' => now(),
-                        ])->save();
-
-                        throw $exception;
-                    }
-
                     Notification::make()
-                        ->title('Importação iniciada em segundo plano.')
-                        ->body('Acompanhe o progresso no curso importado.')
+                        ->title('Importação iniciada.')
+                        ->body('Acompanhe o progresso em Importações de Planilhas.')
                         ->success()
                         ->send();
                 }),

@@ -2,6 +2,8 @@
 
 namespace App\Filament\Resources\CourseSpreadsheetImportRuns\Tables;
 
+use App\Models\CourseSpreadsheetImportRun;
+use App\Services\CourseSpreadsheetImporter;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -23,6 +25,13 @@ class CourseSpreadsheetImportRunsTable
                 TextColumn::make('file_name')->label('Arquivo')->limit(32)->searchable(),
                 TextColumn::make('status')
                     ->label('Status')
+                    ->state(function (CourseSpreadsheetImportRun $record): string {
+                        if (in_array($record->status, ['queued', 'running'], true)) {
+                            $record = app(CourseSpreadsheetImporter::class)->processImportRun($record);
+                        }
+
+                        return (string) $record->status;
+                    })
                     ->badge()
                     ->color(fn (string $state): string => match ($state) {
                         'queued' => 'gray',

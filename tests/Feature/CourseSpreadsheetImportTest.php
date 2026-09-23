@@ -153,7 +153,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'status' => 'queued',
             'total_modules' => 8,
             'total_lessons' => 24,
-            'latest_message' => 'Aguardando worker para iniciar a importação.',
+            'latest_message' => 'Importação na fila.',
         ]);
 
         app()->call([new ImportCourseSpreadsheet('imports/courses/oficial.xlsx', null, $run->id), 'handle']);
@@ -165,9 +165,46 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertNotNull($run->course_id);
         $this->assertNotNull($run->started_at);
         $this->assertNotNull($run->finished_at);
-        $this->assertSame('100% (8/8 módulos)', $run->progress_label);
+        $this->assertSame('100% concluído', $run->progress_label);
         $this->assertIsArray($run->summary);
         $this->assertSame('Oficial de Administração', $run->summary['course_name']);
+    }
+
+    public function test_course_spreadsheet_import_run_can_be_processed_in_chunks(): void
+    {
+        Storage::fake('local');
+        Storage::disk('local')->put(
+            'imports/courses/oficial.xlsx',
+            file_get_contents(base_path('tests/Fixtures/Imports/Oficial de Administração com aba.xlsx')),
+        );
+
+        $preview = app(CourseSpreadsheetImporter::class)->preview(Storage::disk('local')->path('imports/courses/oficial.xlsx'));
+        $run = CourseSpreadsheetImportRun::query()->create([
+            'course_name' => 'Oficial de Administração',
+            'file_name' => 'oficial.xlsx',
+            'stored_path' => 'imports/courses/oficial.xlsx',
+            'status' => 'queued',
+            'total_modules' => (int) ($preview['modules']['total'] ?? 0),
+            'total_lessons' => (int) ($preview['lessons']['total'] ?? 0),
+            'latest_message' => 'Importação na fila.',
+        ]);
+
+        $importer = app(CourseSpreadsheetImporter::class);
+        $run = $importer->processImportRun($run);
+
+        $this->assertSame('running', $run->status);
+        $this->assertSame(1, $run->processed_modules);
+        $this->assertNotNull($run->course_id);
+        $this->assertTrue(Storage::disk('local')->exists('imports/courses/oficial.xlsx'));
+
+        while ($run->status !== 'finished') {
+            $run = $importer->processImportRun($run);
+        }
+
+        $this->assertSame('finished', $run->status);
+        $this->assertSame('100% concluído', $run->progress_label);
+        $this->assertFalse(Storage::disk('local')->exists('imports/courses/oficial.xlsx'));
+        $this->assertTrue($run->course->modules()->where('name', 'Português')->exists());
     }
 
     public function test_parser_detects_complementary_module_type(): void

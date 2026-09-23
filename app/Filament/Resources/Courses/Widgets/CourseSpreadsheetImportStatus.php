@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Courses\Widgets;
 
 use App\Models\Course;
 use App\Models\CourseSpreadsheetImportRun;
+use App\Services\CourseSpreadsheetImporter;
 use Filament\Widgets\Concerns\CanPoll;
 use Filament\Widgets\Widget;
 use Illuminate\Support\Facades\Storage;
@@ -33,6 +34,10 @@ class CourseSpreadsheetImportStatus extends Widget
             ->where('course_id', $this->record->id)
             ->latest()
             ->first();
+
+        if ($run && in_array($run->status, ['queued', 'running'], true)) {
+            $run = app(CourseSpreadsheetImporter::class)->processImportRun($run);
+        }
 
         $problemMessage = $run ? $this->problemMessage($run) : null;
 
