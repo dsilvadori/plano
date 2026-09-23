@@ -73,6 +73,20 @@ class PandaTutorActivator
     {
         $pullzoneName = $this->pandaPullzoneName($lesson);
         $videoExternalId = $this->pandaVideoExternalId($lesson);
+        $knownAssistantId = data_get($lesson->metadata, 'panda_ai.tutor_assistant_id');
+
+        if (filled($knownAssistantId)) {
+            $assistantResult = $this->syncAssistantAvailability(
+                $lesson,
+                (string) ($pullzoneName ?: ''),
+                (string) ($videoExternalId ?: ''),
+                (string) $knownAssistantId,
+            );
+
+            if ($assistantResult['known']) {
+                return $assistantResult;
+            }
+        }
 
         if (! $pullzoneName || ! $videoExternalId) {
             throw new RuntimeException('Esta aula não tem dados de player suficientes para localizar o Tutor IA no Panda.');
@@ -81,14 +95,13 @@ class PandaTutorActivator
         $config = $this->panda->playerConfig($pullzoneName, $videoExternalId) ?? [];
         $assistantId = data_get($config, 'assistant_id');
         $available = filled($assistantId);
-        $knownAssistantId = data_get($lesson->metadata, 'panda_ai.tutor_assistant_id');
 
-        if (filled($knownAssistantId) || filled($assistantId)) {
+        if (filled($assistantId)) {
             $assistantResult = $this->syncAssistantAvailability(
                 $lesson,
                 $pullzoneName,
                 $videoExternalId,
-                (string) ($knownAssistantId ?: $assistantId),
+                (string) $assistantId,
             );
 
             if ($assistantResult['known']) {
@@ -191,7 +204,7 @@ class PandaTutorActivator
 
             if (
                 (filled($pandaVideoId) && (string) data_get($video, 'id') === (string) $pandaVideoId)
-                || (string) data_get($video, 'video_external_id') === $videoExternalId
+                || (filled($videoExternalId) && (string) data_get($video, 'video_external_id') === $videoExternalId)
             ) {
                 return $video;
             }

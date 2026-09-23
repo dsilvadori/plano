@@ -166,6 +166,44 @@ class PandaAiResourceActivatorTest extends TestCase
         Bus::assertDispatched(SyncPandaAiArtifacts::class, fn (SyncPandaAiArtifacts $job): bool => $job->lessonId === $lesson->id);
     }
 
+    public function test_reprocess_syncs_pending_generation_instead_of_requesting_again(): void
+    {
+        Bus::fake();
+
+        $lesson = Lesson::factory()->create([
+            'panda_video_id' => 'video-123',
+            'panda_player_url' => 'https://player-vz-abc.pandavideo.com.br/embed/?v=external-123',
+            'metadata' => [
+                'payload' => [
+                    'pullzone_name' => 'vz-abc',
+                ],
+                'panda_ai' => [
+                    'last_request_status' => 'requested',
+                    'last_payload_status' => 'regenerating',
+                ],
+            ],
+        ]);
+
+        $panda = Mockery::mock(PandaVideoClient::class);
+        $panda->shouldReceive('aiPackage')
+            ->once()
+            ->with('vz-abc', 'external-123')
+            ->andReturn([
+                'summary' => 'Resumo em portugues',
+                'quiz' => ['questions' => [['title' => 'Questao 1']]],
+                'mindmap' => ['nodes' => [['label' => 'Aula']]],
+            ]);
+        $panda->shouldNotReceive('createAiPackage');
+
+        $result = app(PandaAiResourceActivator::class, ['panda' => $panda])->reprocess($lesson);
+
+        $this->assertFalse($result['requested']);
+        $this->assertSame(3, $result['created_artifacts']);
+        $this->assertSame(3, AiArtifact::query()->where('source_id', $lesson->id)->whereIn('artifact_type', ['summary', 'quiz', 'mindmap'])->count());
+
+        Bus::assertNotDispatched(SyncPandaAiArtifacts::class);
+    }
+
     public function test_clear_cached_artifacts_removes_panda_artifacts_and_cache_keys(): void
     {
         $lesson = Lesson::factory()->create([

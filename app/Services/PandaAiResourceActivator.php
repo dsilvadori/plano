@@ -135,6 +135,10 @@ class PandaAiResourceActivator
 
     public function reprocess(Lesson $lesson): array
     {
+        if ($this->hasPendingGeneration($lesson)) {
+            return $this->generate($lesson);
+        }
+
         return $this->activate($lesson, forceRequest: true, replaceExisting: true);
     }
 

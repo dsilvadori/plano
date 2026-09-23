@@ -828,7 +828,10 @@ class LessonResource extends Resource
 
     public static function hasPandaVideo(Lesson $lesson): bool
     {
-        return filled($lesson->panda_video_id) || filled(data_get($lesson->metadata, 'payload.id'));
+        return filled($lesson->panda_video_id)
+            || filled($lesson->panda_embed_url)
+            || filled($lesson->panda_player_url)
+            || filled(data_get($lesson->metadata, 'payload.id'));
     }
 
     public static function aiResourcesStatus(Lesson $lesson): string

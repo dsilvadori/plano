@@ -153,10 +153,7 @@ class PandaTutorActivatorTest extends TestCase
         ]);
 
         $panda = Mockery::mock(PandaVideoClient::class);
-        $panda->shouldReceive('playerConfig')
-            ->once()
-            ->with('vz-abc', 'external-123')
-            ->andReturn([]);
+        $panda->shouldNotReceive('playerConfig');
         $panda->shouldReceive('tutorAssistant')
             ->once()
             ->with('assistant-123')
@@ -206,10 +203,7 @@ class PandaTutorActivatorTest extends TestCase
         ]);
 
         $panda = Mockery::mock(PandaVideoClient::class);
-        $panda->shouldReceive('playerConfig')
-            ->once()
-            ->with('vz-abc', 'external-123')
-            ->andReturn([]);
+        $panda->shouldNotReceive('playerConfig');
         $panda->shouldReceive('tutorAssistant')
             ->once()
             ->with('assistant-123')
@@ -239,5 +233,43 @@ class PandaTutorActivatorTest extends TestCase
         $this->assertSame('assistant-123', $result['assistant_id']);
         $this->assertFalse((bool) data_get($lesson->metadata, 'panda_ai.tutor_available'));
         $this->assertSame('processing', data_get($lesson->metadata, 'panda_ai.tutor_status'));
+    }
+
+    public function test_it_syncs_known_assistant_without_player_config_metadata(): void
+    {
+        $lesson = Lesson::factory()->create([
+            'panda_video_id' => 'video-123',
+            'metadata' => [
+                'panda_ai' => [
+                    'tutor_assistant_id' => 'assistant-123',
+                    'tutor_status' => 'requested',
+                    'tutor_available' => false,
+                ],
+            ],
+        ]);
+
+        $panda = Mockery::mock(PandaVideoClient::class);
+        $panda->shouldNotReceive('playerConfig');
+        $panda->shouldReceive('tutorAssistant')
+            ->once()
+            ->with('assistant-123')
+            ->andReturn([
+                'id' => 'assistant-123',
+                'status' => 'ready',
+                'videos' => [
+                    ['id' => 'video-123'],
+                ],
+            ]);
+        $panda->shouldReceive('updateTutorChatVisibility')
+            ->once()
+            ->with('assistant-123', 'video-123', true)
+            ->andReturn(['ok' => true]);
+
+        $result = app(PandaTutorActivator::class, ['panda' => $panda])->syncAvailability($lesson);
+
+        $lesson->refresh();
+
+        $this->assertTrue($result['available']);
+        $this->assertSame('active', data_get($lesson->metadata, 'panda_ai.tutor_status'));
     }
 }
