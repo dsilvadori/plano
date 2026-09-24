@@ -26,6 +26,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\Storage;
 
 class QuestionResource extends Resource
 {
@@ -88,10 +89,36 @@ class QuestionResource extends Resource
                 ->label('Imagens da questão')
                 ->disk('public')
                 ->directory('question-images')
+                ->visibility('public')
                 ->multiple()
                 ->image()
                 ->imageEditor()
                 ->reorderable()
+                ->getUploadedFileUsing(function (string $file, string|array|null $storedFileNames): ?array {
+                    if (str_starts_with($file, 'http://') || str_starts_with($file, 'https://') || str_starts_with($file, '//')) {
+                        return [
+                            'name' => basename(parse_url($file, PHP_URL_PATH) ?: $file),
+                            'size' => 0,
+                            'type' => null,
+                            'url' => $file,
+                        ];
+                    }
+
+                    $path = str_starts_with($file, '/storage/')
+                        ? substr($file, strlen('/storage/'))
+                        : ltrim($file, '/');
+
+                    if (! Storage::disk('public')->exists($path)) {
+                        return null;
+                    }
+
+                    return [
+                        'name' => (is_array($storedFileNames) ? ($storedFileNames[$file] ?? $storedFileNames[$path] ?? null) : $storedFileNames) ?? basename($path),
+                        'size' => Storage::disk('public')->size($path),
+                        'type' => Storage::disk('public')->mimeType($path),
+                        'url' => url('/media/public/'.$path),
+                    ];
+                })
                 ->helperText('Use para tirinhas, mapas, tabelas em imagem ou qualquer figura necessária para interpretar a questão.')
                 ->columnSpanFull(),
             Select::make('metadata.image_position')

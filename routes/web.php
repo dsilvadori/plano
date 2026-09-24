@@ -4,6 +4,7 @@ use App\Http\Controllers\Admin\UserImpersonationController;
 use App\Http\Controllers\CourseCatalogController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\PublicStorageController;
 use App\Http\Controllers\QuestionBankController;
 use App\Http\Controllers\StudyPlanController;
 use App\Http\Controllers\ThumbnailController;
@@ -33,6 +34,10 @@ Route::middleware('auth')->group(function () {
     Route::get('/media/thumbnails/{path}', ThumbnailController::class)
         ->where('path', '.*')
         ->name('media.thumbnails.show');
+
+    Route::get('/media/public/{path}', PublicStorageController::class)
+        ->where('path', '.*')
+        ->name('public-storage.show');
 
     Route::get('/dashboard', [CourseCatalogController::class, 'index'])->name('dashboard');
     Route::get('/dashboard/plano-de-estudos', DashboardController::class)->name('study-plans.dashboard');

@@ -718,15 +718,67 @@ XML);
         $response = $this->actingAs($student)
             ->get(route('questions.show', $bank))
             ->assertOk()
-            ->assertSee('/storage/question-images/tirinha.png', false)
+            ->assertSee('/media/public/question-images/tirinha.png', false)
             ->assertSee('Tirinha usada como texto-base da questão.');
 
         $html = $response->getContent();
 
         $this->assertLessThan(
             strpos($html, 'Leia a tira para responder à questão.'),
-            strpos($html, '/storage/question-images/tirinha.png')
+            strpos($html, '/media/public/question-images/tirinha.png')
         );
+    }
+
+    public function test_question_normalizes_image_metadata_before_saving(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco com imagem manual',
+            'source_type' => 'manual',
+            'status' => 'published',
+        ]);
+
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 6,
+            'statement' => 'Observe a imagem.',
+            'type' => 'multiple_choice',
+            'status' => 'published',
+            'metadata' => [
+                'image_urls' => [
+                    'upload-a' => ['path' => 'question-images/tirinha.png'],
+                    'upload-b' => 'livewire-file:temporary-preview',
+                    'upload-c' => '',
+                ],
+                'image_position' => 'invalid-position',
+            ],
+        ]);
+
+        $question->refresh();
+
+        $this->assertSame(['question-images/tirinha.png'], data_get($question->metadata, 'image_urls'));
+        $this->assertSame('after_statement', data_get($question->metadata, 'image_position'));
+        $this->assertSame(['/media/public/question-images/tirinha.png'], $question->imageUrls());
+
+        $question->forceFill([
+            'metadata' => [
+                'image_urls' => ['/storage/question-images/tirinha.png'],
+                'image_position' => 'after_statement',
+            ],
+        ])->save();
+
+        $this->assertSame(['/media/public/question-images/tirinha.png'], $question->fresh()->imageUrls());
+    }
+
+    public function test_public_storage_fallback_serves_question_images_for_authenticated_users(): void
+    {
+        Storage::fake('public');
+        Storage::disk('public')->put('question-images/tirinha.png', 'fake-image');
+
+        $student = User::factory()->create(['role' => 'student']);
+
+        $this->actingAs($student)
+            ->get('/media/public/question-images/tirinha.png')
+            ->assertOk();
     }
 
     public function test_gemini_commentary_generator_falls_back_when_configured_model_is_unavailable_or_busy(): void

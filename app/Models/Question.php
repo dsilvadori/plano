@@ -20,6 +20,7 @@ class Question extends Model
             $question->course_id = null;
             $question->course_module_id = null;
             $question->lesson_id = null;
+            $question->metadata = $question->normalizedMetadata();
         });
 
         static::saved(function (Question $question): void {
@@ -111,7 +112,8 @@ class Question extends Model
     {
         return collect(data_get($this->metadata, 'image_urls', []))
             ->filter()
-            ->map(fn (string $path): string => $this->imageDisplayUrl($path))
+            ->map(fn (mixed $path): ?string => is_string($path) ? $this->imageDisplayUrl($path) : null)
+            ->filter()
             ->values()
             ->all();
     }
@@ -134,10 +136,61 @@ class Question extends Model
 
     protected function imageDisplayUrl(string $path): string
     {
+        if (str_starts_with($path, '/storage/')) {
+            return '/media/public/'.substr($path, strlen('/storage/'));
+        }
+
         if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://') || str_starts_with($path, '/')) {
             return $path;
         }
 
-        return Storage::disk('public')->url($path);
+        return '/media/public/'.ltrim($path, '/');
+    }
+
+    protected function normalizedMetadata(): ?array
+    {
+        $metadata = $this->metadata;
+
+        if (! is_array($metadata)) {
+            return null;
+        }
+
+        $imageUrls = data_get($metadata, 'image_urls', []);
+
+        if (is_string($imageUrls)) {
+            $imageUrls = [$imageUrls];
+        }
+
+        if (is_array($imageUrls)) {
+            data_set($metadata, 'image_urls', collect($imageUrls)
+                ->map(function (mixed $value): ?string {
+                    if (is_array($value)) {
+                        $value = $value['path'] ?? $value['url'] ?? $value['file'] ?? null;
+                    }
+
+                    if (! is_string($value)) {
+                        return null;
+                    }
+
+                    $value = trim($value);
+
+                    if ($value === '' || str_starts_with($value, 'livewire-file:')) {
+                        return null;
+                    }
+
+                    return $value;
+                })
+                ->filter()
+                ->values()
+                ->all());
+        }
+
+        $imagePosition = data_get($metadata, 'image_position');
+
+        if (! in_array($imagePosition, ['before_statement', 'after_statement'], true)) {
+            data_set($metadata, 'image_position', 'after_statement');
+        }
+
+        return $metadata;
     }
 }
