@@ -1999,11 +1999,12 @@ php artisan queue:work --queue=default --tries=1 --timeout=900
 Falha conhecida corrigida:
 
 - Logs Apache/PHP-FPM como `AH01075: Error dispatching request to : (polling)` com referer `/admin/lessons` indicam timeout da requisicao web do admin.
-- A tela `Admin > Aulas > Importar Panda` nao deve importar a pasta inteira durante a requisicao HTTP.
-- O comportamento correto e criar um `panda_import_run` com status `pending`, enfileirar `ImportPandaLessons` na conexao `database` e responder rapidamente ao admin.
+- A tela `Admin > Aulas > Importar Panda` deve importar diretamente pela acao do admin usando `PandaCourseImporter::importLessons`.
+- Esse fluxo deve respeitar o comportamento antigo que funciona tanto localmente quanto em producao: o clique cria ou atualiza aulas na hora, preenche `panda_video_id`, `panda_embed_url`, `panda_player_url`, duracao, thumbnail e `metadata.payload`, e retorna a contagem de videos/criadas/atualizadas.
+- Nao forcar `ImportPandaLessons::dispatch(...)->onConnection('database')` nesse fluxo sem garantir worker ativo e sem atualizar o diagnostico operacional. Quando a acao for enfileirada por engano, os sintomas sao `panda_import_runs.status = pending`, `started_at = null`, `panda_import_items = 0`, jobs com `attempts = 0`, e nenhuma aula preenchida com `panda_video_id`.
 - A tela `Admin > Aulas > Importar Drive`, quando enviar videos ao Panda, tambem deve enfileirar `ImportGoogleDriveLessons` na conexao `database`; nao usar `afterResponse` para trabalho pesado.
-- O worker deve processar a pasta Panda em segundo plano e atualizar o mesmo `panda_import_run` para `running`, `finished` ou `failed`.
-- Para importacoes grandes, aumentar timeout do worker e nao do painel web. A requisicao do admin deve continuar curta.
+- O worker deve processar importacoes Drive -> Panda e jobs de upload/status em segundo plano. A importacao Panda direta pela tela de Aulas nao depende do worker para criar as aulas.
+- Para importacoes Drive grandes, aumentar timeout do worker e nao do painel web. A requisicao do admin deve continuar curta nesses fluxos enfileirados.
 - Se `QUEUE_CONNECTION=sync` estiver no `.env` de producao, jobs podem rodar dentro da requisicao e causar timeout. Em producao, usar `QUEUE_CONNECTION=database` ou garantir que as acoes pesadas chamem `onConnection('database')`.
 
 Regras que nao podem ser quebradas durante correcao:
@@ -2038,6 +2039,10 @@ queue:work --queue=default --tries=1 --timeout=900
 - O sistema solicita IA em `pt-BR`.
 - Quando os recursos ja estao prontos, o sistema nao apaga nem reprocessa desnecessariamente.
 - O sistema limpa cache/sincroniza artefatos ao gerar recursos, evitando exibir resumo antigo.
+- Antes de pedir uma nova geracao, a plataforma tenta sincronizar o pacote pronto do Panda a partir de `pullzone` + `video_external_id`, derivados do `metadata.payload`, `panda_player_url` ou `panda_embed_url`.
+- Se o Panda responder `An eBook already exists for language pt-BR`, isso nao deve ser tratado como falha fatal. O sistema deve entender que ja existe pacote remoto em portugues, tentar importar o JSON `*-ai.json` imediatamente e, se ainda nao estiver publicado, marcar `metadata.panda_ai.last_request_status = already_exists` e `last_payload_status = not_ready` para nova sincronizacao.
+- O status `already_exists` e considerado pendente de sincronizacao, assim como `requested` ou `regenerating`.
+- Sintoma corrigido: clicar em `Gerar Recursos de IA` falhava com erro 400 do Panda porque a plataforma tentava regenerar um eBook PT-BR que ja existia no provedor.
 - A plataforma salva artefatos de IA como resumo, questoes, mapa mental e payload Panda.
 - A pagina da aula so exibe o bloco de IA quando ha ao menos um recurso pronto: resumo, questoes, mapa mental ou Tutor disponivel.
 - As abas do bloco de IA mostram apenas recursos realmente disponiveis.

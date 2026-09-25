@@ -92,7 +92,60 @@ class PandaAiResourceActivator
         $workflowResponse = null;
 
         if ($missingArtifacts !== [] && ($forceRequest || $createdArtifacts === 0)) {
-            $workflowResponse = $this->panda->createAiPackage($pandaVideoId);
+            try {
+                $workflowResponse = $this->panda->createAiPackage($pandaVideoId);
+            } catch (RuntimeException $exception) {
+                if (! $this->isExistingPandaAiPackageError($exception)) {
+                    throw $exception;
+                }
+
+                $createdArtifacts = $this->syncReadyArtifacts($lesson);
+                $lesson->refresh();
+
+                if ($this->missingArtifactTypes($lesson) === []) {
+                    return [
+                        'created_artifacts' => $createdArtifacts,
+                        'requested' => false,
+                        'pending' => false,
+                        'replaced_existing' => $replaceExisting,
+                        'panda_video_id' => $pandaVideoId,
+                    ];
+                }
+
+                $metadata = array_replace_recursive($lesson->metadata ?? $metadata, [
+                    'panda_ai' => [
+                        'auto_sync_enabled' => true,
+                        'requested_at' => data_get($metadata, 'panda_ai.requested_at') ?: now()->toIso8601String(),
+                        'last_manual_request_at' => now()->toIso8601String(),
+                        'last_request_status' => 'already_exists',
+                        'last_request_language' => (string) config('services.panda.ai_from_lang', 'pt-BR'),
+                        'last_auto_sync_attempt_at' => now()->toIso8601String(),
+                        'last_payload_status' => 'not_ready',
+                        'last_request_error' => $exception->getMessage(),
+                    ],
+                ]);
+
+                if ($pullzoneName = $this->pandaPullzoneName($lesson)) {
+                    data_set($metadata, 'panda_ai.pullzone_name', $pullzoneName);
+                }
+
+                if ($videoExternalId = $this->pandaVideoExternalId($lesson)) {
+                    data_set($metadata, 'panda_ai.video_external_id', $videoExternalId);
+                }
+
+                $lesson->forceFill(['metadata' => $metadata])->save();
+
+                SyncPandaAiArtifacts::dispatch($lesson->id)
+                    ->delay(now()->addSeconds($this->nextSyncDelaySeconds()));
+
+                return [
+                    'created_artifacts' => $createdArtifacts,
+                    'requested' => false,
+                    'pending' => true,
+                    'replaced_existing' => $replaceExisting,
+                    'panda_video_id' => $pandaVideoId,
+                ];
+            }
         }
 
         $metadata = array_replace_recursive($lesson->metadata ?? $metadata, [
@@ -152,7 +205,17 @@ class PandaAiResourceActivator
         $metadata = $lesson->metadata ?? [];
 
         return data_get($metadata, 'panda_ai.last_request_status') === 'requested'
+            || data_get($metadata, 'panda_ai.last_request_status') === 'already_exists'
             || data_get($metadata, 'panda_ai.last_payload_status') === 'regenerating';
+    }
+
+    protected function isExistingPandaAiPackageError(RuntimeException $exception): bool
+    {
+        $message = mb_strtolower($exception->getMessage());
+
+        return str_contains($message, 'already exists')
+            || str_contains($message, 'já existe')
+            || str_contains($message, 'ja existe');
     }
 
     protected function nextSyncDelaySeconds(): int

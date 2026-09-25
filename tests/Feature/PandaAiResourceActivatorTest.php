@@ -11,6 +11,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
 use Mockery;
+use RuntimeException;
 use Tests\TestCase;
 
 class PandaAiResourceActivatorTest extends TestCase
@@ -349,6 +350,74 @@ class PandaAiResourceActivatorTest extends TestCase
         $this->assertFalse($result['pending']);
         $this->assertSame(3, $result['created_artifacts']);
         $this->assertSame('ready', data_get($lesson->metadata, 'panda_ai.last_payload_status'));
+
+        Bus::assertNotDispatched(SyncPandaAiArtifacts::class);
+    }
+
+    public function test_existing_remote_panda_ai_package_error_is_tracked_as_pending_sync(): void
+    {
+        Bus::fake();
+
+        $lesson = Lesson::factory()->create([
+            'panda_video_id' => 'video-123',
+            'panda_player_url' => 'https://player-vz-abc.pandavideo.com.br/embed/?v=external-123',
+            'metadata' => [],
+        ]);
+
+        $panda = Mockery::mock(PandaVideoClient::class);
+        $panda->shouldReceive('aiPackage')
+            ->once()
+            ->with('vz-abc', 'external-123')
+            ->andReturn(null);
+        $panda->shouldReceive('createAiPackage')
+            ->once()
+            ->with('video-123')
+            ->andThrow(new RuntimeException('Falha na requisição ao provedor de vídeo (status 400): {"errMsg":"An eBook already exists for language pt-BR; delete it before generating a new one"}'));
+
+        $result = app(PandaAiResourceActivator::class, ['panda' => $panda])->reprocess($lesson);
+
+        $lesson->refresh();
+
+        $this->assertFalse($result['requested']);
+        $this->assertTrue($result['pending']);
+        $this->assertSame('already_exists', data_get($lesson->metadata, 'panda_ai.last_request_status'));
+        $this->assertSame('not_ready', data_get($lesson->metadata, 'panda_ai.last_payload_status'));
+        $this->assertSame('vz-abc', data_get($lesson->metadata, 'panda_ai.pullzone_name'));
+        $this->assertSame('external-123', data_get($lesson->metadata, 'panda_ai.video_external_id'));
+
+        Bus::assertDispatched(SyncPandaAiArtifacts::class, fn (SyncPandaAiArtifacts $job): bool => $job->lessonId === $lesson->id);
+    }
+
+    public function test_existing_remote_panda_ai_package_error_imports_package_when_it_is_ready(): void
+    {
+        Bus::fake();
+
+        $lesson = Lesson::factory()->create([
+            'panda_video_id' => 'video-123',
+            'panda_player_url' => 'https://player-vz-abc.pandavideo.com.br/embed/?v=external-123',
+            'metadata' => [],
+        ]);
+
+        $panda = Mockery::mock(PandaVideoClient::class);
+        $panda->shouldReceive('createAiPackage')
+            ->once()
+            ->with('video-123')
+            ->andThrow(new RuntimeException('Falha na requisição ao provedor de vídeo (status 400): {"errMsg":"An eBook already exists for language pt-BR; delete it before generating a new one"}'));
+        $panda->shouldReceive('aiPackage')
+            ->once()
+            ->with('vz-abc', 'external-123')
+            ->andReturn([
+                'summary' => 'Resumo existente',
+                'quiz' => ['questions' => [['title' => 'Questao 1']]],
+                'mindmap' => ['nodes' => [['label' => 'Aula']]],
+            ]);
+
+        $result = app(PandaAiResourceActivator::class, ['panda' => $panda])->reprocess($lesson);
+
+        $this->assertFalse($result['requested']);
+        $this->assertFalse($result['pending']);
+        $this->assertSame(3, $result['created_artifacts']);
+        $this->assertSame(3, AiArtifact::query()->where('source_id', $lesson->id)->whereIn('artifact_type', ['summary', 'quiz', 'mindmap'])->count());
 
         Bus::assertNotDispatched(SyncPandaAiArtifacts::class);
     }
