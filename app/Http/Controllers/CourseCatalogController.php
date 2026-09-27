@@ -201,14 +201,14 @@ class CourseCatalogController extends Controller
             ->with([
                 'module.teacher',
                 'teacher',
-                'lessons' => fn ($lessonQuery) => $lessonQuery
-                    ->where('status', '!=', 'archived')
-                    ->orderBy('sort_order')
-                    ->orderBy('title'),
             ])
             ->orderBy('sort_order')
             ->orderBy('name'),
         ]);
+        $module->tracks->each(fn (CourseModuleTrack $track) => $track->setRelation(
+            'lessons',
+            $this->publishedLessonsForTrackAndCourse($track, $course)
+        ));
 
         return view('dashboard.courses.module-tracks', [
             'course' => $course,
@@ -231,11 +231,7 @@ class CourseCatalogController extends Controller
 
         $hasAccess = $this->userCanAccessCourse($user, $course);
 
-        $track->load(['lessons' => fn ($lessonQuery) => $lessonQuery
-            ->where('status', '!=', 'archived')
-            ->orderBy('sort_order')
-            ->orderBy('title'),
-        ]);
+        $track->setRelation('lessons', $this->publishedLessonsForTrackAndCourse($track, $course));
 
         return view('dashboard.courses.track-lessons', [
             'course' => $course,
@@ -615,19 +611,19 @@ class CourseCatalogController extends Controller
             return collect();
         }
 
-        $orderedLessonsByTrack = DB::table('course_module_track_lessons')
+        $orderedLessonsByTrack = $this->courseTrackLessonsBaseQuery($course)
             ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
             ->whereIn('course_module_track_lessons.course_module_track_id', $trackIds)
             ->where('lessons.status', '!=', 'archived')
             ->select([
                 'course_module_track_lessons.course_module_track_id',
                 'lessons.id as lesson_id',
-                'course_module_track_lessons.sort_order',
+                DB::raw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order) as sort_order'),
                 'lessons.sort_order as lesson_sort_order',
                 'lessons.title',
             ])
             ->orderBy('course_module_track_lessons.course_module_track_id')
-            ->orderBy('course_module_track_lessons.sort_order')
+            ->orderByRaw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order)')
             ->orderBy('lessons.sort_order')
             ->orderBy('lessons.title')
             ->get()
@@ -689,6 +685,59 @@ class CourseCatalogController extends Controller
             });
     }
 
+    protected function publishedLessonsForTrackAndCourse(CourseModuleTrack $track, Course $course): Collection
+    {
+        $lessonIds = $this->courseTrackLessonsBaseQuery($course)
+            ->where('course_module_track_lessons.course_module_track_id', $track->id)
+            ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
+            ->where('lessons.status', '!=', 'archived')
+            ->select([
+                'lessons.id',
+                DB::raw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order) as course_sort_order'),
+                'lessons.sort_order as lesson_sort_order',
+                'lessons.title',
+            ])
+            ->orderBy('course_sort_order')
+            ->orderBy('lesson_sort_order')
+            ->orderBy('lessons.title')
+            ->pluck('lessons.id')
+            ->all();
+
+        if ($lessonIds === []) {
+            return collect();
+        }
+
+        $lessonsById = Lesson::query()
+            ->whereIn('id', $lessonIds)
+            ->get()
+            ->keyBy('id');
+
+        return collect($lessonIds)
+            ->map(fn (int $lessonId): ?Lesson => $lessonsById->get($lessonId))
+            ->filter()
+            ->values();
+    }
+
+    protected function courseTrackLessonsBaseQuery(Course $course)
+    {
+        return DB::table('course_module_track_lessons')
+            ->leftJoin('course_module_track_lesson_course', function ($join) use ($course): void {
+                $join->on('course_module_track_lesson_course.course_module_track_id', '=', 'course_module_track_lessons.course_module_track_id')
+                    ->on('course_module_track_lesson_course.lesson_id', '=', 'course_module_track_lessons.lesson_id')
+                    ->where('course_module_track_lesson_course.course_id', '=', $course->id);
+            })
+            ->where(function ($query) use ($course): void {
+                $query
+                    ->where('course_module_track_lesson_course.status', 'published')
+                    ->orWhereNotExists(function ($query) use ($course): void {
+                        $query->selectRaw('1')
+                            ->from('course_module_track_lesson_course as course_track_scope')
+                            ->whereColumn('course_track_scope.course_module_track_id', 'course_module_track_lessons.course_module_track_id')
+                            ->where('course_track_scope.course_id', $course->id);
+                    });
+            });
+    }
+
     protected function publishedLessonsForCourse(Course $course): Builder
     {
         return Lesson::query()
@@ -698,6 +747,11 @@ class CourseCatalogController extends Controller
             ->join('course_modules', 'course_modules.id', '=', 'course_module_tracks.course_module_id')
             ->leftJoin('course_module_course', 'course_module_course.course_module_id', '=', 'course_modules.id')
             ->leftJoin('course_module_track_course', 'course_module_track_course.course_module_track_id', '=', 'course_module_tracks.id')
+            ->leftJoin('course_module_track_lesson_course', function ($join) use ($course): void {
+                $join->on('course_module_track_lesson_course.course_module_track_id', '=', 'course_module_tracks.id')
+                    ->on('course_module_track_lesson_course.lesson_id', '=', 'lessons.id')
+                    ->where('course_module_track_lesson_course.course_id', '=', $course->id);
+            })
             ->where(function (Builder $query) use ($course): void {
                 $query
                     ->where('lessons.course_id', $course->id)
@@ -713,13 +767,23 @@ class CourseCatalogController extends Controller
                     });
             })
             ->where('course_module_tracks.status', 'published')
+            ->where(function (Builder $query) use ($course): void {
+                $query
+                    ->where('course_module_track_lesson_course.status', 'published')
+                    ->orWhereNotExists(function ($query) use ($course): void {
+                        $query->selectRaw('1')
+                            ->from('course_module_track_lesson_course as course_track_scope')
+                            ->whereColumn('course_track_scope.course_module_track_id', 'course_module_tracks.id')
+                            ->where('course_track_scope.course_id', $course->id);
+                    });
+            })
             ->where('lessons.status', '!=', 'archived')
             ->distinct()
             ->orderBy('course_module_course.sort_order')
             ->orderBy('course_modules.sort_order')
             ->orderBy('course_modules.name')
             ->orderBy('course_module_tracks.sort_order')
-            ->orderBy('course_module_track_lessons.sort_order')
+            ->orderByRaw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order)')
             ->orderBy('lessons.title');
     }
 
@@ -727,6 +791,19 @@ class CourseCatalogController extends Controller
     {
         if ((int) $lesson->course_id === (int) $course->id) {
             return true;
+        }
+
+        $hasCourseTrackScope = DB::table('course_module_track_lesson_course')
+            ->where('course_id', $course->id)
+            ->whereIn('course_module_track_id', $lesson->tracks()->pluck('course_module_tracks.id'))
+            ->exists();
+
+        if ($hasCourseTrackScope) {
+            return DB::table('course_module_track_lesson_course')
+                ->where('course_id', $course->id)
+                ->where('lesson_id', $lesson->id)
+                ->where('status', 'published')
+                ->exists();
         }
 
         if ($lesson->module && $this->moduleBelongsToCourse($lesson->module, $course)) {
@@ -751,6 +828,23 @@ class CourseCatalogController extends Controller
                     ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
                     ->orWhereHas('module.courses', fn (Builder $query) => $query->whereKey($course->id))
                     ->orWhereHas('module', fn (Builder $query) => $query->where('course_id', $course->id));
+            })
+            ->where(function (Builder $query) use ($course, $lesson): void {
+                $query
+                    ->whereExists(function ($query) use ($course, $lesson): void {
+                        $query->selectRaw('1')
+                            ->from('course_module_track_lesson_course')
+                            ->whereColumn('course_module_track_lesson_course.course_module_track_id', 'course_module_tracks.id')
+                            ->where('course_module_track_lesson_course.course_id', $course->id)
+                            ->where('course_module_track_lesson_course.lesson_id', $lesson->id)
+                            ->where('course_module_track_lesson_course.status', 'published');
+                    })
+                    ->orWhereNotExists(function ($query) use ($course): void {
+                        $query->selectRaw('1')
+                            ->from('course_module_track_lesson_course as course_track_scope')
+                            ->whereColumn('course_track_scope.course_module_track_id', 'course_module_tracks.id')
+                            ->where('course_track_scope.course_id', $course->id);
+                    });
             })
             ->exists();
     }

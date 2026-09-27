@@ -103,7 +103,7 @@ class ImportCourseSpreadsheet implements ShouldQueue
                 'course_id' => $course->id,
                 'course_name' => $run->course_name ?: $course->name,
                 'status' => 'finished',
-                'latest_message' => 'Importação concluída.',
+                'latest_message' => 'Importação concluída. Planos aguardam atualização manual.',
                 'error_message' => null,
                 'finished_at' => now(),
                 'summary' => [
@@ -112,6 +112,10 @@ class ImportCourseSpreadsheet implements ShouldQueue
                     'modules' => $moduleCount,
                     'tracks' => $trackCount,
                     'lessons' => $lessonCount,
+                    'study_plan_refresh' => [
+                        'required' => true,
+                        'scope' => 'from_next_week',
+                    ],
                 ],
             ])->save();
 

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\Courses\Pages\EditCourse;
+use App\Filament\Resources\Courses\Widgets\CourseSpreadsheetImportStatus;
 use App\Jobs\ImportCourseSpreadsheet;
 use App\Jobs\RefreshActiveCourseStudyPlans;
 use App\Models\Course;
@@ -10,9 +11,11 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\CourseSpreadsheetImportRun;
 use App\Models\Lesson;
+use App\Models\LessonFolder;
 use App\Models\StudyTrack;
 use App\Models\Teacher;
 use App\Support\CourseSpreadsheetUpload;
+use App\Services\ActiveStudyPlanRefresher;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -371,7 +374,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertFalse(Cache::has("course:{$course->id}:published-lessons-count:v2"));
     }
 
-    public function test_spreadsheet_import_queues_active_study_plan_refresh_after_structure_is_saved(): void
+    public function test_spreadsheet_import_does_not_refresh_study_plans_automatically(): void
     {
         Queue::fake();
 
@@ -391,8 +394,41 @@ class CourseSpreadsheetImportTest extends TestCase
             @unlink($path);
         }
 
-        Queue::assertPushed(RefreshActiveCourseStudyPlans::class, fn (RefreshActiveCourseStudyPlans $job): bool => $job->courseId === $course->id);
+        Queue::assertNotPushed(RefreshActiveCourseStudyPlans::class);
         $this->assertTrue($course->modules()->where('name', 'Português')->exists());
+    }
+
+    public function test_course_import_widget_refreshes_study_plans_manually_from_next_week(): void
+    {
+        $course = Course::factory()->create();
+        $run = CourseSpreadsheetImportRun::query()->create([
+            'course_id' => $course->id,
+            'course_name' => $course->name,
+            'status' => 'finished',
+            'latest_message' => 'Importação concluída. Planos aguardam atualização manual.',
+            'summary' => [
+                'study_plan_refresh' => [
+                    'required' => true,
+                    'scope' => 'from_next_week',
+                ],
+            ],
+        ]);
+
+        $this->mock(ActiveStudyPlanRefresher::class, function ($mock) use ($course): void {
+            $mock->shouldReceive('refreshCourseFromNextWeek')
+                ->once()
+                ->withArgs(fn (Course $refreshedCourse): bool => $refreshedCourse->is($course))
+                ->andReturn(3);
+        });
+
+        $widget = app(CourseSpreadsheetImportStatus::class);
+        $widget->record = $course;
+        app()->call([$widget, 'refreshStudyPlans']);
+
+        $run->refresh();
+        $this->assertSame(3, data_get($run->summary, 'study_plan_refresh.refreshed_plans'));
+        $this->assertSame('from_next_week', data_get($run->summary, 'study_plan_refresh.scope'));
+        $this->assertNotNull(data_get($run->summary, 'study_plan_refresh.refreshed_at'));
     }
 
     public function test_importer_creates_course_modules_and_official_study_track(): void
@@ -687,22 +723,26 @@ class CourseSpreadsheetImportTest extends TestCase
         );
     }
 
-    public function test_reimport_preserves_removed_spreadsheet_lessons_for_manual_review(): void
+    public function test_reimport_syncs_only_course_lesson_differences(): void
     {
         $firstPath = tempnam(sys_get_temp_dir(), 'course-import-first-').'.csv';
         $secondPath = tempnam(sys_get_temp_dir(), 'course-import-second-').'.csv';
         file_put_contents($firstPath, implode("\n", [
-            'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes',
-            'Curso CSV,Português,basic,1,Classes de palavras,30',
-            'Curso CSV,Português,basic,1,Advérbio,20',
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso CSV,Português,basic,1,Classes de palavras,Classes de palavras,30',
+            'Curso CSV,Português,basic,1,Classes de palavras,Advérbio,20',
         ]));
         file_put_contents($secondPath, implode("\n", [
-            'course_name,module_name,module_type,module_sort_order,lesson_title,lesson_minutes',
-            'Curso CSV,Português,basic,1,Classes de palavras,30',
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso CSV,Português,basic,1,Classes de palavras,Classes de palavras,30',
+            'Curso CSV,Português,basic,1,Classes de palavras,Preposição,15',
         ]));
 
         try {
             $course = app(CourseSpreadsheetImporter::class)->import($firstPath);
+            $module = $course->modules()->where('course_modules.name', 'Português')->firstOrFail();
+            $track = $module->tracks()->where('name', 'Classes de palavras')->firstOrFail();
+            $keptLesson = $course->linkedLessonsQuery()->where('title', 'Classes de palavras')->firstOrFail();
             $removedLesson = $course->linkedLessonsQuery()->where('title', 'Advérbio')->firstOrFail();
 
             app(CourseSpreadsheetImporter::class)->importInto($course, $secondPath);
@@ -711,7 +751,14 @@ class CourseSpreadsheetImportTest extends TestCase
             @unlink($secondPath);
         }
 
+        $this->assertTrue($course->fresh()->modules()->whereKey($module->id)->exists());
+        $this->assertTrue($track->fresh()->courses()->whereKey($course->id)->exists());
+        $this->assertTrue($track->fresh()->lessons()->whereKey($keptLesson->id)->exists());
+        $this->assertTrue($course->linkedLessonsQuery()->whereKey($keptLesson->id)->exists());
+        $this->assertFalse($course->linkedLessonsQuery()->whereKey($removedLesson->id)->exists());
         $this->assertSame('published', $removedLesson->fresh()->status);
+        $this->assertSame(1, Lesson::query()->where('title', 'Classes de palavras')->count());
+        $this->assertSame(1, Lesson::query()->where('title', 'Preposição')->count());
     }
 
     public function test_spreadsheet_import_recreates_modules_but_reuses_existing_lessons_by_name(): void
@@ -757,6 +804,79 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($importedModule->id)->exists());
         $this->assertSame('panda-original', $existingLesson->fresh()->panda_video_id);
         $this->assertSame('https://player.example.com/original', $existingLesson->fresh()->panda_embed_url);
+    }
+
+    public function test_spreadsheet_import_uses_module_and_track_context_when_reusing_same_named_lessons(): void
+    {
+        $syntaxFolder = LessonFolder::findOrCreatePath('Português / Sintaxe');
+        $morphologyFolder = LessonFolder::findOrCreatePath('Português / Morfologia');
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $syntaxTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Sintaxe',
+            'slug' => 'sintaxe',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $morphologyTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Morfologia',
+            'slug' => 'morfologia',
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+        $syntaxLesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'lesson_folder_id' => $syntaxFolder->id,
+            'title' => 'Introdução',
+            'slug' => 'introducao',
+            'duration_seconds' => 1800,
+            'source_status' => 'media_ready',
+            'metadata' => ['library_folder_path' => 'Português / Sintaxe'],
+        ]);
+        $morphologyLesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'lesson_folder_id' => $morphologyFolder->id,
+            'title' => 'Introdução',
+            'slug' => 'introducao',
+            'duration_seconds' => 1800,
+            'panda_video_id' => 'panda-morfologia',
+            'source_status' => 'media_ready',
+            'metadata' => ['library_folder_path' => 'Português / Morfologia'],
+        ]);
+        $syntaxTrack->lessons()->attach($syntaxLesson->id, ['sort_order' => 1]);
+        $morphologyTrack->lessons()->attach($morphologyLesson->id, ['sort_order' => 1]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-context-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Novo,Português,basic,1,Sintaxe,Introdução,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $importedTrack = $course->modules()
+            ->where('course_modules.name', 'Português')
+            ->firstOrFail()
+            ->tracks()
+            ->where('name', 'Sintaxe')
+            ->firstOrFail();
+
+        $this->assertTrue($importedTrack->lessons()->whereKey($syntaxLesson->id)->exists());
+        $this->assertFalse($importedTrack->lessons()->whereKey($morphologyLesson->id)->exists());
+        $this->assertSame(1, Lesson::query()->where('title', 'Introdução')->whereHas('tracks', fn ($query) => $query->whereKey($importedTrack->id))->count());
     }
 
     public function test_spreadsheet_import_recreates_same_named_module_and_keeps_teacher(): void

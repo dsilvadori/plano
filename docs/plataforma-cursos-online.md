@@ -89,6 +89,7 @@ Unificar em uma mesma experiencia:
 
 4. `lessons`
    - `id`
+   - `lesson_folder_id`: pasta da biblioteca de aulas, usada para organizar e reaproveitar a mesma aula em varios contextos
    - `course_id`: curso de origem/legado, mantido para compatibilidade
    - `course_module_id`: modulo de origem/legado, mantido para compatibilidade
    - `course_module_track_id`: trilha principal/origem da aula, quando criada pela nova estrutura
@@ -108,7 +109,16 @@ Unificar em uma mesma experiencia:
    - `source_status`: structure_only, awaiting_media, media_ready, published
    - `metadata`
 
-5. `lesson_materials`
+5. `lesson_folders`
+   - `id`
+   - `parent_id`
+   - `name`
+   - `slug`
+   - `path`: caminho canonico, como `portugues/sintaxe`
+   - `sort_order`
+   - `metadata`
+
+6. `lesson_materials`
    - `id`
    - `lesson_id`
    - `title`
@@ -1962,6 +1972,25 @@ PANDA_VIDEO_UPLOAD_RETRY_ATTEMPTS=1
 php artisan queue:restart
 php artisan queue:work --queue=default --tries=1 --timeout=900
 ```
+
+### Trilhas Fixas e Recorte por Curso
+
+- Aulas devem ser tratadas como itens fixos da biblioteca. Uma correcao em titulo, video, PDF, duracao, recursos de IA ou metadados tecnicos deve acontecer no registro unico de `lessons`, nao em copias por curso.
+- `lesson_folders` organiza a biblioteca de aulas por caminho hierarquico. Importacoes do Panda, Drive e planilha devem preencher `lessons.lesson_folder_id` a partir do caminho calculado do modulo/trilha/pasta.
+- Os campos legados `lessons.course_id`, `course_module_id` e `course_module_track_id` ficam como origem/compatibilidade. O vinculo real com modulos e trilhas deve usar `course_module_lessons` e `course_module_track_lessons`.
+- Trilhas de modulo devem ser tratadas como entidades reutilizaveis da biblioteca. Corrigir nome, professor, ordem, thumbnail ou aulas-base de uma trilha deve beneficiar todos os cursos que usam a mesma trilha.
+- O conjunto de aulas visivel em cada curso nao deve obrigar criar uma trilha duplicada. O recorte `curso + trilha + aula` fica em `course_module_track_lesson_course`.
+- `course_module_track_lessons` continua representando as aulas-base da trilha.
+- `course_module_track_course` continua representando em quais cursos a trilha aparece.
+- `course_module_track_lesson_course` define quais aulas da trilha estao publicadas para cada curso, com `sort_order` e `status`.
+- Se uma trilha nao possuir recorte por curso, a area do aluno usa fallback para as aulas-base da trilha, preservando compatibilidade com dados antigos.
+- Se existir ao menos um recorte para `curso + trilha`, a area do aluno deve exibir somente aulas com `status = published` nesse recorte.
+- A importacao de planilhas deve reaproveitar aulas e trilhas existentes por identificador externo, pasta da biblioteca, nome normalizado e duracao aproximada; depois deve anexar a trilha ao curso e atualizar o recorte das aulas desse curso, sem clonar trilha ou aula por pequenas diferencas de carga horaria/publicacao.
+- A reimportacao por planilha deve ser incremental: manter os mesmos registros quando modulo, trilha e aula continuam iguais; criar somente aulas novas; e remover do recorte do curso as aulas que nao aparecem mais na planilha, preservando o registro da aula na biblioteca.
+- Importacao e reimportacao por planilha nao devem atualizar planos de estudo automaticamente. Ao concluir a importacao, o admin recebe aviso de que os planos estao pendentes e deve acionar o botao `Atualizar planos`.
+- A atualizacao manual dos planos usa `ActiveStudyPlanRefresher::refreshCourseFromNextWeek`, ou seja, preserva o que o aluno ja fez e recalcula somente a partir da proxima semana. O comando operacional equivalente e `php artisan study-plans:refresh-active --course-id={id}`.
+- Quando `LessonCourseLinker` substitui placeholders por aulas com midia pronta, ele tambem deve atualizar `course_module_track_lesson_course`; caso contrario a trilha aparenta estar corrigida, mas o curso continua apontando para a aula antiga.
+- Sintoma corrigido: Curso A e Curso B usavam a mesma trilha/aula, mas uma correcao em um curso nao propagava ou gerava duplicatas porque o sistema confundia a entidade fixa da biblioteca com o recorte publicado naquele curso.
 
 ### Diagnostico de falhas na importacao Panda
 

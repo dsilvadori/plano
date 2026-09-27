@@ -256,7 +256,7 @@ class EditCourse extends EditRecord
 
                     Notification::make()
                         ->title('Importação iniciada.')
-                        ->body('Acompanhe o progresso nesta tela.')
+                        ->body('Acompanhe o progresso nesta tela. Ao concluir, os planos ficarão aguardando atualização manual.')
                         ->success()
                         ->send();
 

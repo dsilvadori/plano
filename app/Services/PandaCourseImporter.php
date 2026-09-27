@@ -7,6 +7,7 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
+use App\Models\LessonFolder;
 use App\Models\PandaImportRun;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Collection;
@@ -71,9 +72,12 @@ class PandaCourseImporter
                     $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $index + 1);
                     $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, null);
                     $wasRecentlyCreated = ! $lesson->exists;
+                    $libraryFolderPath = collect([$module->name, $track->name])->filter()->join(' / ');
+                    $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
 
                     $lesson->fill([
                         'course_id' => null,
+                        'lesson_folder_id' => $lessonFolder?->id,
                         'course_module_id' => null,
                         'course_module_track_id' => null,
                         'title' => $normalizedTitle,
@@ -93,7 +97,7 @@ class PandaCourseImporter
                             'source' => 'panda',
                             'folder_id' => $folderId,
                             'library_folder_name' => $track->name,
-                            'library_folder_path' => collect([$module->name, $track->name])->filter()->join(' / '),
+                            'library_folder_path' => $libraryFolderPath,
                             'import_context_module_id' => $module->id,
                             'import_context_track_id' => $track->id,
                             'payload' => $video['payload'],
@@ -180,9 +184,12 @@ class PandaCourseImporter
                     $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $index + 1);
                     $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, null);
                     $wasRecentlyCreated = ! $lesson->exists;
+                    $libraryFolderPath = collect([$module->name, $track->name])->filter()->join(' / ');
+                    $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
 
                     $lesson->fill([
                         'course_id' => null,
+                        'lesson_folder_id' => $lessonFolder?->id,
                         'course_module_id' => null,
                         'course_module_track_id' => null,
                         'title' => $normalizedTitle,
@@ -202,7 +209,7 @@ class PandaCourseImporter
                             'source' => 'panda',
                             'folder_id' => $folderId,
                             'library_folder_name' => $track->name,
-                            'library_folder_path' => collect([$module->name, $track->name])->filter()->join(' / '),
+                            'library_folder_path' => $libraryFolderPath,
                             'import_context_module_id' => $module->id,
                             'import_context_track_id' => $track->id,
                             'payload' => $video['payload'],
@@ -300,9 +307,12 @@ class PandaCourseImporter
                     $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $sortOrder);
                     $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, $track);
                     $wasRecentlyCreated = ! $lesson->exists;
+                    $libraryFolderPath = collect([$module?->name, $track?->name])->filter()->join(' / ');
+                    $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
 
                     $lesson->fill([
                         'course_id' => null,
+                        'lesson_folder_id' => $lessonFolder?->id,
                         'course_module_id' => null,
                         'course_module_track_id' => null,
                         'title' => $normalizedTitle,
@@ -323,7 +333,7 @@ class PandaCourseImporter
                             'folder_id' => $folderId,
                             'folder_reference' => $folderReference,
                             'library_folder_name' => $track?->name ?? $module?->name,
-                            'library_folder_path' => collect([$module?->name, $track?->name])->filter()->join(' / '),
+                            'library_folder_path' => $libraryFolderPath,
                             'import_context_module_id' => $module?->id,
                             'import_context_track_id' => $track?->id,
                             'payload' => $video['payload'],

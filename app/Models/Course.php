@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 
 class Course extends Model
 {
@@ -225,6 +226,22 @@ class Course extends Model
                             ->where('course_id', $this->id)
                             ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($this->id))
                             ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $this->id))));
+            })
+            ->where(function (Builder $query): void {
+                $query->whereExists(function ($query): void {
+                    $query->select(DB::raw(1))
+                        ->from('course_module_track_lesson_course as published_scope')
+                        ->whereColumn('published_scope.lesson_id', 'lessons.id')
+                        ->where('published_scope.course_id', $this->id);
+                })->orWhereNotExists(function ($query): void {
+                    $query->select(DB::raw(1))
+                        ->from('course_module_track_lessons as scoped_track_lesson')
+                        ->join('course_module_track_lesson_course as course_scope', function ($join): void {
+                            $join->on('course_scope.course_module_track_id', '=', 'scoped_track_lesson.course_module_track_id')
+                                ->where('course_scope.course_id', '=', $this->id);
+                        })
+                        ->whereColumn('scoped_track_lesson.lesson_id', 'lessons.id');
+                });
             })
             ->with(['module', 'track', 'modules', 'tracks'])
             ->distinct()

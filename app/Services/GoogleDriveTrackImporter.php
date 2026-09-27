@@ -9,6 +9,7 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\GoogleDriveImportRun;
 use App\Models\Lesson;
+use App\Models\LessonFolder;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -139,6 +140,8 @@ class GoogleDriveTrackImporter
                 $type = $this->lessonTypeForMimeType((string) ($file['mimeType'] ?? ''));
                 $pandaVideo = null;
                 $pandaUploadError = null;
+                $libraryFolderPath = collect([$module->name, $trackName])->filter()->join(' / ');
+                $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'google_drive']);
 
                 if ($uploadPandaVideos && $type === 'video') {
                     if (filled($lesson->panda_video_id)) {
@@ -198,6 +201,7 @@ class GoogleDriveTrackImporter
 
                 $lesson->fill([
                     'course_id' => null,
+                    'lesson_folder_id' => $lessonFolder?->id,
                     'course_module_id' => null,
                     'course_module_track_id' => null,
                     'title' => $title,
@@ -225,7 +229,7 @@ class GoogleDriveTrackImporter
                         'drive_web_content_link' => $file['webContentLink'] ?? null,
                         'panda_folder_id' => $trackPandaFolderId,
                         'library_folder_name' => $trackName,
-                        'library_folder_path' => collect([$module->name, $trackName])->filter()->join(' / '),
+                        'library_folder_path' => $libraryFolderPath,
                         'import_context_module_id' => $module->id,
                         'import_context_track_id' => $track->id,
                         'panda_upload' => $pandaVideo['payload'] ?? null,
@@ -375,6 +379,8 @@ class GoogleDriveTrackImporter
             $pandaVideo = null;
             $pandaUploadError = $lessonPandaFolderError;
             $pandaUploadQueued = false;
+            $libraryFolderPath = collect([$module?->name, $track?->name, $file['_source_folder_path'] ?? null])->filter()->join(' / ');
+            $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'google_drive']);
 
             if ($uploadPandaVideos && $type === 'video' && blank($pandaUploadError)) {
                 if (filled($lesson->panda_video_id)) {
@@ -438,6 +444,7 @@ class GoogleDriveTrackImporter
 
             $lesson->fill([
                 'course_id' => null,
+                'lesson_folder_id' => $lessonFolder?->id,
                 'course_module_id' => null,
                 'course_module_track_id' => null,
                 'title' => $title,
@@ -465,7 +472,7 @@ class GoogleDriveTrackImporter
                     'drive_web_content_link' => $file['webContentLink'] ?? null,
                     'panda_folder_id' => $lessonPandaFolderId,
                     'library_folder_name' => $this->sourceFolderNameForPath((string) ($file['_source_folder_path'] ?? '')) ?: ($track?->name ?? $module?->name ?? $pandaFolderName),
-                    'library_folder_path' => collect([$module?->name, $track?->name, $file['_source_folder_path'] ?? null])->filter()->join(' / '),
+                    'library_folder_path' => $libraryFolderPath,
                     'import_context_module_id' => $module?->id,
                     'import_context_track_id' => $track?->id,
                     'panda_upload' => $pandaVideo['payload'] ?? null,

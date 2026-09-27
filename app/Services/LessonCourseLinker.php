@@ -57,6 +57,7 @@ class LessonCourseLinker
                                 $module->onlineLessons()->syncWithoutDetaching([
                                     $lesson->id => ['sort_order' => $sortOrder],
                                 ]);
+                                $this->syncCourseTrackLessonScopes($courseIds, $track, $lesson, $sortOrder);
 
                                 continue;
                             }
@@ -77,6 +78,7 @@ class LessonCourseLinker
                             $track->lessons()->syncWithoutDetaching([
                                 $candidate->id => ['sort_order' => $sortOrder],
                             ]);
+                            $this->syncCourseTrackLessonScopes($courseIds, $track, $candidate, $sortOrder, $lesson);
 
                             if ($lesson->isNot($candidate)) {
                                 $module->onlineLessons()->detach($lesson->id);
@@ -215,6 +217,7 @@ class LessonCourseLinker
                             $matchingTrack->lessons()->syncWithoutDetaching([
                                 $candidate->id => ['sort_order' => $sortOrder],
                             ]);
+                            $this->syncCourseTrackLessonScopes($courseIds, $matchingTrack, $candidate, $sortOrder);
                         }
 
                         $attachedLessonIds[] = $candidate->id;
@@ -244,6 +247,35 @@ class LessonCourseLinker
                 ->where('course_id', $course->id)
                 ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id));
         });
+    }
+
+    protected function syncCourseTrackLessonScopes(array $courseIds, CourseModuleTrack $track, Lesson $lesson, int $sortOrder, ?Lesson $replacedLesson = null): void
+    {
+        foreach (array_unique(array_filter($courseIds)) as $courseId) {
+            DB::table('course_module_track_lesson_course')->updateOrInsert([
+                'course_id' => $courseId,
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $lesson->id,
+            ], [
+                'sort_order' => $sortOrder,
+                'status' => 'published',
+                'metadata' => json_encode([
+                    'source' => 'lesson_course_linker',
+                    'linked_at' => now()->toIso8601String(),
+                    'replaced_lesson_id' => $replacedLesson?->id,
+                ]),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            if ($replacedLesson && $replacedLesson->isNot($lesson)) {
+                DB::table('course_module_track_lesson_course')
+                    ->where('course_id', $courseId)
+                    ->where('course_module_track_id', $track->id)
+                    ->where('lesson_id', $replacedLesson->id)
+                    ->delete();
+            }
+        }
     }
 
     protected function findReadyCandidateForPlanningLesson(Collection $readyLessons, string $title, CourseModule $module, int $sortOrder, array $attachedLessonIds): ?Lesson

@@ -64,6 +64,7 @@ class Lesson extends Model
 
     protected $fillable = [
         'course_id',
+        'lesson_folder_id',
         'course_module_id',
         'course_module_track_id',
         'title',
@@ -91,6 +92,11 @@ class Lesson extends Model
     public function course(): BelongsTo
     {
         return $this->belongsTo(Course::class);
+    }
+
+    public function folder(): BelongsTo
+    {
+        return $this->belongsTo(LessonFolder::class, 'lesson_folder_id');
     }
 
     public function module(): BelongsTo

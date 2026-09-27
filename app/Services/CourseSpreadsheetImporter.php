@@ -3,12 +3,12 @@
 namespace App\Services;
 
 use App\Http\Controllers\CourseCatalogController;
-use App\Jobs\RefreshActiveCourseStudyPlans;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\CourseSpreadsheetImportRun;
 use App\Models\Lesson;
+use App\Models\LessonFolder;
 use App\Models\StudyTrack;
 use App\Models\Teacher;
 use App\Support\LessonTitleNormalizer;
@@ -94,7 +94,6 @@ class CourseSpreadsheetImporter
 
             $this->importStructure($course, $payload, $payload['study_track_name']);
             CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
-            RefreshActiveCourseStudyPlans::dispatch((int) $course->id)->afterCommit();
 
             return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
@@ -131,7 +130,6 @@ class CourseSpreadsheetImporter
 
             $this->importStructure($course, $payload, $studyTrackName);
             CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
-            RefreshActiveCourseStudyPlans::dispatch((int) $course->id)->afterCommit();
 
             return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
         });
@@ -199,14 +197,16 @@ class CourseSpreadsheetImporter
         $totalModules = count($modules);
         $processedModules = min((int) $run->processed_modules, $totalModules);
         $moduleIds = $state['module_ids'] ?? [];
+        $trackIds = $state['track_ids'] ?? [];
         $limit = max(1, $moduleLimit);
 
         for ($index = $processedModules; $index < $totalModules && $index < $processedModules + $limit; $index++) {
             $moduleData = $modules[$index];
 
-            DB::transaction(fn () => $this->importModuleData($course, $moduleData, $moduleIds));
+            DB::transaction(fn () => $this->importModuleData($course, $moduleData, $moduleIds, $trackIds));
 
             $state['module_ids'] = $moduleIds;
+            $state['track_ids'] = $trackIds;
             $run->forceFill([
                 'status' => 'running',
                 'processed_modules' => $index + 1,
@@ -222,13 +222,12 @@ class CourseSpreadsheetImporter
         $studyTrackName = (string) ($state['study_track_name'] ?? $payload['study_track_name'] ?? 'Trilha Oficial - '.$course->name);
         $replaceTrackModules = (bool) ($state['replace_track_modules'] ?? true);
 
-        DB::transaction(function () use ($course, $studyTrackName, $moduleIds, $replaceTrackModules): void {
+        DB::transaction(function () use ($course, $studyTrackName, $moduleIds, $trackIds, $replaceTrackModules): void {
+            $this->syncCourseStructureToSpreadsheet($course, array_keys($moduleIds), array_keys($trackIds));
             $this->syncOfficialStudyTrack($course, $studyTrackName, $moduleIds, $replaceTrackModules);
             Course::ensureStartHereModuleIsAttached($course);
             CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
         });
-
-        app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($course->fresh());
 
         $modules = $course->modules()->with('tracks.lessons')->get();
         $moduleCount = $modules->count();
@@ -243,7 +242,7 @@ class CourseSpreadsheetImporter
             'status' => 'finished',
             'course_name' => $run->course_name ?: $course->name,
             'processed_modules' => $totalModules,
-            'latest_message' => 'Importação concluída.',
+            'latest_message' => 'Importação concluída. Planos aguardam atualização manual.',
             'error_message' => null,
             'finished_at' => now(),
             'summary' => [
@@ -252,6 +251,10 @@ class CourseSpreadsheetImporter
                 'modules' => $moduleCount,
                 'tracks' => $trackCount,
                 'lessons' => $lessonCount,
+                'study_plan_refresh' => [
+                    'required' => true,
+                    'scope' => 'from_next_week',
+                ],
             ],
         ])->save();
 
@@ -292,7 +295,7 @@ class CourseSpreadsheetImporter
         $run->forceFill([
             'status' => 'finished',
             'processed_modules' => max((int) $run->processed_modules, (int) $run->total_modules),
-            'latest_message' => 'Importação concluída.',
+                'latest_message' => 'Importação concluída. Planos aguardam atualização manual.',
             'error_message' => null,
             'finished_at' => $run->finished_at ?: now(),
             'summary' => [
@@ -302,6 +305,10 @@ class CourseSpreadsheetImporter
                 'tracks' => $trackCount,
                 'lessons' => $lessonCount,
                 'recovered_from_completed_structure' => true,
+                'study_plan_refresh' => [
+                    'required' => true,
+                    'scope' => 'from_next_week',
+                ],
             ],
         ])->save();
 
@@ -328,13 +335,12 @@ class CourseSpreadsheetImporter
             ? ($this->resolveOfficialStudyTrackName($course) ?? 'Trilha Oficial - '.$course->name)
             : $payload['study_track_name'];
 
-        DB::transaction(fn () => $this->replaceExistingOfficialStructure($course, $studyTrackName));
-
         $state = [
             'payload' => $payload,
             'study_track_name' => $studyTrackName,
             'replace_track_modules' => true,
             'module_ids' => [],
+            'track_ids' => [],
             'removed_structure_module_ids' => $this->removedStructureModuleIds,
         ];
 
@@ -365,15 +371,13 @@ class CourseSpreadsheetImporter
     protected function importStructure(Course $course, array $payload, string $studyTrackName, bool $replaceTrackModules = true): void
     {
         $moduleIds = [];
-
-        if ($replaceTrackModules) {
-            $this->replaceExistingOfficialStructure($course, $studyTrackName);
-        }
+        $trackIds = [];
 
         foreach ($payload['modules'] as $moduleData) {
-            $this->importModuleData($course, $moduleData, $moduleIds);
+            $this->importModuleData($course, $moduleData, $moduleIds, $trackIds);
         }
 
+        $this->syncCourseStructureToSpreadsheet($course, array_keys($moduleIds), array_keys($trackIds));
         $this->syncOfficialStudyTrack($course, $studyTrackName, $moduleIds, $replaceTrackModules);
         Course::ensureStartHereModuleIsAttached($course);
     }
@@ -381,15 +385,12 @@ class CourseSpreadsheetImporter
     protected function importStructureWithProgress(Course $course, array $payload, string $studyTrackName, bool $replaceTrackModules = true, ?callable $progress = null): Course
     {
         $moduleIds = [];
+        $trackIds = [];
         $modules = array_values($payload['modules'] ?? []);
         $totalModules = count($modules);
 
-        if ($replaceTrackModules) {
-            DB::transaction(fn () => $this->replaceExistingOfficialStructure($course, $studyTrackName));
-        }
-
         foreach ($modules as $index => $moduleData) {
-            DB::transaction(fn () => $this->importModuleData($course, $moduleData, $moduleIds));
+            DB::transaction(fn () => $this->importModuleData($course, $moduleData, $moduleIds, $trackIds));
 
             $progress?->__invoke([
                 'course_id' => $course->id,
@@ -399,21 +400,20 @@ class CourseSpreadsheetImporter
             ]);
         }
 
-        DB::transaction(function () use ($course, $studyTrackName, $moduleIds, $replaceTrackModules): void {
+        DB::transaction(function () use ($course, $studyTrackName, $moduleIds, $trackIds, $replaceTrackModules): void {
+            $this->syncCourseStructureToSpreadsheet($course, array_keys($moduleIds), array_keys($trackIds));
             $this->syncOfficialStudyTrack($course, $studyTrackName, $moduleIds, $replaceTrackModules);
             Course::ensureStartHereModuleIsAttached($course);
             CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
         });
 
-        app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($course->fresh());
-
         return $course->fresh(['modules.tracks.lessons', 'studyTracks.modules']);
     }
 
-    protected function importModuleData(Course $course, array $moduleData, array &$moduleIds): void
+    protected function importModuleData(Course $course, array $moduleData, array &$moduleIds, array &$trackIds = []): void
     {
         if ($this->shouldAttachCompoundTrackModules($moduleData)) {
-            $moduleData = $this->attachCompoundTrackModules($course, $moduleData, $moduleIds);
+            $moduleData = $this->attachCompoundTrackModules($course, $moduleData, $moduleIds, $trackIds);
         }
 
         if (empty($moduleData['tracks']) && empty($moduleData['lessons'])) {
@@ -442,7 +442,9 @@ class CourseSpreadsheetImporter
             $course->id => ['sort_order' => $moduleData['sort_order']],
         ]);
 
-        $this->importTracks($course, $module, $moduleData);
+        foreach ($this->importTracks($course, $module, $moduleData) as $trackId) {
+            $trackIds[$trackId] = true;
+        }
 
         $moduleIds[$module->id] = [
             'weight' => 1,
@@ -470,6 +472,37 @@ class CourseSpreadsheetImporter
         }
     }
 
+    protected function syncCourseStructureToSpreadsheet(Course $course, array $importedModuleIds, array $importedTrackIds): void
+    {
+        $importedModuleIds = array_map('intval', $importedModuleIds);
+        $importedTrackIds = array_map('intval', $importedTrackIds);
+        $modules = $this->modulesForCourseStructureReplacement($course);
+
+        foreach ($modules as $module) {
+            $moduleWasImported = in_array((int) $module->id, $importedModuleIds, true);
+
+            if (! $moduleWasImported) {
+                $module->courses()->detach($course->id);
+
+                if ((int) $module->course_id === (int) $course->id) {
+                    $module->forceFill(['course_id' => null])->save();
+                }
+            }
+
+            $module->tracks()->get()->each(function (CourseModuleTrack $track) use ($course, $importedTrackIds, $moduleWasImported): void {
+                if ($moduleWasImported && in_array((int) $track->id, $importedTrackIds, true)) {
+                    return;
+                }
+
+                $track->courses()->detach($course->id);
+                DB::table('course_module_track_lesson_course')
+                    ->where('course_id', $course->id)
+                    ->where('course_module_track_id', $track->id)
+                    ->delete();
+            });
+        }
+    }
+
     protected function shouldAttachCompoundTrackModules(array $moduleData): bool
     {
         return false;
@@ -490,7 +523,13 @@ class CourseSpreadsheetImporter
         foreach ($modules as $module) {
             $this->removedStructureModuleIds[] = (int) $module->id;
             $module->courses()->detach($course->id);
-            $module->tracks()->get()->each(fn (CourseModuleTrack $track) => $track->courses()->detach($course->id));
+            $module->tracks()->get()->each(function (CourseModuleTrack $track) use ($course): void {
+                $track->courses()->detach($course->id);
+                DB::table('course_module_track_lesson_course')
+                    ->where('course_id', $course->id)
+                    ->where('course_module_track_id', $track->id)
+                    ->delete();
+            });
 
             $belongsOnlyToThisCourse = blank($module->course_id) || (int) $module->course_id === (int) $course->id;
             $isSharedThroughPivot = (int) $module->courses_count > 1;
@@ -523,7 +562,7 @@ class CourseSpreadsheetImporter
             ->values();
     }
 
-    protected function attachCompoundTrackModules(Course $course, array $moduleData, array &$moduleIds): array
+    protected function attachCompoundTrackModules(Course $course, array $moduleData, array &$moduleIds, array &$trackIds = []): array
     {
         $tracks = $moduleData['tracks'] ?? [];
 
@@ -568,7 +607,7 @@ class CourseSpreadsheetImporter
                 $course->id => ['sort_order' => $compoundModule->sort_order],
             ]);
 
-            $this->importTracks($course, $compoundModule, [
+            foreach ($this->importTracks($course, $compoundModule, [
                 ...$moduleData,
                 'name' => $compoundModule->name,
                 'workload_minutes' => $compoundModule->workload_minutes,
@@ -577,7 +616,9 @@ class CourseSpreadsheetImporter
                     ...$trackData,
                     'lessons' => $lessons,
                 ]],
-            ]);
+            ]) as $trackId) {
+                $trackIds[$trackId] = true;
+            }
 
             $moduleIds[$compoundModule->id] = [
                 'weight' => 1,
@@ -601,7 +642,7 @@ class CourseSpreadsheetImporter
             ->value('name');
     }
 
-    protected function importTracks(Course $course, CourseModule $module, array $moduleData): void
+    protected function importTracks(Course $course, CourseModule $module, array $moduleData): array
     {
         $tracks = array_values($moduleData['tracks'] ?? [[
             'name' => $moduleData['track_name'] ?? 'Aulas',
@@ -618,6 +659,7 @@ class CourseSpreadsheetImporter
             })
             ->countBy();
         $usedTrackSlugs = [];
+        $trackIds = [];
 
         foreach ($tracks as $index => $trackData) {
             $trackName = trim((string) ($trackData['name'] ?? '')) ?: 'Aulas';
@@ -659,7 +701,10 @@ class CourseSpreadsheetImporter
             ]);
 
             $this->importLessons($course, $module, $track, $trackData['lessons'] ?? []);
+            $trackIds[] = (int) $track->id;
         }
+
+        return $trackIds;
     }
 
     protected function resolveTeacher(string $name): Teacher
@@ -728,9 +773,12 @@ class CourseSpreadsheetImporter
                 || filled($lesson->panda_embed_url)
                 || filled($lesson->panda_player_url);
             $previousMetadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+            $libraryFolderPath = collect([$module->name, $track->name])->filter()->join(' / ');
+            $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'spreadsheet']);
 
             $lesson->fill([
                 'course_id' => null,
+                'lesson_folder_id' => $lessonFolder?->id,
                 'course_module_id' => $this->resolveLessonModuleId($lesson, $module),
                 'course_module_track_id' => $this->resolveLessonTrackId($lesson, $track),
                 'title' => $title,
@@ -754,6 +802,8 @@ class CourseSpreadsheetImporter
                     'matched_standalone_library_lesson' => $matchedStandaloneLibraryLesson,
                     'matched_by_name' => $lessonExists && $this->lessonNamesMatch($lesson->title, $title),
                     'matched_by_duration' => $lessonExists && $this->lessonDurationMatchesImport($lesson, $lessonData),
+                    'library_folder_name' => $track->name,
+                    'library_folder_path' => $libraryFolderPath,
                     'imported_at' => now()->toIso8601String(),
                 ]),
             ]);
@@ -764,6 +814,20 @@ class CourseSpreadsheetImporter
             $lesson->tracks()->syncWithoutDetaching([
                 $track->id => ['sort_order' => $sortOrder],
             ]);
+            DB::table('course_module_track_lesson_course')->updateOrInsert([
+                'course_id' => $course->id,
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $lesson->id,
+            ], [
+                'sort_order' => $sortOrder,
+                'status' => $this->normalizeLessonStatus((string) ($lessonData['status'] ?? 'published')),
+                'metadata' => json_encode([
+                    'source' => 'spreadsheet',
+                    'imported_at' => now()->toIso8601String(),
+                ]),
+                'updated_at' => now(),
+                'created_at' => now(),
+            ]);
             $conflictingLessonIds = $track->lessons()
                 ->wherePivot('sort_order', $sortOrder)
                 ->whereKeyNot($lesson->id)
@@ -771,12 +835,22 @@ class CourseSpreadsheetImporter
                 ->all();
 
             if ($conflictingLessonIds !== []) {
-                $track->lessons()->detach($conflictingLessonIds);
+                DB::table('course_module_track_lesson_course')
+                    ->where('course_id', $course->id)
+                    ->where('course_module_track_id', $track->id)
+                    ->whereIn('lesson_id', $conflictingLessonIds)
+                    ->delete();
             }
 
             $usedLessonIds[] = $lesson->id;
             $this->rememberReusableLessonCandidate($lesson->fresh());
         }
+
+        DB::table('course_module_track_lesson_course')
+            ->where('course_id', $course->id)
+            ->where('course_module_track_id', $track->id)
+            ->when($usedLessonIds !== [], fn ($query) => $query->whereNotIn('lesson_id', $usedLessonIds))
+            ->delete();
     }
 
     protected function spreadsheetLessonStatus(bool $hasReadyMedia): string
@@ -848,9 +922,18 @@ class CourseSpreadsheetImporter
 
     protected function resolveModuleForImport(Course $course, array $moduleData): CourseModule
     {
-        return new CourseModule([
+        $moduleName = (string) $moduleData['name'];
+
+        return $course->modules()
+            ->where('course_modules.name', $moduleName)
+            ->first()
+            ?? CourseModule::query()
+                ->where('course_id', $course->id)
+                ->where('name', $moduleName)
+                ->first()
+            ?? new CourseModule([
             'course_id' => null,
-            'name' => (string) $moduleData['name'],
+            'name' => $moduleName,
         ]);
     }
 
@@ -1031,11 +1114,13 @@ class CourseSpreadsheetImporter
             ->when($excludeLessonIds !== [], fn ($query) => $query->whereNotIn('lessons.id', $excludeLessonIds))
             ->first();
 
-        if ($lesson && $this->lessonHasReadyMedia($lesson)) {
+        if ($lesson && $this->lessonHasReadyMedia($lesson) && $this->lessonMatchesImportContext($lesson, $module, $track)) {
             return $lesson;
         }
 
-        $fallbackLesson ??= $lesson;
+        if ($lesson && $this->lessonMatchesImportContext($lesson, $module, $track)) {
+            $fallbackLesson ??= $lesson;
+        }
 
         return $this->reusableLessonCandidatesFor($title, $module, $track, $lessonData)
             ->when($excludeLessonIds !== [], fn (Collection $lessons) => $lessons->whereNotIn('id', $excludeLessonIds))
@@ -1103,12 +1188,17 @@ class CourseSpreadsheetImporter
         }
 
         $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
-        $path = $this->matchKey((string) ($metadata['drive_source_folder_path'] ?? ''), 'lesson-path-'.$lesson->id);
+        $path = $this->matchKey((string) ($metadata['library_folder_path'] ?? $metadata['drive_source_folder_path'] ?? $lesson->folder?->path ?? ''), 'lesson-path-'.$lesson->id);
         $trackKey = $track ? $this->matchKey($track->name, 'track-'.$track->id) : '';
         $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
         $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
+        $pathMatchesModule = $moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey);
         $lessonProduct = $this->contentProduct($path) ?? $this->contentProduct($lessonKey);
         $trackProduct = $this->contentProduct($trackKey);
+
+        if (! $this->lessonMatchesImportContext($lesson, $module, $track, $path)) {
+            return 0;
+        }
 
         if ($lessonProduct && $trackProduct && $lessonProduct !== $trackProduct) {
             return 0;
@@ -1126,7 +1216,7 @@ class CourseSpreadsheetImporter
             $score += 12;
         }
 
-        if ($moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey)) {
+        if ($pathMatchesModule) {
             $score += 4;
         }
 
@@ -1217,6 +1307,7 @@ class CourseSpreadsheetImporter
             ->select([
                 'id',
                 'course_id',
+                'lesson_folder_id',
                 'course_module_id',
                 'course_module_track_id',
                 'title',
@@ -1264,6 +1355,7 @@ class CourseSpreadsheetImporter
             ->select([
                 'id',
                 'course_id',
+                'lesson_folder_id',
                 'course_module_id',
                 'course_module_track_id',
                 'title',
@@ -1303,7 +1395,9 @@ class CourseSpreadsheetImporter
                     foreach ($contextTokens as $token) {
                         $query->orWhere('title', 'like', '%'.$token.'%')
                             ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
-                            ->orWhere('metadata->drive_source_folder_path', 'like', '%'.$token.'%');
+                            ->orWhere('metadata->drive_source_folder_path', 'like', '%'.$token.'%')
+                            ->orWhere('metadata->library_folder_path', 'like', '%'.$token.'%')
+                            ->orWhereHas('folder', fn ($query) => $query->where('path', 'like', '%'.$token.'%'));
                     }
                 });
             })
@@ -1330,7 +1424,7 @@ class CourseSpreadsheetImporter
     {
         return collect($tokens)
             ->map(fn (string $token): string => trim($token))
-            ->reject(fn (string $token): bool => in_array($token, ['aula', 'video'], true))
+            ->reject(fn (string $token): bool => in_array($token, ['aula', 'video', 'modulo', 'trilha'], true))
             ->filter(fn (string $token): bool => mb_strlen($token) >= 4)
             ->unique()
             ->take($limit)
@@ -1476,6 +1570,36 @@ class CourseSpreadsheetImporter
             ->value();
 
         return array_values(array_unique($variants));
+    }
+
+    protected function lessonMatchesImportContext(Lesson $lesson, CourseModule $module, ?CourseModuleTrack $track = null, ?string $path = null): bool
+    {
+        if (! $track) {
+            return true;
+        }
+
+        $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+        $rawPath = (string) ($metadata['library_folder_path'] ?? $metadata['drive_source_folder_path'] ?? $lesson->folder?->path ?? '');
+        $path ??= $this->matchKey($rawPath, 'lesson-path-'.$lesson->id);
+
+        if ($path === '') {
+            return true;
+        }
+
+        $trackKey = $this->matchKey($track->name, 'track-'.$track->id);
+        $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
+
+        if ($trackKey !== '' && ! $this->pathMatchesContext($path, $trackKey)) {
+            return false;
+        }
+
+        $hasHierarchicalPath = str_contains($rawPath, '/') || str_contains($rawPath, ' / ');
+
+        if ($hasHierarchicalPath && $moduleKey !== '' && ! $this->pathMatchesContext($path, $moduleKey)) {
+            return false;
+        }
+
+        return true;
     }
 
     protected function contentProduct(string $value): ?string

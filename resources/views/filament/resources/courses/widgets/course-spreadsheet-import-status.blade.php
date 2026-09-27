@@ -16,8 +16,31 @@
             class="space-y-4"
         >
             @if ($run?->status === 'finished')
-                <div class="rounded-md bg-success-50 px-3 py-2 text-sm font-semibold text-success-700 ring-1 ring-success-200 dark:bg-success-400/10 dark:text-success-300 dark:ring-success-400/20">
-                    Importação 100% concluída
+                <div class="space-y-3">
+                    <div class="rounded-md bg-success-50 px-3 py-2 text-sm font-semibold text-success-700 ring-1 ring-success-200 dark:bg-success-400/10 dark:text-success-300 dark:ring-success-400/20">
+                        Importação 100% concluída
+                    </div>
+
+                    @if ($plansWereRefreshed)
+                        <div class="rounded-md bg-success-50 px-3 py-2 text-sm text-success-700 ring-1 ring-success-200 dark:bg-success-400/10 dark:text-success-300 dark:ring-success-400/20">
+                            Os planos ativos já foram atualizados a partir da próxima semana.
+                        </div>
+                    @else
+                        <div class="flex flex-col gap-3 rounded-md bg-warning-50 px-3 py-3 text-sm text-warning-800 ring-1 ring-warning-200 dark:bg-warning-400/10 dark:text-warning-200 dark:ring-warning-400/20 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                A importação não atualiza planos automaticamente. Atualize manualmente para aplicar a nova estrutura a partir da próxima semana, preservando o progresso já realizado pelos alunos.
+                            </div>
+                            <x-filament::button
+                                color="warning"
+                                icon="heroicon-o-calendar-days"
+                                wire:click="refreshStudyPlans"
+                                wire:loading.attr="disabled"
+                                wire:target="refreshStudyPlans"
+                            >
+                                Atualizar planos
+                            </x-filament::button>
+                        </div>
+                    @endif
                 </div>
             @else
                 <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

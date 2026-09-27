@@ -9,6 +9,7 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
+use App\Models\LessonFolder;
 use App\Models\QuestionBank;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
@@ -50,6 +51,13 @@ class LessonResource extends Resource
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
+            Select::make('lesson_folder_id')
+                ->label('Pasta da biblioteca')
+                ->options(fn (): array => self::lessonFolderOptions())
+                ->searchable()
+                ->preload()
+                ->helperText('Organiza a aula como item único da biblioteca, reutilizável em várias trilhas, módulos e cursos.')
+                ->columnSpanFull(),
             Select::make('modules')
                 ->label('Módulos vinculados')
                 ->relationship('modules', 'name')
@@ -192,6 +200,14 @@ class LessonResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('title')->label('Aula')->searchable()->sortable()->toggleable(),
+                TextColumn::make('folder.path')
+                    ->label('Pasta')
+                    ->formatStateUsing(fn (?string $state): string => $state ? str_replace('/', ' / ', $state) : 'Sem pasta')
+                    ->searchable(query: fn ($query, string $search) => $query
+                        ->whereHas('folder', fn ($query) => $query
+                            ->where('name', 'like', "%{$search}%")
+                            ->orWhere('path', 'like', "%{$search}%")))
+                    ->toggleable(),
                 TextColumn::make('linked_courses')
                     ->label('Curso')
                     ->getStateUsing(fn (Lesson $record): string => self::linkedCourseNames($record))
@@ -318,6 +334,11 @@ class LessonResource extends Resource
                                         ->orWhereHas('studyTracks', fn ($query) => $query->where('course_id', $data['value']))));
                         })
                         : $query),
+                SelectFilter::make('lesson_folder_id')
+                    ->label('Pasta da biblioteca')
+                    ->options(fn (): array => self::lessonFolderOptions())
+                    ->searchable()
+                    ->preload(),
                 SelectFilter::make('course_module_id')
                     ->label('Módulo')
                     ->options(fn ($livewire): array => self::moduleFilterOptions(
@@ -697,6 +718,17 @@ class LessonResource extends Resource
         $panda = filled($lesson->panda_video_id) ? ' · Panda '.$lesson->panda_video_id : '';
 
         return Str::limit($lesson->title, 90).' · '.$duration.$panda;
+    }
+
+    public static function lessonFolderOptions(): array
+    {
+        return LessonFolder::query()
+            ->orderBy('path')
+            ->get(['id', 'path'])
+            ->mapWithKeys(fn (LessonFolder $folder): array => [
+                $folder->id => str_replace('/', ' / ', $folder->path),
+            ])
+            ->all();
     }
 
     public static function moduleFilterOptions(mixed $courseId = null): array

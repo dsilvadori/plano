@@ -119,7 +119,11 @@ class CourseAccessResolver
         return Str::of($name)
             ->ascii()
             ->lower()
-            ->replaceMatches('/\s+/', ' ')
+            ->replaceMatches('/\b(curso|preparatorio|preparatório|pacote|combo|turma|online|completo|edital|pos[- ]?edital|p[oó]s[- ]?edital)\b/u', ' ')
+            ->replaceMatches('/\b(para|do|da|dos|das|de|e|a|o|as|os)\b/u', ' ')
+            ->replaceMatches('/\b(20\d{2})\b/u', ' ')
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
             ->trim()
             ->toString();
     }
@@ -147,11 +151,37 @@ class CourseAccessResolver
             return true;
         }
 
-        if (mb_strlen($normalizedCourseName) < 12 || mb_strlen($normalizedProductName) < 12) {
+        if (mb_strlen($normalizedCourseName) < 8 || mb_strlen($normalizedProductName) < 8) {
             return false;
         }
 
-        return Str::contains($normalizedCourseName, $normalizedProductName)
-            || Str::contains($normalizedProductName, $normalizedCourseName);
+        if (Str::contains($normalizedCourseName, $normalizedProductName)
+            || Str::contains($normalizedProductName, $normalizedCourseName)) {
+            return true;
+        }
+
+        $courseTokens = $this->nameTokens($normalizedCourseName);
+        $productTokens = $this->nameTokens($normalizedProductName);
+
+        if ($courseTokens === [] || $productTokens === []) {
+            return false;
+        }
+
+        $intersection = array_intersect($courseTokens, $productTokens);
+        $minimumSharedTokens = min(count($courseTokens), count($productTokens)) >= 3 ? 2 : 1;
+
+        return count($intersection) >= $minimumSharedTokens
+            && count($intersection) / max(1, min(count($courseTokens), count($productTokens))) >= 0.6;
+    }
+
+    protected function nameTokens(string $normalizedName): array
+    {
+        return Str::of($normalizedName)
+            ->explode(' ')
+            ->map(fn (string $token): string => trim($token))
+            ->filter(fn (string $token): bool => mb_strlen($token) >= 3)
+            ->unique()
+            ->values()
+            ->all();
     }
 }
