@@ -4,11 +4,11 @@ namespace App\Filament\Resources\Courses\Widgets;
 
 use App\Models\Course;
 use App\Models\CourseSpreadsheetImportRun;
-use App\Services\ActiveStudyPlanRefresher;
 use App\Services\CourseSpreadsheetImporter;
-use Filament\Notifications\Notification;
 use Filament\Widgets\Concerns\CanPoll;
 use Filament\Widgets\Widget;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Attributes\On;
 
@@ -30,38 +30,24 @@ class CourseSpreadsheetImportStatus extends Widget
         //
     }
 
-    public function refreshStudyPlans(ActiveStudyPlanRefresher $refresher): void
-    {
-        $refreshed = $refresher->refreshCourseFromNextWeek($this->record->fresh());
-        $run = $this->latestRun();
-
-        if ($run) {
-            $summary = is_array($run->summary) ? $run->summary : [];
-            $summary['study_plan_refresh'] = [
-                'refreshed_plans' => $refreshed,
-                'refreshed_at' => now()->toIso8601String(),
-                'scope' => 'from_next_week',
-            ];
-
-            $run->forceFill([
-                'latest_message' => 'Importação concluída. Planos atualizados a partir da próxima semana.',
-                'summary' => $summary,
-            ])->save();
-        }
-
-        Notification::make()
-            ->title('Planos atualizados.')
-            ->body("{$refreshed} plano(s) ativo(s) foram atualizados a partir da próxima semana.")
-            ->success()
-            ->send();
-    }
-
     protected function getViewData(): array
     {
         $run = $this->latestRun();
 
         if ($run && in_array($run->status, ['queued', 'running', 'failed'], true)) {
-            $run = app(CourseSpreadsheetImporter::class)->processImportRun($run);
+            $lock = Cache::lock('course-spreadsheet-import-run-'.$run->id, 120);
+
+            if ($lock->get()) {
+                try {
+                    $run = app(CourseSpreadsheetImporter::class)->processImportRun($run);
+                } catch (QueryException $exception) {
+                    if (! str_contains($exception->getMessage(), 'database is locked')) {
+                        throw $exception;
+                    }
+                } finally {
+                    $lock->release();
+                }
+            }
         }
 
         $problemMessage = $run ? $this->problemMessage($run) : null;
@@ -71,7 +57,6 @@ class CourseSpreadsheetImportStatus extends Widget
             'statusLabel' => $problemMessage ? 'Atenção' : ($run ? $this->statusLabel((string) $run->status) : null),
             'statusColor' => $problemMessage ? 'danger' : ($run ? $this->statusColor((string) $run->status) : 'gray'),
             'problemMessage' => $problemMessage,
-            'plansWereRefreshed' => $run ? $this->plansWereRefreshed($run) : false,
         ];
     }
 
@@ -81,11 +66,6 @@ class CourseSpreadsheetImportStatus extends Widget
             ->where('course_id', $this->record->id)
             ->latest()
             ->first();
-    }
-
-    protected function plansWereRefreshed(CourseSpreadsheetImportRun $run): bool
-    {
-        return filled(data_get($run->summary, 'study_plan_refresh.refreshed_at'));
     }
 
     protected function problemMessage(CourseSpreadsheetImportRun $run): ?string

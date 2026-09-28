@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\Courses\Pages\EditCourse;
-use App\Filament\Resources\Courses\Widgets\CourseSpreadsheetImportStatus;
 use App\Jobs\ImportCourseSpreadsheet;
 use App\Jobs\RefreshActiveCourseStudyPlans;
 use App\Models\Course;
@@ -14,8 +13,8 @@ use App\Models\Lesson;
 use App\Models\LessonFolder;
 use App\Models\StudyTrack;
 use App\Models\Teacher;
+use App\Models\Video;
 use App\Support\CourseSpreadsheetUpload;
-use App\Services\ActiveStudyPlanRefresher;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -208,6 +207,9 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('100% concluído', $run->progress_label);
         $this->assertFalse(Storage::disk('local')->exists('imports/courses/oficial.xlsx'));
         $this->assertTrue($run->course->modules()->where('name', 'Português')->exists());
+        $this->assertGreaterThanOrEqual(8, $run->course->modules()->get()->reject->shouldBeExcludedFromStudyPlan()->count());
+        $this->assertGreaterThanOrEqual(8, $run->course->moduleTracks()->count());
+        $this->assertGreaterThanOrEqual(50, $run->course->linkedLessonsQuery()->count());
     }
 
     public function test_course_spreadsheet_import_run_recovers_when_structure_was_already_imported(): void
@@ -396,39 +398,6 @@ class CourseSpreadsheetImportTest extends TestCase
 
         Queue::assertNotPushed(RefreshActiveCourseStudyPlans::class);
         $this->assertTrue($course->modules()->where('name', 'Português')->exists());
-    }
-
-    public function test_course_import_widget_refreshes_study_plans_manually_from_next_week(): void
-    {
-        $course = Course::factory()->create();
-        $run = CourseSpreadsheetImportRun::query()->create([
-            'course_id' => $course->id,
-            'course_name' => $course->name,
-            'status' => 'finished',
-            'latest_message' => 'Importação concluída. Planos aguardam atualização manual.',
-            'summary' => [
-                'study_plan_refresh' => [
-                    'required' => true,
-                    'scope' => 'from_next_week',
-                ],
-            ],
-        ]);
-
-        $this->mock(ActiveStudyPlanRefresher::class, function ($mock) use ($course): void {
-            $mock->shouldReceive('refreshCourseFromNextWeek')
-                ->once()
-                ->withArgs(fn (Course $refreshedCourse): bool => $refreshedCourse->is($course))
-                ->andReturn(3);
-        });
-
-        $widget = app(CourseSpreadsheetImportStatus::class);
-        $widget->record = $course;
-        app()->call([$widget, 'refreshStudyPlans']);
-
-        $run->refresh();
-        $this->assertSame(3, data_get($run->summary, 'study_plan_refresh.refreshed_plans'));
-        $this->assertSame('from_next_week', data_get($run->summary, 'study_plan_refresh.scope'));
-        $this->assertNotNull(data_get($run->summary, 'study_plan_refresh.refreshed_at'));
     }
 
     public function test_importer_creates_course_modules_and_official_study_track(): void
@@ -1080,6 +1049,147 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
         $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
         $this->assertTrue($course->studyTracks()->first()->modules()->whereKey($module->id)->exists());
+    }
+
+    public function test_spreadsheet_import_pulls_video_from_library_when_panda_title_has_extra_prefixes(): void
+    {
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '28 - Direito - Administrativo - Aula - 10 - Responsabilidade - Civil - Do - Estado - Bloco - 2',
+            'slug' => '28-direito-administrativo-aula-10-responsabilidade-civil-do-estado-bloco-2',
+            'description' => 'Aula da biblioteca Panda.',
+            'type' => 'video',
+            'duration_seconds' => 2160,
+            'sort_order' => 28,
+            'panda_video_id' => 'panda-responsabilidade-civil-estado-bloco-2',
+            'panda_embed_url' => 'https://player.example.com/responsabilidade-civil-estado-bloco-2',
+            'panda_status' => 'CONVERTED',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-library-video-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Biblioteca Panda,Direito Administrativo,basic,1,Responsabilidade Civil do Estado,Responsabilidade Civil do Estado - Bloco 2,36',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Direito Administrativo')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Responsabilidade Civil do Estado')->firstOrFail();
+
+        $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-responsabilidade-civil-estado-bloco-2')->count());
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+        $this->assertSame('panda-responsabilidade-civil-estado-bloco-2', $existingLesson->fresh()->panda_video_id);
+    }
+
+    public function test_spreadsheet_import_pulls_video_from_module_library_folder(): void
+    {
+        $folder = LessonFolder::findOrCreatePath('Português');
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'lesson_folder_id' => $folder->id,
+            'title' => '01 - Classes de Palavras - Substantivo e Adjetivo',
+            'slug' => 'classes-de-palavras-substantivo-e-adjetivo',
+            'description' => 'Aula da biblioteca da plataforma.',
+            'type' => 'video',
+            'duration_seconds' => 660,
+            'sort_order' => 1,
+            'panda_video_id' => 'panda-portugues-substantivo-adjetivo',
+            'panda_embed_url' => 'https://player.example.com/portugues-substantivo-adjetivo',
+            'panda_status' => 'CONVERTED',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => [
+                'library_folder_path' => 'Português',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-library-module-folder-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Biblioteca Modulo,Português,basic,1,Classe de palavras,Classes de Palavras - Substantivo e Adjetivo,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Português')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Classe de palavras')->firstOrFail();
+
+        $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-portugues-substantivo-adjetivo')->count());
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+        $this->assertSame('panda-portugues-substantivo-adjetivo', $existingLesson->fresh()->panda_video_id);
+    }
+
+    public function test_spreadsheet_import_reuses_lesson_with_linked_video_library_media(): void
+    {
+        $folder = LessonFolder::findOrCreatePath('Português');
+        $video = Video::query()->create([
+            'lesson_folder_id' => $folder->id,
+            'title' => '01 - Classes de Palavras - Substantivo e Adjetivo',
+            'slug' => 'classes-de-palavras-substantivo-e-adjetivo',
+            'provider' => 'panda',
+            'provider_video_id' => 'panda-video-canonico-portugues',
+            'provider_status' => 'CONVERTED',
+            'embed_url' => 'https://player.example.com/embed/video-canonico-portugues',
+            'player_url' => 'https://player.example.com/video-canonico-portugues',
+            'duration_seconds' => 660,
+            'source_status' => 'media_ready',
+            'metadata' => ['library_folder_path' => 'Português'],
+        ]);
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'lesson_folder_id' => $folder->id,
+            'video_id' => $video->id,
+            'title' => '01 - Classes de Palavras - Substantivo e Adjetivo',
+            'slug' => 'classes-de-palavras-substantivo-e-adjetivo',
+            'description' => 'Aula canônica com vídeo separado.',
+            'type' => 'video',
+            'duration_seconds' => 660,
+            'sort_order' => 1,
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => [
+                'library_folder_path' => 'Português',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-linked-video-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Video Canonico,Português,basic,1,Classe de palavras,Classes de Palavras - Substantivo e Adjetivo,30',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Português')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Classe de palavras')->firstOrFail();
+
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+        $this->assertSame($video->id, $existingLesson->fresh()->video_id);
+        $this->assertSame('panda-video-canonico-portugues', $existingLesson->fresh()->video->provider_video_id);
     }
 
     public function test_spreadsheet_import_keeps_lesson_published_when_media_is_missing(): void

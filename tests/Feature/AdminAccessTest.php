@@ -4,7 +4,10 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\Users\Pages\CreateUser;
 use App\Models\Course;
+use App\Models\Lesson;
+use App\Models\LessonFolder;
 use App\Models\User;
+use App\Models\Video;
 use App\Models\WebhookEvent;
 use App\Notifications\SetPasswordNotification;
 use App\Services\UserImpersonation;
@@ -55,6 +58,72 @@ class AdminAccessTest extends TestCase
             ->get('/admin/users')
             ->assertOk()
             ->assertSee('Importar alunos');
+    }
+
+    public function test_admin_can_access_video_library_page(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $folder = LessonFolder::findOrCreatePath('Português/Ortografia');
+
+        Video::query()->create([
+            'lesson_folder_id' => $folder?->id,
+            'title' => 'Acentuação gráfica',
+            'slug' => 'acentuacao-grafica',
+            'provider' => 'panda',
+            'provider_video_id' => 'panda-video-portugues-001',
+            'source_status' => 'media_ready',
+            'duration_seconds' => 1800,
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/videos')
+            ->assertOk()
+            ->assertSee('Biblioteca De Vídeos')
+            ->assertSee('Importar Panda')
+            ->assertSee('Acentuação gráfica')
+            ->assertSee('portugues / ortografia');
+    }
+
+    public function test_panda_import_action_is_not_shown_on_lessons_page(): void
+    {
+        $admin = User::factory()->admin()->create();
+
+        $this->actingAs($admin)
+            ->get('/admin/lessons')
+            ->assertOk()
+            ->assertDontSee('Importar Panda');
+    }
+
+    public function test_panda_actions_are_shown_on_video_edit_and_not_lesson_edit(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $video = Video::query()->create([
+            'title' => 'Vídeo com Panda',
+            'slug' => 'video-com-panda',
+            'provider' => 'panda',
+            'provider_video_id' => 'panda-video-actions-001',
+            'source_status' => 'media_ready',
+            'duration_seconds' => 900,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'video_id' => $video->id,
+            'title' => 'Aula com vídeo Panda',
+            'slug' => 'aula-com-video-panda',
+        ]);
+
+        $this->actingAs($admin)
+            ->get("/admin/videos/{$video->id}/edit")
+            ->assertOk()
+            ->assertSee('Importar URL do Panda')
+            ->assertSee('Gerar Recursos de IA')
+            ->assertSee('Ativar Tutor IA');
+
+        $this->actingAs($admin)
+            ->get("/admin/lessons/{$lesson->id}/edit")
+            ->assertOk()
+            ->assertDontSee('Importar URL do Panda')
+            ->assertDontSee('Gerar Recursos de IA')
+            ->assertDontSee('Ativar Tutor IA');
     }
 
     public function test_admin_can_access_student_dashboard_and_see_all_active_courses(): void

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\SyncPandaAiArtifacts;
 use App\Models\AiArtifact;
 use App\Models\Lesson;
+use App\Models\Video;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaVideoClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -52,10 +53,18 @@ class PandaAiResourceActivatorTest extends TestCase
         $this->assertFalse($result['requested']);
         $this->assertSame(3, $result['created_artifacts']);
 
-        $this->assertSame(1, AiArtifact::query()->where('artifact_type', 'summary')->count());
-        $this->assertSame(1, AiArtifact::query()->where('artifact_type', 'quiz')->count());
-        $this->assertSame(1, AiArtifact::query()->where('artifact_type', 'mindmap')->count());
-        $this->assertSame(1, AiArtifact::query()->where('artifact_type', 'panda_payload')->count());
+        foreach (['summary', 'quiz', 'mindmap', 'panda_payload'] as $type) {
+            $this->assertSame(1, AiArtifact::query()
+                ->where('source_type', Lesson::class)
+                ->where('source_id', $lesson->id)
+                ->where('artifact_type', $type)
+                ->count());
+            $this->assertSame(1, AiArtifact::query()
+                ->where('source_type', Video::class)
+                ->where('source_id', $lesson->video_id)
+                ->where('artifact_type', $type)
+                ->count());
+        }
     }
 
     public function test_it_requests_panda_ai_workflow_when_artifacts_are_missing(): void

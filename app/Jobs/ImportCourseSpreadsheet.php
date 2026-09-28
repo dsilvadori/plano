@@ -93,17 +93,13 @@ class ImportCourseSpreadsheet implements ShouldQueue
             $modules = $course->modules()->with('tracks.lessons')->get();
             $moduleCount = $modules->count();
             $trackCount = $modules->sum(fn (CourseModule $module): int => $module->tracks->count());
-            $lessonCount = $modules
-                ->flatMap(fn (CourseModule $module) => $module->tracks->flatMap->lessons)
-                ->pluck('id')
-                ->unique()
-                ->count();
+            $lessonCount = $course->linkedLessonsQuery()->count('lessons.id');
 
             $run?->forceFill([
                 'course_id' => $course->id,
                 'course_name' => $run->course_name ?: $course->name,
                 'status' => 'finished',
-                'latest_message' => 'Importação concluída. Planos aguardam atualização manual.',
+                'latest_message' => 'Importação concluída. Planos não foram atualizados automaticamente.',
                 'error_message' => null,
                 'finished_at' => now(),
                 'summary' => [
@@ -112,10 +108,6 @@ class ImportCourseSpreadsheet implements ShouldQueue
                     'modules' => $moduleCount,
                     'tracks' => $trackCount,
                     'lessons' => $lessonCount,
-                    'study_plan_refresh' => [
-                        'required' => true,
-                        'scope' => 'from_next_week',
-                    ],
                 ],
             ])->save();
 

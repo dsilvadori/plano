@@ -245,25 +245,43 @@ class PandaTutorActivator
 
     protected function pandaVideoId(Lesson $lesson): ?string
     {
-        $videoId = $lesson->panda_video_id ?: data_get($lesson->metadata, 'payload.id');
+        $lesson->loadMissing('video');
+        $videoId = $lesson->panda_video_id
+            ?: $lesson->video?->provider_video_id
+            ?: data_get($lesson->metadata, 'payload.id')
+            ?: data_get($lesson->video?->metadata, 'payload.id');
 
         return filled($videoId) ? (string) $videoId : null;
     }
 
     protected function pandaVideoExternalId(Lesson $lesson): ?string
     {
+        $lesson->loadMissing('video');
         $metadata = $lesson->metadata ?? [];
+        $videoMetadata = $lesson->video?->metadata ?? [];
         $payload = (array) data_get($metadata, 'payload', []);
+        $videoPayload = (array) data_get($videoMetadata, 'payload', []);
         $externalId = data_get($metadata, 'panda_ai.tutor_video_external_id')
+            ?? data_get($videoMetadata, 'panda_ai.tutor_video_external_id')
             ?? data_get($metadata, 'panda_ai.video_external_id')
+            ?? data_get($videoMetadata, 'panda_ai.video_external_id')
             ?? data_get($payload, 'video_external_id')
-            ?? data_get($payload, 'external_id');
+            ?? data_get($payload, 'external_id')
+            ?? data_get($videoPayload, 'video_external_id')
+            ?? data_get($videoPayload, 'external_id');
 
         if (filled($externalId)) {
             return (string) $externalId;
         }
 
-        foreach ([$lesson->panda_embed_url, $lesson->panda_player_url, data_get($payload, 'video_player')] as $url) {
+        foreach ([
+            $lesson->panda_embed_url,
+            $lesson->panda_player_url,
+            $lesson->video?->embed_url,
+            $lesson->video?->player_url,
+            data_get($payload, 'video_player'),
+            data_get($videoPayload, 'video_player'),
+        ] as $url) {
             if (! is_string($url) || $url === '') {
                 continue;
             }
@@ -281,14 +299,21 @@ class PandaTutorActivator
 
     protected function pandaPullzoneName(Lesson $lesson): ?string
     {
+        $lesson->loadMissing('video');
         $metadata = $lesson->metadata ?? [];
+        $videoMetadata = $lesson->video?->metadata ?? [];
         $payload = (array) data_get($metadata, 'payload', []);
+        $videoPayload = (array) data_get($videoMetadata, 'payload', []);
 
         foreach ([
             data_get($metadata, 'panda_ai.tutor_pullzone_name'),
+            data_get($videoMetadata, 'panda_ai.tutor_pullzone_name'),
             data_get($metadata, 'panda_ai.pullzone_name'),
+            data_get($videoMetadata, 'panda_ai.pullzone_name'),
             data_get($payload, 'pullzone_name'),
             data_get($payload, 'pullzone'),
+            data_get($videoPayload, 'pullzone_name'),
+            data_get($videoPayload, 'pullzone'),
         ] as $pullzoneName) {
             if (filled($pullzoneName)) {
                 return (string) $pullzoneName;
@@ -300,9 +325,16 @@ class PandaTutorActivator
             data_get($payload, 'video_hls'),
             data_get($payload, 'thumbnail'),
             data_get($payload, 'preview'),
+            data_get($videoPayload, 'video_player'),
+            data_get($videoPayload, 'video_hls'),
+            data_get($videoPayload, 'thumbnail'),
+            data_get($videoPayload, 'preview'),
             $lesson->panda_embed_url,
             $lesson->panda_player_url,
+            $lesson->video?->embed_url,
+            $lesson->video?->player_url,
             $lesson->thumbnail_url,
+            $lesson->video?->thumbnail_url,
         ] as $url) {
             if (! is_string($url) || $url === '') {
                 continue;

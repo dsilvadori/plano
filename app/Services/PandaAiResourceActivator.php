@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Jobs\SyncPandaAiArtifacts;
 use App\Models\AiArtifact;
 use App\Models\Lesson;
+use App\Models\Video;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
 use RuntimeException;
@@ -228,16 +229,23 @@ class PandaAiResourceActivator
 
     protected function deleteExistingPandaArtifacts(Lesson $lesson): int
     {
-        $deleted = AiArtifact::query()
-            ->where('source_type', Lesson::class)
-            ->where('source_id', $lesson->id)
-            ->where('provider', 'panda')
-            ->whereIn('artifact_type', [...self::ARTIFACT_TYPES, 'panda_payload'])
-            ->delete();
+        $deleted = 0;
+
+        foreach ($this->artifactSources($lesson) as [$sourceType, $sourceId]) {
+            $deleted += AiArtifact::query()
+                ->where('source_type', $sourceType)
+                ->where('source_id', $sourceId)
+                ->where('provider', 'panda')
+                ->whereIn('artifact_type', [...self::ARTIFACT_TYPES, 'panda_payload'])
+                ->delete();
+        }
 
         Cache::forget("lesson:{$lesson->id}:ai-artifacts");
         Cache::forget("lesson:{$lesson->id}:ai-payload");
+        $lesson->video_id ? Cache::forget("video:{$lesson->video_id}:ai-artifacts") : null;
+        $lesson->video_id ? Cache::forget("video:{$lesson->video_id}:ai-payload") : null;
         $lesson->unsetRelation('aiArtifacts');
+        $lesson->unsetRelation('video');
 
         return $deleted;
     }
@@ -301,54 +309,66 @@ class PandaAiResourceActivator
                 continue;
             }
 
-            AiArtifact::query()->updateOrCreate([
-                'source_type' => Lesson::class,
-                'source_id' => $lesson->id,
-                'artifact_type' => $type,
-                'provider' => 'panda',
-            ], [
-                'status' => 'ready',
-                'content' => is_array($content) ? $content : ['text' => (string) $content],
-                'metadata' => [
-                    'panda_video_id' => $this->pandaVideoId($lesson),
-                    'video_external_id' => $this->pandaVideoExternalId($lesson),
-                    'imported_at' => now()->toIso8601String(),
-                ],
-            ]);
+            $this->upsertArtifactForSources($lesson, $type, is_array($content) ? $content : ['text' => (string) $content]);
 
             $created++;
         }
 
-        AiArtifact::query()->updateOrCreate([
-            'source_type' => Lesson::class,
-            'source_id' => $lesson->id,
-            'artifact_type' => 'panda_payload',
-            'provider' => 'panda',
-        ], [
-            'status' => 'ready',
-            'content' => $payload,
-            'metadata' => [
-                'panda_video_id' => $this->pandaVideoId($lesson),
-                'video_external_id' => $this->pandaVideoExternalId($lesson),
-                'imported_at' => now()->toIso8601String(),
-            ],
-        ]);
+        $this->upsertArtifactForSources($lesson, 'panda_payload', $payload);
 
         return $created;
     }
 
     protected function missingArtifactTypes(Lesson $lesson): array
     {
-        $readyTypes = AiArtifact::query()
-            ->where('source_type', Lesson::class)
-            ->where('source_id', $lesson->id)
-            ->where('provider', 'panda')
-            ->where('status', 'ready')
-            ->whereIn('artifact_type', self::ARTIFACT_TYPES)
-            ->pluck('artifact_type')
+        $readyTypes = collect($this->artifactSources($lesson))
+            ->flatMap(fn (array $source): array => AiArtifact::query()
+                ->where('source_type', $source[0])
+                ->where('source_id', $source[1])
+                ->where('provider', 'panda')
+                ->where('status', 'ready')
+                ->whereIn('artifact_type', self::ARTIFACT_TYPES)
+                ->pluck('artifact_type')
+                ->all())
+            ->unique()
+            ->values()
             ->all();
 
         return array_values(array_diff(self::ARTIFACT_TYPES, $readyTypes));
+    }
+
+    protected function upsertArtifactForSources(Lesson $lesson, string $type, array $content): void
+    {
+        foreach ($this->artifactSources($lesson) as [$sourceType, $sourceId]) {
+            AiArtifact::query()->updateOrCreate([
+                'source_type' => $sourceType,
+                'source_id' => $sourceId,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+            ], [
+                'status' => 'ready',
+                'content' => $content,
+                'metadata' => [
+                    'lesson_id' => $lesson->id,
+                    'video_id' => $lesson->video_id,
+                    'panda_video_id' => $this->pandaVideoId($lesson),
+                    'video_external_id' => $this->pandaVideoExternalId($lesson),
+                    'imported_at' => now()->toIso8601String(),
+                ],
+            ]);
+        }
+    }
+
+    protected function artifactSources(Lesson $lesson): array
+    {
+        $lesson->loadMissing('video');
+        $sources = [[Lesson::class, (int) $lesson->id]];
+
+        if ($lesson->video instanceof Video) {
+            $sources[] = [Video::class, (int) $lesson->video->id];
+        }
+
+        return $sources;
     }
 
     protected function firstAiPayloadValue(array $payload, array $paths): mixed
@@ -366,24 +386,41 @@ class PandaAiResourceActivator
 
     protected function pandaVideoId(Lesson $lesson): ?string
     {
-        $videoId = $lesson->panda_video_id ?: data_get($lesson->metadata, 'payload.id');
+        $lesson->loadMissing('video');
+        $videoId = $lesson->panda_video_id
+            ?: $lesson->video?->provider_video_id
+            ?: data_get($lesson->metadata, 'payload.id')
+            ?: data_get($lesson->video?->metadata, 'payload.id');
 
         return filled($videoId) ? (string) $videoId : null;
     }
 
     protected function pandaVideoExternalId(Lesson $lesson): ?string
     {
+        $lesson->loadMissing('video');
         $metadata = $lesson->metadata ?? [];
+        $videoMetadata = $lesson->video?->metadata ?? [];
         $payload = (array) data_get($metadata, 'payload', []);
+        $videoPayload = (array) data_get($videoMetadata, 'payload', []);
         $externalId = data_get($metadata, 'panda_ai.video_external_id')
+            ?? data_get($videoMetadata, 'panda_ai.video_external_id')
             ?? data_get($payload, 'video_external_id')
-            ?? data_get($payload, 'external_id');
+            ?? data_get($payload, 'external_id')
+            ?? data_get($videoPayload, 'video_external_id')
+            ?? data_get($videoPayload, 'external_id');
 
         if (filled($externalId)) {
             return (string) $externalId;
         }
 
-        foreach ([$lesson->panda_embed_url, $lesson->panda_player_url, data_get($payload, 'video_player')] as $url) {
+        foreach ([
+            $lesson->panda_embed_url,
+            $lesson->panda_player_url,
+            $lesson->video?->embed_url,
+            $lesson->video?->player_url,
+            data_get($payload, 'video_player'),
+            data_get($videoPayload, 'video_player'),
+        ] as $url) {
             if (! is_string($url) || $url === '') {
                 continue;
             }
@@ -401,13 +438,19 @@ class PandaAiResourceActivator
 
     protected function pandaPullzoneName(Lesson $lesson): ?string
     {
+        $lesson->loadMissing('video');
         $metadata = $lesson->metadata ?? [];
+        $videoMetadata = $lesson->video?->metadata ?? [];
         $payload = (array) data_get($metadata, 'payload', []);
+        $videoPayload = (array) data_get($videoMetadata, 'payload', []);
 
         foreach ([
             data_get($metadata, 'panda_ai.pullzone_name'),
+            data_get($videoMetadata, 'panda_ai.pullzone_name'),
             data_get($payload, 'pullzone_name'),
             data_get($payload, 'pullzone'),
+            data_get($videoPayload, 'pullzone_name'),
+            data_get($videoPayload, 'pullzone'),
         ] as $pullzoneName) {
             if (filled($pullzoneName)) {
                 return (string) $pullzoneName;
@@ -421,7 +464,10 @@ class PandaAiResourceActivator
             data_get($payload, 'preview'),
             $lesson->panda_embed_url,
             $lesson->panda_player_url,
+            $lesson->video?->embed_url,
+            $lesson->video?->player_url,
             $lesson->thumbnail_url,
+            $lesson->video?->thumbnail_url,
         ] as $url) {
             if (! is_string($url) || $url === '') {
                 continue;

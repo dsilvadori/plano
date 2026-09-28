@@ -8,6 +8,7 @@ use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\PandaImportRun;
+use App\Models\Video;
 use App\Services\LessonPandaVideoImporter;
 use App\Services\PandaCourseImporter;
 use App\Services\PandaVideoClient;
@@ -1280,6 +1281,54 @@ class PandaImportTest extends TestCase
         $this->assertSame('published', $lesson->status);
         $this->assertSame('media_ready', $lesson->source_status);
         $this->assertSame('panda-folder-standalone', $lesson->metadata['folder_id']);
+    }
+
+    public function test_panda_video_library_import_creates_videos_without_creating_lessons(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        $module = CourseModule::factory()->create(['name' => 'Português']);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Interpretação de Texto',
+            'slug' => 'interpretacao-de-texto',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    [
+                        'id' => 'panda-video-portugues-1',
+                        'title' => '01___interpretacao_de_texto (720p)',
+                        'duration_seconds' => 1200,
+                        'status' => 'CONVERTED',
+                        'embed_url' => 'https://player.test/panda-video-portugues-1',
+                        'folder_id' => 'panda-folder-portugues',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $run = app(PandaCourseImporter::class)->importVideos($module, $track, 'panda-folder-portugues');
+
+        $video = Video::query()->where('provider_video_id', 'panda-video-portugues-1')->firstOrFail();
+
+        $this->assertSame('finished', $run->status);
+        $this->assertSame(1, $run->summary['videos']);
+        $this->assertSame(1, $run->summary['created']);
+        $this->assertSame('01 - Interpretacao de Texto', $video->title);
+        $this->assertSame('media_ready', $video->source_status);
+        $this->assertSame('panda-folder-portugues', $video->metadata['folder_id']);
+        $this->assertSame('Português / Interpretação de Texto', $video->metadata['library_folder_path']);
+        $this->assertSame(0, Lesson::query()->where('panda_video_id', 'panda-video-portugues-1')->count());
+        $this->assertSame('panda-folder-portugues', $module->fresh()->panda_folder_id);
+        $this->assertSame('panda-folder-portugues', $track->fresh()->panda_folder_id);
     }
 
     public function test_panda_import_from_lessons_area_accepts_full_folder_url(): void

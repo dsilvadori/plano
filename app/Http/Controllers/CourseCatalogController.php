@@ -278,12 +278,15 @@ class CourseCatalogController extends Controller
 
         abort_unless($this->userCanAccessCourse($user, $course) || $hasActivePlanLessonAccess, 403);
 
-        $lesson->load(['course', 'module']);
+        $lesson->load(['course', 'module', 'video']);
 
         $this->ensureLessonAiArtifactsAreCached($lesson, $panda);
         $this->ensurePandaTutorAvailabilityIsCached($lesson, $tutor);
 
-        $lesson->load('aiArtifacts');
+        $lesson->load(['aiArtifacts', 'video.aiArtifacts']);
+        $aiArtifacts = $lesson->video?->aiArtifacts
+            ? $lesson->video->aiArtifacts->concat($lesson->aiArtifacts)->unique('artifact_type')->values()
+            : $lesson->aiArtifacts;
 
         $progress = LessonProgress::query()
             ->firstOrCreate([
@@ -311,7 +314,7 @@ class CourseCatalogController extends Controller
             'previousLesson' => $currentIndex === false ? null : $orderedLessons->get($currentIndex - 1),
             'nextLesson' => $currentIndex === false ? null : $orderedLessons->get($currentIndex + 1),
             'progressSummary' => $this->progressForCourse($course, $user),
-            'aiArtifacts' => $lesson->aiArtifacts,
+            'aiArtifacts' => $aiArtifacts,
             'planLessonContext' => $planLessonContext,
             'trackLessonContext' => $planLessonContext ? null : $this->trackLessonContextForLesson($course, $lesson),
             'lessonQuestionLinks' => $this->questionLinksForLesson($user, $course, $lesson),

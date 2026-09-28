@@ -1,17 +1,16 @@
 <?php
 
-namespace App\Filament\Resources\Lessons\Pages;
+namespace App\Filament\Resources\Videos\Pages;
 
-use App\Filament\Resources\Lessons\LessonResource;
-use App\Jobs\ImportGoogleDriveLessons;
+use App\Filament\Resources\Videos\VideoResource;
+use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
-use App\Models\GoogleDriveImportRun;
+use App\Services\PandaCourseImporter;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
-use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Utilities\Get;
@@ -19,9 +18,9 @@ use Filament\Schemas\Components\Utilities\Set;
 use Illuminate\Support\Str;
 use Throwable;
 
-class ListLessons extends ListRecords
+class ListVideos extends ListRecords
 {
-    protected static string $resource = LessonResource::class;
+    protected static string $resource = VideoResource::class;
 
     protected const NEW_MODULE_PREFIX = '__new_module__:';
 
@@ -30,11 +29,11 @@ class ListLessons extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            Action::make('importGoogleDriveLessons')
-                ->label('Importar Drive')
-                ->icon('heroicon-o-folder')
-                ->modalHeading('Importar aulas do Google Drive')
-                ->modalDescription('Informe uma pasta do Drive. Os arquivos dentro dela serão criados ou atualizados como aulas reutilizáveis da biblioteca, com pasta e subpasta opcionais para organização interna.')
+            Action::make('importPandaVideos')
+                ->label('Importar Panda')
+                ->icon('heroicon-o-video-camera')
+                ->modalHeading('Importar vídeos do Panda')
+                ->modalDescription('Informe uma pasta do Panda. Os vídeos serão criados ou atualizados na Biblioteca de Vídeos e vinculados às aulas reutilizáveis de compatibilidade.')
                 ->form([
                     Select::make('course_module_id')
                         ->label('Pasta')
@@ -57,69 +56,30 @@ class ListLessons extends ListRecords
                         ->nullable()
                         ->helperText('Opcional. Digite um nome e pressione Enter para criar uma subpasta na pasta selecionada.')
                         ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
-                    TextInput::make('folder_url')
-                        ->label('URL ou ID da pasta do Google Drive')
-                        ->placeholder('https://drive.google.com/drive/folders/...')
+                    TextInput::make('panda_folder_id')
+                        ->label('Pasta no Panda')
+                        ->helperText('Aceita URL completa, ID ou nome da pasta.')
                         ->required(),
-                    TextInput::make('panda_folder_name')
-                        ->label('Pasta Panda para aulas avulsas')
-                        ->placeholder('Aulas avulsas')
-                        ->helperText('Opcional. Usada quando nenhuma pasta ou subpasta foi escolhida. Se ficar vazia, o upload vai para a biblioteca raiz do Panda.'),
-                    Select::make('lesson_status')
-                        ->label('Status inicial das aulas')
-                        ->options([
-                            'draft' => 'Rascunho',
-                            'published' => 'Publicado',
-                        ])
-                        ->default('published')
-                        ->required(),
-                    Toggle::make('create_panda_folder')
-                        ->label('Criar ou reutilizar pasta no Panda')
-                        ->helperText('Usa a subpasta, a pasta ou o nome informado para aulas avulsas.')
-                        ->default(true),
-                    Toggle::make('upload_panda_videos')
-                        ->label('Enviar vídeos ao Panda')
-                        ->helperText('Baixa os arquivos de vídeo do Drive e envia ao Panda. PDFs e documentos ficam como material/link.')
-                        ->default(true),
                 ])
-                ->action(function (array $data): void {
+                ->action(function (array $data, PandaCourseImporter $importer): void {
                     try {
-                        $courseId = null;
                         $course = null;
                         [$module, $track] = $this->resolveImportStructure($data, $course);
-                        $moduleId = $module?->id;
-                        $trackId = $track?->id;
 
-                        $run = GoogleDriveImportRun::query()->create([
-                            'course_id' => $courseId,
-                            'course_module_id' => $moduleId,
-                            'folder_url' => (string) $data['folder_url'],
-                            'status' => 'queued',
-                            'latest_message' => 'Aguardando worker.',
-                        ]);
-
-                        ImportGoogleDriveLessons::dispatch(
-                            $courseId,
-                            $moduleId,
-                            $trackId,
-                            (string) $data['folder_url'],
-                            (string) ($data['lesson_status'] ?? 'published'),
-                            filled($data['panda_folder_name'] ?? null) ? (string) $data['panda_folder_name'] : null,
-                            (bool) ($data['create_panda_folder'] ?? true),
-                            (bool) ($data['upload_panda_videos'] ?? true),
-                            $run->id,
-                        )
-                            ->onConnection('database')
-                            ->onQueue('default');
+                        $run = $importer->importVideos(
+                            $module,
+                            $track,
+                            (string) $data['panda_folder_id'],
+                        );
 
                         Notification::make()
-                            ->title('Importação de aulas enviada para a fila.')
-                            ->body('Acompanhe o progresso em Operação > Importações Drive.')
+                            ->title('Vídeos importados do Panda.')
+                            ->body('Vídeos: '.($run->summary['videos'] ?? 0).'. Criados: '.($run->summary['created'] ?? 0).'. Atualizados: '.($run->summary['updated'] ?? 0).'.')
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {
                         Notification::make()
-                            ->title('Não foi possível importar as aulas do Drive.')
+                            ->title('Não foi possível importar vídeos do Panda.')
                             ->body($exception->getMessage())
                             ->danger()
                             ->send();
@@ -232,16 +192,13 @@ class ListLessons extends ListRecords
     {
         $module = null;
         $track = null;
-
         $moduleValue = $data['course_module_id'] ?? null;
         $trackValue = $data['course_module_track_id'] ?? null;
 
         if ($this->isNewModuleValue($moduleValue)) {
-            $moduleName = $this->newModuleName($moduleValue);
-
             $module = CourseModule::query()->create([
                 'course_id' => null,
-                'name' => $moduleName,
+                'name' => $this->newModuleName($moduleValue),
                 'type' => 'other',
                 'workload_minutes' => 0,
                 'sort_order' => $this->nextModuleSortOrder($course),
@@ -257,7 +214,6 @@ class ListLessons extends ListRecords
             }
 
             $trackName = $this->newTrackName($trackValue);
-
             $track = CourseModuleTrack::query()->create([
                 'course_module_id' => $module->id,
                 'name' => $trackName,
@@ -267,18 +223,6 @@ class ListLessons extends ListRecords
             ]);
         } elseif (filled($trackValue)) {
             $track = CourseModuleTrack::query()->findOrFail((int) $trackValue);
-        }
-
-        if ($course && $module) {
-            $module->courses()->syncWithoutDetaching([
-                $course->id => ['sort_order' => (int) $module->sort_order],
-            ]);
-        }
-
-        if ($course && $track) {
-            $track->courses()->syncWithoutDetaching([
-                $course->id => ['sort_order' => (int) $track->sort_order],
-            ]);
         }
 
         return [$module, $track];
@@ -324,11 +268,9 @@ class ListLessons extends ListRecords
             ->select(['id', 'course_module_id'])
             ->find($state);
 
-        if (! $track) {
-            return;
+        if ($track) {
+            $set('course_module_id', $track->course_module_id);
         }
-
-        $set('course_module_id', $track->course_module_id);
     }
 
     protected function moduleQuery(mixed $courseId)
@@ -355,9 +297,7 @@ class ListLessons extends ListRecords
 
     protected function isExistingId(mixed $value): bool
     {
-        return filled($value)
-            && ! $this->isNewModuleValue($value)
-            && ! $this->isNewTrackValue($value);
+        return filled($value) && is_numeric($value);
     }
 
     protected function isNewModuleValue(mixed $value): bool
@@ -365,14 +305,14 @@ class ListLessons extends ListRecords
         return is_string($value) && str_starts_with($value, self::NEW_MODULE_PREFIX);
     }
 
-    protected function isNewTrackValue(mixed $value): bool
-    {
-        return is_string($value) && str_starts_with($value, self::NEW_TRACK_PREFIX);
-    }
-
     protected function newModuleName(mixed $value): string
     {
         return trim(Str::after((string) $value, self::NEW_MODULE_PREFIX));
+    }
+
+    protected function isNewTrackValue(mixed $value): bool
+    {
+        return is_string($value) && str_starts_with($value, self::NEW_TRACK_PREFIX);
     }
 
     protected function newTrackName(mixed $value): string

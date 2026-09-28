@@ -9,6 +9,7 @@ use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\LessonFolder;
 use App\Models\PandaImportRun;
+use App\Models\Video;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -20,6 +21,119 @@ class PandaCourseImporter
         protected PandaVideoClient $client,
         protected LessonCourseLinker $lessonCourseLinker,
     ) {}
+
+    public function importVideos(?CourseModule $module, ?CourseModuleTrack $track, string $folderId, ?PandaImportRun $run = null): PandaImportRun
+    {
+        $folderReference = $folderId;
+        $folderId = $this->client->resolveFolderReference($folderId);
+
+        if ($track && ! $module) {
+            $module = $track->module()->first();
+        }
+
+        $run ??= PandaImportRun::create([
+            'course_id' => null,
+            'panda_folder_id' => $folderId,
+            'status' => 'running',
+            'started_at' => now(),
+        ]);
+        $run->forceFill([
+            'course_id' => null,
+            'panda_folder_id' => $folderId,
+            'status' => 'running',
+            'started_at' => $run->started_at ?: now(),
+        ])->save();
+
+        try {
+            $videos = $this->sortVideosNaturally($this->client->videos($folderId));
+
+            DB::transaction(function () use ($module, $track, $folderId, $folderReference, $run, $videos): void {
+                $created = 0;
+                $updated = 0;
+                $libraryFolderPath = collect([$module?->name, $track?->name])->filter()->join(' / ');
+                $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
+
+                foreach ($videos->values() as $index => $pandaVideo) {
+                    $sortOrder = $index + 1;
+                    $normalizedTitle = LessonTitleNormalizer::normalize($pandaVideo['title'], $sortOrder);
+                    $video = $this->resolveVideoForPandaVideo($pandaVideo, $normalizedTitle);
+                    $wasRecentlyCreated = ! $video->exists;
+                    $metadata = is_array($video->metadata) ? $video->metadata : [];
+                    $providerVideoId = filled($pandaVideo['panda_video_id']) ? (string) $pandaVideo['panda_video_id'] : null;
+
+                    $video->fill([
+                        'lesson_folder_id' => $lessonFolder?->id,
+                        'title' => $normalizedTitle,
+                        'slug' => $video->exists ? $video->slug : $this->lessonSlug($normalizedTitle, $sortOrder),
+                        'description' => $pandaVideo['description'] ?: 'Vídeo importado do Panda.',
+                        'provider' => 'panda',
+                        'provider_video_id' => $providerVideoId,
+                        'provider_status' => $pandaVideo['panda_status'],
+                        'embed_url' => $pandaVideo['panda_embed_url'],
+                        'player_url' => $pandaVideo['panda_player_url'],
+                        'thumbnail_url' => $pandaVideo['thumbnail_url'],
+                        'duration_seconds' => $pandaVideo['duration_seconds'],
+                        'source_status' => $this->client->videoIsReady($pandaVideo) ? 'media_ready' : 'panda_processing',
+                        'metadata' => array_replace_recursive($metadata, [
+                            'source' => 'panda',
+                            'folder_id' => $folderId,
+                            'folder_reference' => $folderReference,
+                            'library_folder_name' => $track?->name ?? $module?->name,
+                            'library_folder_path' => $libraryFolderPath,
+                            'import_context_module_id' => $module?->id,
+                            'import_context_track_id' => $track?->id,
+                            'payload' => $pandaVideo['payload'],
+                            'last_imported_at' => now()->toIso8601String(),
+                        ]),
+                    ]);
+                    $video->save();
+
+                    $this->syncPandaVideoAiArtifacts($video, $pandaVideo['ai_artifacts'] ?? [], $pandaVideo['payload']);
+
+                    $run->items()->create([
+                        'external_type' => 'video',
+                        'external_id' => $providerVideoId ?: $normalizedTitle,
+                        'local_type' => 'video',
+                        'local_id' => $video->id,
+                        'status' => $wasRecentlyCreated ? 'created' : 'updated',
+                        'payload' => $pandaVideo['payload'],
+                    ]);
+
+                    $wasRecentlyCreated ? $created++ : $updated++;
+                }
+
+                if ($module) {
+                    $module->forceFill(['panda_folder_id' => $folderId])->save();
+                }
+
+                if ($track) {
+                    $track->forceFill(['panda_folder_id' => $folderId])->save();
+                }
+
+                $run->forceFill([
+                    'status' => 'finished',
+                    'summary' => [
+                        'module_id' => $module?->id,
+                        'track_id' => $track?->id,
+                        'videos' => $videos->count(),
+                        'created' => $created,
+                        'updated' => $updated,
+                    ],
+                    'finished_at' => now(),
+                ])->save();
+            });
+        } catch (\Throwable $exception) {
+            $run->forceFill([
+                'status' => 'failed',
+                'error_message' => $exception->getMessage(),
+                'finished_at' => now(),
+            ])->save();
+
+            throw $exception;
+        }
+
+        return $run->fresh(['items']);
+    }
 
     public function importFolder(Course $course, string $folderId, ?string $moduleName = null, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun
     {
@@ -440,7 +554,12 @@ class PandaCourseImporter
         $videoId = (string) ($video['panda_video_id'] ?? '');
 
         if ($videoId !== '') {
-            $lesson = Lesson::query()->where('panda_video_id', $videoId)->first();
+            $lesson = Lesson::query()
+                ->where('panda_video_id', $videoId)
+                ->orWhereHas('video', fn ($query) => $query->where('provider_video_id', $videoId))
+                ->orderByRaw("case when status = 'published' then 0 else 1 end")
+                ->orderBy('id')
+                ->first();
 
             if ($lesson) {
                 return $lesson;
@@ -450,9 +569,7 @@ class PandaCourseImporter
         $titleKey = LessonTitleNormalizer::matchKey($normalizedTitle);
 
         if ($titleKey !== '') {
-            $lesson = Lesson::query()
-                ->orderBy('id')
-                ->get()
+            $lesson = $this->candidateLessonsForImportedVideo($titleKey)
                 ->first(function (Lesson $lesson) use ($titleKey): bool {
                     return $this->lessonCanReceiveImportedVideo($lesson)
                         && LessonTitleNormalizer::matchKey($lesson->title) === $titleKey;
@@ -466,6 +583,95 @@ class PandaCourseImporter
         return new Lesson([
             'panda_video_id' => $videoId !== '' ? $videoId : null,
         ]);
+    }
+
+    protected function resolveVideoForPandaVideo(array $pandaVideo, string $normalizedTitle): Video
+    {
+        $videoId = (string) ($pandaVideo['panda_video_id'] ?? '');
+
+        if ($videoId !== '') {
+            $video = Video::query()
+                ->where('provider', 'panda')
+                ->where('provider_video_id', $videoId)
+                ->first();
+
+            if ($video) {
+                return $video;
+            }
+        }
+
+        $titleKey = LessonTitleNormalizer::matchKey($normalizedTitle);
+
+        if ($titleKey !== '') {
+            $tokens = collect(explode(' ', $titleKey))
+                ->filter(fn (string $token): bool => mb_strlen($token) >= 4)
+                ->unique()
+                ->take(4)
+                ->values();
+
+            if ($tokens->isNotEmpty()) {
+                $video = Video::query()
+                    ->where('provider', 'panda')
+                    ->where(function ($query) use ($tokens): void {
+                        foreach ($tokens as $token) {
+                            $query->orWhere('title', 'like', '%'.$token.'%');
+                        }
+                    })
+                    ->orderBy('id')
+                    ->limit(100)
+                    ->get()
+                    ->first(fn (Video $video): bool => LessonTitleNormalizer::matchKey($video->title) === $titleKey);
+
+                if ($video) {
+                    return $video;
+                }
+            }
+        }
+
+        return new Video([
+            'provider' => 'panda',
+            'provider_video_id' => $videoId !== '' ? $videoId : null,
+        ]);
+    }
+
+    protected function candidateLessonsForImportedVideo(string $titleKey): Collection
+    {
+        $tokens = collect(explode(' ', $titleKey))
+            ->filter(fn (string $token): bool => mb_strlen($token) >= 4)
+            ->unique()
+            ->take(4)
+            ->values();
+
+        if ($tokens->isEmpty()) {
+            return collect();
+        }
+
+        return Lesson::query()
+            ->where(function ($query): void {
+                $query->whereNull('panda_video_id')
+                    ->whereNull('panda_embed_url')
+                    ->whereNull('panda_player_url')
+                    ->where(function ($query): void {
+                        $query->whereNull('video_id')
+                            ->orWhereDoesntHave('video')
+                            ->orWhereHas('video', fn ($query) => $query
+                                ->whereNull('provider_video_id')
+                                ->whereNull('embed_url')
+                                ->whereNull('player_url'));
+                    })
+                    ->where(function ($query): void {
+                        $query->whereNull('source_status')
+                            ->orWhereIn('source_status', ['', 'awaiting_media', 'upload_queued', 'upload_failed', 'structure_only']);
+                    });
+            })
+            ->where(function ($query) use ($tokens): void {
+                foreach ($tokens as $token) {
+                    $query->orWhere('title', 'like', '%'.$token.'%');
+                }
+            })
+            ->orderBy('id')
+            ->limit(100)
+            ->get();
     }
 
     protected function lessonCanReceiveImportedVideo(Lesson $lesson): bool
@@ -595,6 +801,43 @@ class PandaCourseImporter
             'content' => $payload,
             'metadata' => [
                 'panda_video_id' => $lesson->panda_video_id,
+                'imported_at' => now()->toIso8601String(),
+            ],
+        ]);
+    }
+
+    protected function syncPandaVideoAiArtifacts(Video $video, array $artifacts, array $payload): void
+    {
+        foreach ($artifacts as $type => $content) {
+            AiArtifact::query()->updateOrCreate([
+                'source_type' => Video::class,
+                'source_id' => $video->id,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+            ], [
+                'status' => 'ready',
+                'content' => is_array($content) ? $content : ['text' => (string) $content],
+                'metadata' => [
+                    'panda_video_id' => $video->provider_video_id,
+                    'imported_at' => now()->toIso8601String(),
+                ],
+            ]);
+        }
+
+        if ($artifacts === []) {
+            return;
+        }
+
+        AiArtifact::query()->updateOrCreate([
+            'source_type' => Video::class,
+            'source_id' => $video->id,
+            'artifact_type' => 'panda_payload',
+            'provider' => 'panda',
+        ], [
+            'status' => 'ready',
+            'content' => $payload,
+            'metadata' => [
+                'panda_video_id' => $video->provider_video_id,
                 'imported_at' => now()->toIso8601String(),
             ],
         ]);

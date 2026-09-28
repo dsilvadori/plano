@@ -179,7 +179,7 @@ class ListCourses extends ListRecords
 
                     Notification::make()
                         ->title('Importação iniciada.')
-                        ->body('Acompanhe o progresso em Importações de Planilhas. Ao concluir, os planos ficarão aguardando atualização manual no curso.')
+                        ->body('Acompanhe o progresso em Importações de Planilhas. A importação não atualiza planos automaticamente.')
                         ->success()
                         ->send();
                 }),

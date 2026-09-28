@@ -1951,6 +1951,11 @@ php artisan lessons:normalize-titles
 
 - A plataforma cria ou reutiliza pastas no Panda, evitando duplicacao quando o nome normalizado ja existe.
 - A importacao deve reaproveitar aulas e videos existentes no Panda quando possivel.
+- `Admin > Biblioteca de Videos` e a tela operacional para consultar e ajustar a midia canonica importada. Ela mostra provedor, pasta, status tecnico, duracao, quantidade de aulas vinculadas e quantidade de artefatos de IA.
+- Importacao direta do Panda, importacao por URL/ID do Panda, geracao em massa de recursos de IA, limpeza de cache de IA e ativacao em massa do Tutor IA devem ficar em `Admin > Biblioteca de Videos`, nao em `Admin > Aulas`.
+- `Admin > Aulas` fica responsavel pela unidade pedagogica: titulo, PDF/livro digital, vinculos com modulos/trilhas/cursos, publicacao e ordenacao. Quando uma aula precisa de video, ela aponta para `videos.id` pelo campo `Vídeo da biblioteca`.
+- A aula (`lessons`) continua sendo a unidade pedagogica usada nos cursos, trilhas, progresso e planos. O video (`videos`) passa a ser a unidade tecnica reutilizavel para Panda/Drive/player/thumbnail/duracao/IA.
+- Uma mesma midia em `videos` pode atender varias aulas ou recortes de curso; corrigir o ID Panda, player, thumbnail, status ou IA no video evita ter que repetir a correcao em cada curso.
 - Uploads na raiz do Panda foram bloqueados quando a pasta esperada nao foi resolvida.
 - O fluxo passou a evitar duplicar aulas com midia quando ja existe aula equivalente.
 - O upload de videos do Drive para o Panda roda em background.
@@ -1975,7 +1980,10 @@ php artisan queue:work --queue=default --tries=1 --timeout=900
 
 ### Trilhas Fixas e Recorte por Curso
 
-- Aulas devem ser tratadas como itens fixos da biblioteca. Uma correcao em titulo, video, PDF, duracao, recursos de IA ou metadados tecnicos deve acontecer no registro unico de `lessons`, nao em copias por curso.
+- Aulas devem ser tratadas como itens fixos da biblioteca pedagogica. Uma correcao em titulo, descricao, PDF, professor, pasta ou metadados didaticos deve acontecer no registro unico de `lessons`, nao em copias por curso.
+- Videos devem ser tratados como itens fixos da biblioteca tecnica de midia. `videos` guarda Panda/Drive/player/thumbnail/duracao real/status tecnico e metadados de processamento; `lessons.video_id` aponta para o video usado pela aula.
+- Durante a migracao, os campos legados `lessons.panda_video_id`, `panda_embed_url`, `panda_player_url`, `panda_status` e `source_status` continuam existindo por compatibilidade, mas devem ser espelhados para `videos`. Novos fluxos devem preferir `videos.provider_video_id`, `embed_url`, `player_url`, `provider_status` e `source_status`.
+- Recursos de IA gerados a partir do Panda pertencem canonicamente ao video, pois resumo, quiz, mapa mental e payload dependem do conteudo audiovisual. Durante a transicao, os artefatos tambem podem ser espelhados em `Lesson::class` para compatibilidade com telas antigas.
 - `lesson_folders` organiza a biblioteca de aulas por caminho hierarquico. Importacoes do Panda, Drive e planilha devem preencher `lessons.lesson_folder_id` a partir do caminho calculado do modulo/trilha/pasta.
 - Os campos legados `lessons.course_id`, `course_module_id` e `course_module_track_id` ficam como origem/compatibilidade. O vinculo real com modulos e trilhas deve usar `course_module_lessons` e `course_module_track_lessons`.
 - Trilhas de modulo devem ser tratadas como entidades reutilizaveis da biblioteca. Corrigir nome, professor, ordem, thumbnail ou aulas-base de uma trilha deve beneficiar todos os cursos que usam a mesma trilha.
@@ -1985,10 +1993,11 @@ php artisan queue:work --queue=default --tries=1 --timeout=900
 - `course_module_track_lesson_course` define quais aulas da trilha estao publicadas para cada curso, com `sort_order` e `status`.
 - Se uma trilha nao possuir recorte por curso, a area do aluno usa fallback para as aulas-base da trilha, preservando compatibilidade com dados antigos.
 - Se existir ao menos um recorte para `curso + trilha`, a area do aluno deve exibir somente aulas com `status = published` nesse recorte.
-- A importacao de planilhas deve reaproveitar aulas e trilhas existentes por identificador externo, pasta da biblioteca, nome normalizado e duracao aproximada; depois deve anexar a trilha ao curso e atualizar o recorte das aulas desse curso, sem clonar trilha ou aula por pequenas diferencas de carga horaria/publicacao.
+- A importacao de planilhas deve reaproveitar aulas, videos e trilhas existentes por identificador externo, pasta da biblioteca, nome normalizado e duracao aproximada; depois deve anexar a trilha ao curso e atualizar o recorte das aulas desse curso, sem clonar trilha ou aula por pequenas diferencas de carga horaria/publicacao.
 - A reimportacao por planilha deve ser incremental: manter os mesmos registros quando modulo, trilha e aula continuam iguais; criar somente aulas novas; e remover do recorte do curso as aulas que nao aparecem mais na planilha, preservando o registro da aula na biblioteca.
-- Importacao e reimportacao por planilha nao devem atualizar planos de estudo automaticamente. Ao concluir a importacao, o admin recebe aviso de que os planos estao pendentes e deve acionar o botao `Atualizar planos`.
-- A atualizacao manual dos planos usa `ActiveStudyPlanRefresher::refreshCourseFromNextWeek`, ou seja, preserva o que o aluno ja fez e recalcula somente a partir da proxima semana. O comando operacional equivalente e `php artisan study-plans:refresh-active --course-id={id}`.
+- Quando a biblioteca ja tiver aulas duplicadas pelo mesmo nome normalizado, usar `php artisan lessons:merge-duplicates` para simular e `php artisan lessons:merge-duplicates --apply` para consolidar. O comando escolhe uma aula canonica, preserva video/PDF/IA/progresso/comentarios/questoes/planos/vinculos e remove as duplicadas apos remapear as relacoes.
+- Importacao e reimportacao por planilha nao devem atualizar planos de estudo automaticamente nem oferecer acao administrativa de recalculo em massa. O admin recebe apenas o aviso de que os planos nao foram atualizados pela importacao.
+- Os planos devem ser ajustados pelo fluxo individual do aluno, preservando o que ele ja fez e evitando processamento em massa durante a reimportacao de curso.
 - Quando `LessonCourseLinker` substitui placeholders por aulas com midia pronta, ele tambem deve atualizar `course_module_track_lesson_course`; caso contrario a trilha aparenta estar corrigida, mas o curso continua apontando para a aula antiga.
 - Sintoma corrigido: Curso A e Curso B usavam a mesma trilha/aula, mas uma correcao em um curso nao propagava ou gerava duplicatas porque o sistema confundia a entidade fixa da biblioteca com o recorte publicado naquele curso.
 
@@ -2001,7 +2010,8 @@ Fontes corretas para diagnostico da plataforma:
 - `storage/logs/laravel.log` da aplicacao `app.vencendoconcursos.com.br`.
 - Registros em `panda_import_runs` e `panda_import_items`.
 - Registros em `google_drive_import_runs`, quando o fluxo for Drive -> Panda.
-- Status das aulas em `lessons.source_status`, `lessons.panda_status`, `lessons.panda_video_id`, `lessons.panda_embed_url`, `lessons.panda_player_url` e `lessons.metadata`.
+- Status tecnico dos videos em `videos.source_status`, `videos.provider_status`, `videos.provider_video_id`, `videos.embed_url`, `videos.player_url` e `videos.metadata`.
+- Durante a transicao, conferir tambem os campos legados em `lessons.source_status`, `lessons.panda_status`, `lessons.panda_video_id`, `lessons.panda_embed_url`, `lessons.panda_player_url` e `lessons.metadata`.
 - Saida do worker de fila responsavel por `UploadLessonToPanda` e `SyncPandaVideoStatus`.
 
 Procedimento seguro:
@@ -2028,10 +2038,10 @@ php artisan queue:work --queue=default --tries=1 --timeout=900
 Falha conhecida corrigida:
 
 - Logs Apache/PHP-FPM como `AH01075: Error dispatching request to : (polling)` com referer `/admin/lessons` indicam timeout da requisicao web do admin.
-- A tela `Admin > Aulas > Importar Panda` deve importar diretamente pela acao do admin usando `PandaCourseImporter::importLessons`.
-- Esse fluxo deve respeitar o comportamento antigo que funciona tanto localmente quanto em producao: o clique cria ou atualiza aulas na hora, preenche `panda_video_id`, `panda_embed_url`, `panda_player_url`, duracao, thumbnail e `metadata.payload`, e retorna a contagem de videos/criadas/atualizadas.
+- A tela `Admin > Biblioteca de Videos > Importar Panda` deve importar diretamente pela acao do admin usando `PandaCourseImporter::importLessons`.
+- Esse fluxo deve respeitar o comportamento antigo que funciona tanto localmente quanto em producao: o clique cria ou atualiza aulas na hora, preenche os campos legados da aula por compatibilidade, cria/atualiza o registro em `videos`, vincula `lessons.video_id`, salva duracao, thumbnail e `metadata.payload`, e retorna a contagem de videos/criadas/atualizadas.
 - Nao forcar `ImportPandaLessons::dispatch(...)->onConnection('database')` nesse fluxo sem garantir worker ativo e sem atualizar o diagnostico operacional. Quando a acao for enfileirada por engano, os sintomas sao `panda_import_runs.status = pending`, `started_at = null`, `panda_import_items = 0`, jobs com `attempts = 0`, e nenhuma aula preenchida com `panda_video_id`.
-- A tela `Admin > Aulas > Importar Drive`, quando enviar videos ao Panda, tambem deve enfileirar `ImportGoogleDriveLessons` na conexao `database`; nao usar `afterResponse` para trabalho pesado.
+- A tela `Admin > Aulas > Importar Drive`, quando enviar videos ao Panda, tambem deve enfileirar `ImportGoogleDriveLessons` na conexao `database`; nao usar `afterResponse` para trabalho pesado. Esse fluxo continua em Aulas porque tambem cria estrutura pedagogica, PDFs e materiais.
 - O worker deve processar importacoes Drive -> Panda e jobs de upload/status em segundo plano. A importacao Panda direta pela tela de Aulas nao depende do worker para criar as aulas.
 - Para importacoes Drive grandes, aumentar timeout do worker e nao do painel web. A requisicao do admin deve continuar curta nesses fluxos enfileirados.
 - Se `QUEUE_CONNECTION=sync` estiver no `.env` de producao, jobs podem rodar dentro da requisicao e causar timeout. Em producao, usar `QUEUE_CONNECTION=database` ou garantir que as acoes pesadas chamem `onConnection('database')`.
@@ -2039,10 +2049,10 @@ Falha conhecida corrigida:
 Regras que nao podem ser quebradas durante correcao:
 
 - A importacao Panda deve preservar a organizacao pedagogica local.
-- Aulas devem ser reutilizadas por `panda_video_id` quando existir.
+- Aulas devem ser reutilizadas por `videos.provider_video_id` quando existir; enquanto houver campos legados, tambem aceitar `lessons.panda_video_id`.
 - Se nao houver `panda_video_id`, o match por titulo normalizado dentro do modulo/trilha pode reaproveitar placeholder sem midia.
 - Reimportacao nao apaga automaticamente aulas, trilhas ou modulos ausentes no Panda.
-- Duracao, thumbnail, status e URLs do Panda sao metadados tecnicos e podem ser atualizados sem duplicar aula.
+- Duracao, thumbnail, status e URLs do Panda sao metadados tecnicos do video e podem ser atualizados sem duplicar aula.
 - Planos de estudo devem continuar apontando para `lessons` internas, nunca diretamente para IDs externos do Panda.
 
 Comandos operacionais recomendados apos deploy de ajustes em importacao Panda:
@@ -2073,6 +2083,8 @@ queue:work --queue=default --tries=1 --timeout=900
 - O status `already_exists` e considerado pendente de sincronizacao, assim como `requested` ou `regenerating`.
 - Sintoma corrigido: clicar em `Gerar Recursos de IA` falhava com erro 400 do Panda porque a plataforma tentava regenerar um eBook PT-BR que ja existia no provedor.
 - A plataforma salva artefatos de IA como resumo, questoes, mapa mental e payload Panda.
+- A fonte canonica dos artefatos de IA Panda e `Video::class`, porque os recursos pertencem ao video. Para compatibilidade, a plataforma ainda espelha esses artefatos em `Lesson::class` durante a migracao.
+- A pagina da aula deve ler artefatos do video vinculado e, em seguida, artefatos legados da aula, preferindo o video quando houver duplicidade por tipo.
 - A pagina da aula so exibe o bloco de IA quando ha ao menos um recurso pronto: resumo, questoes, mapa mental ou Tutor disponivel.
 - As abas do bloco de IA mostram apenas recursos realmente disponiveis.
 - O resumo nao exibe mais minutagem inline, para preservar leitura.

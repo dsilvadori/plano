@@ -20,6 +20,7 @@ class LessonFactory extends Factory
 
         return [
             'course_id' => $course,
+            'video_id' => null,
             'course_module_id' => CourseModule::factory(['course_id' => $course]),
             'course_module_track_id' => null,
             'title' => $title,

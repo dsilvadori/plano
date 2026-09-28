@@ -11,6 +11,7 @@ use App\Models\Lesson;
 use App\Models\LessonFolder;
 use App\Models\StudyTrack;
 use App\Models\Teacher;
+use App\Models\Video;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -203,7 +204,9 @@ class CourseSpreadsheetImporter
         for ($index = $processedModules; $index < $totalModules && $index < $processedModules + $limit; $index++) {
             $moduleData = $modules[$index];
 
-            DB::transaction(fn () => $this->importModuleData($course, $moduleData, $moduleIds, $trackIds));
+            DB::transaction(function () use ($course, $moduleData, &$moduleIds, &$trackIds): void {
+                $this->importModuleData($course, $moduleData, $moduleIds, $trackIds);
+            });
 
             $state['module_ids'] = $moduleIds;
             $state['track_ids'] = $trackIds;
@@ -232,17 +235,13 @@ class CourseSpreadsheetImporter
         $modules = $course->modules()->with('tracks.lessons')->get();
         $moduleCount = $modules->count();
         $trackCount = $modules->sum(fn (CourseModule $module): int => $module->tracks->count());
-        $lessonCount = $modules
-            ->flatMap(fn (CourseModule $module) => $module->tracks->flatMap->lessons)
-            ->pluck('id')
-            ->unique()
-            ->count();
+        $lessonCount = $course->linkedLessonsQuery()->count('lessons.id');
 
         $run->forceFill([
             'status' => 'finished',
             'course_name' => $run->course_name ?: $course->name,
             'processed_modules' => $totalModules,
-            'latest_message' => 'Importação concluída. Planos aguardam atualização manual.',
+            'latest_message' => 'Importação concluída. Planos não foram atualizados automaticamente.',
             'error_message' => null,
             'finished_at' => now(),
             'summary' => [
@@ -251,10 +250,6 @@ class CourseSpreadsheetImporter
                 'modules' => $moduleCount,
                 'tracks' => $trackCount,
                 'lessons' => $lessonCount,
-                'study_plan_refresh' => [
-                    'required' => true,
-                    'scope' => 'from_next_week',
-                ],
             ],
         ])->save();
 
@@ -278,11 +273,7 @@ class CourseSpreadsheetImporter
         $modules = $course->modules()->with('tracks.lessons')->get();
         $moduleCount = $modules->reject(fn (CourseModule $module): bool => $module->shouldBeExcludedFromStudyPlan())->count();
         $trackCount = $modules->sum(fn (CourseModule $module): int => $module->tracks->count());
-        $lessonCount = $modules
-            ->flatMap(fn (CourseModule $module) => $module->tracks->flatMap->lessons)
-            ->pluck('id')
-            ->unique()
-            ->count();
+        $lessonCount = $course->linkedLessonsQuery()->count('lessons.id');
 
         $hasExpectedStructure = ((int) $run->total_tracks <= 0 || $trackCount >= (int) $run->total_tracks)
             && ((int) $run->total_lessons <= 0 || $lessonCount >= (int) $run->total_lessons)
@@ -295,7 +286,7 @@ class CourseSpreadsheetImporter
         $run->forceFill([
             'status' => 'finished',
             'processed_modules' => max((int) $run->processed_modules, (int) $run->total_modules),
-                'latest_message' => 'Importação concluída. Planos aguardam atualização manual.',
+            'latest_message' => 'Importação concluída. Planos não foram atualizados automaticamente.',
             'error_message' => null,
             'finished_at' => $run->finished_at ?: now(),
             'summary' => [
@@ -305,10 +296,6 @@ class CourseSpreadsheetImporter
                 'tracks' => $trackCount,
                 'lessons' => $lessonCount,
                 'recovered_from_completed_structure' => true,
-                'study_plan_refresh' => [
-                    'required' => true,
-                    'scope' => 'from_next_week',
-                ],
             ],
         ])->save();
 
@@ -390,7 +377,9 @@ class CourseSpreadsheetImporter
         $totalModules = count($modules);
 
         foreach ($modules as $index => $moduleData) {
-            DB::transaction(fn () => $this->importModuleData($course, $moduleData, $moduleIds, $trackIds));
+            DB::transaction(function () use ($course, $moduleData, &$moduleIds, &$trackIds): void {
+                $this->importModuleData($course, $moduleData, $moduleIds, $trackIds);
+            });
 
             $progress?->__invoke([
                 'course_id' => $course->id,
@@ -755,7 +744,7 @@ class CourseSpreadsheetImporter
             $pandaVideoId = filled($lessonData['panda_video_id'] ?? null) ? (string) $lessonData['panda_video_id'] : null;
             $lesson = $this->resolveReusableLesson($module, $title, $slug, $lessonData, $track, $usedLessonIds)
                 ?? ($pandaVideoId
-                    ? Lesson::query()->firstOrNew(['panda_video_id' => $pandaVideoId])
+                    ? $this->firstLessonOrNewForPandaVideo($pandaVideoId)
                     : new Lesson([
                         'course_module_id' => null,
                         'course_module_track_id' => null,
@@ -771,7 +760,10 @@ class CourseSpreadsheetImporter
                 || filled($lessonData['panda_player_url'] ?? null)
                 || filled($lesson->panda_video_id)
                 || filled($lesson->panda_embed_url)
-                || filled($lesson->panda_player_url);
+                || filled($lesson->panda_player_url)
+                || filled($lesson->video?->provider_video_id)
+                || filled($lesson->video?->embed_url)
+                || filled($lesson->video?->player_url);
             $previousMetadata = is_array($lesson->metadata) ? $lesson->metadata : [];
             $libraryFolderPath = collect([$module->name, $track->name])->filter()->join(' / ');
             $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'spreadsheet']);
@@ -1085,7 +1077,10 @@ class CourseSpreadsheetImporter
 
         if ($pandaVideoId) {
             $lesson = Lesson::query()
-                ->where('panda_video_id', $pandaVideoId)
+                ->where(function ($query) use ($pandaVideoId): void {
+                    $query->where('panda_video_id', $pandaVideoId)
+                        ->orWhereHas('video', fn ($query) => $query->where('provider_video_id', $pandaVideoId));
+                })
                 ->when($excludeLessonIds !== [], fn ($query) => $query->whereNotIn('id', $excludeLessonIds))
                 ->first();
 
@@ -1137,6 +1132,39 @@ class CourseSpreadsheetImporter
             ->first()['lesson'] ?? $fallbackLesson;
     }
 
+    protected function firstLessonOrNewForPandaVideo(string $pandaVideoId): Lesson
+    {
+        $lesson = Lesson::query()
+            ->where('panda_video_id', $pandaVideoId)
+            ->orWhereHas('video', fn ($query) => $query->where('provider_video_id', $pandaVideoId))
+            ->first();
+
+        if ($lesson) {
+            return $lesson;
+        }
+
+        $video = Video::query()->firstOrNew([
+            'provider_video_id' => $pandaVideoId,
+        ], [
+            'provider' => 'panda',
+            'source_status' => 'media_ready',
+        ]);
+
+        if (! $video->exists) {
+            $video->fill([
+                'title' => $pandaVideoId,
+                'slug' => Str::slug($pandaVideoId) ?: $pandaVideoId,
+                'provider_status' => null,
+            ])->save();
+        }
+
+        return new Lesson([
+            'video_id' => $video->id,
+            'panda_video_id' => $pandaVideoId,
+            'source_status' => $video->source_status,
+        ]);
+    }
+
     protected function lessonsFromModuleData(array $moduleData): array
     {
         if (! empty($moduleData['tracks'])) {
@@ -1174,7 +1202,8 @@ class CourseSpreadsheetImporter
         $lessonKey = $this->matchKey($lesson->title, 'lesson-title-'.$lesson->id);
         $titleKey = $this->matchKey($title);
         $titleScore = $this->matchScoreForKeys($lessonKey, $titleKey);
-        $score = $titleScore;
+        $directionalTitleScore = $this->directionalTokenMatchPercent($titleKey, $lessonKey);
+        $score = max($titleScore, $directionalTitleScore >= 80 ? min(98, $directionalTitleScore + 8) : $titleScore);
 
         if ($score <= 0) {
             return 0;
@@ -1227,19 +1256,20 @@ class CourseSpreadsheetImporter
         $durationScore = $this->lessonDurationMatchPercent($lesson, $lessonData);
 
         if ($durationScore !== null) {
-            if ($titleScore < 96 && $durationScore < 75) {
+            if ($score < 96 && $durationScore < 75) {
                 return 0;
             }
 
-            if ($titleScore < 98 && $durationScore < 50) {
+            if ($score < 98 && $durationScore < 50) {
                 return 0;
             }
 
+            $contextualScore = $score;
             $score = ($score * 0.82) + ($durationScore * 0.18);
 
             if ($durationScore >= 90) {
                 $score += 6;
-            } elseif ($durationScore < 60) {
+            } elseif ($durationScore < 60 && $contextualScore < 100) {
                 $score -= 20;
             }
         }
@@ -1277,11 +1307,20 @@ class CourseSpreadsheetImporter
 
     protected function lessonMediaPriority(Lesson $lesson): int
     {
-        if (filled($lesson->panda_video_id) || filled($lesson->panda_embed_url) || filled($lesson->panda_player_url)) {
+        $lesson->loadMissing('video');
+
+        if (
+            filled($lesson->panda_video_id)
+            || filled($lesson->panda_embed_url)
+            || filled($lesson->panda_player_url)
+            || filled($lesson->video?->provider_video_id)
+            || filled($lesson->video?->embed_url)
+            || filled($lesson->video?->player_url)
+        ) {
             return 120;
         }
 
-        if ($lesson->source_status === 'media_ready') {
+        if ($lesson->source_status === 'media_ready' || $lesson->video?->source_status === 'media_ready') {
             return 100;
         }
 
@@ -1308,6 +1347,7 @@ class CourseSpreadsheetImporter
                 'id',
                 'course_id',
                 'lesson_folder_id',
+                'video_id',
                 'course_module_id',
                 'course_module_track_id',
                 'title',
@@ -1325,6 +1365,7 @@ class CourseSpreadsheetImporter
                 'source_status',
                 'metadata',
             ])
+            ->with('video')
             ->orderBy('id')
             ->get();
     }
@@ -1356,6 +1397,7 @@ class CourseSpreadsheetImporter
                 'id',
                 'course_id',
                 'lesson_folder_id',
+                'video_id',
                 'course_module_id',
                 'course_module_track_id',
                 'title',
@@ -1373,8 +1415,9 @@ class CourseSpreadsheetImporter
                 'source_status',
                 'metadata',
             ])
+            ->with('video')
             ->when($expectedSeconds > 0, function ($query) use ($expectedSeconds): void {
-                $minimumSeconds = (int) floor($expectedSeconds * 0.5);
+                $minimumSeconds = (int) floor($expectedSeconds * 0.33);
                 $maximumSeconds = (int) ceil($expectedSeconds * 1.5);
 
                 $query->where(function ($query) use ($minimumSeconds, $maximumSeconds): void {
@@ -1401,7 +1444,7 @@ class CourseSpreadsheetImporter
                     }
                 });
             })
-            ->orderByRaw("(case when panda_video_id is not null or panda_embed_url is not null or panda_player_url is not null then 0 when source_status = 'media_ready' then 1 else 2 end)")
+            ->orderByRaw("(case when panda_video_id is not null or panda_embed_url is not null or panda_player_url is not null or exists (select 1 from videos where videos.id = lessons.video_id and (videos.provider_video_id is not null or videos.embed_url is not null or videos.player_url is not null)) then 0 when source_status = 'media_ready' then 1 else 2 end)")
             ->orderBy('id')
             ->limit(80)
             ->get();
@@ -1510,9 +1553,23 @@ class CourseSpreadsheetImporter
         return count($union) > 0 ? (count($intersection) / count($union)) * 100 : 0.0;
     }
 
+    protected function directionalTokenMatchPercent(string $needleKey, string $haystackKey): float
+    {
+        $needleTokens = $this->comparisonTokens($needleKey);
+        $haystackTokens = $this->comparisonTokens($haystackKey);
+
+        if ($needleTokens === [] || $haystackTokens === []) {
+            return 0.0;
+        }
+
+        $intersection = array_intersect($needleTokens, $haystackTokens);
+
+        return (count($intersection) / count($needleTokens)) * 100;
+    }
+
     protected function comparisonTokens(string $key): array
     {
-        $ignored = ['a', 'as', 'ao', 'aos', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na', 'nas', 'no', 'nos', 'o', 'os', 'para', 'por', 'um', 'uma'];
+        $ignored = ['a', 'as', 'ao', 'aos', 'aula', 'bloco', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na', 'nas', 'no', 'nos', 'o', 'os', 'parte', 'para', 'por', 'um', 'uma'];
 
         return collect(explode(' ', $key))
             ->filter(fn (string $token): bool => $token !== '' && ! in_array($token, $ignored, true))
@@ -1589,17 +1646,22 @@ class CourseSpreadsheetImporter
         $trackKey = $this->matchKey($track->name, 'track-'.$track->id);
         $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
 
-        if ($trackKey !== '' && ! $this->pathMatchesContext($path, $trackKey)) {
-            return false;
-        }
-
         $hasHierarchicalPath = str_contains($rawPath, '/') || str_contains($rawPath, ' / ');
 
-        if ($hasHierarchicalPath && $moduleKey !== '' && ! $this->pathMatchesContext($path, $moduleKey)) {
-            return false;
+        if ($hasHierarchicalPath) {
+            if ($trackKey !== '' && ! $this->pathMatchesContext($path, $trackKey)) {
+                return false;
+            }
+
+            if ($moduleKey !== '' && ! $this->pathMatchesContext($path, $moduleKey)) {
+                return false;
+            }
+
+            return true;
         }
 
-        return true;
+        return ($trackKey !== '' && $this->pathMatchesContext($path, $trackKey))
+            || ($moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey));
     }
 
     protected function contentProduct(string $value): ?string

@@ -11,6 +11,7 @@ use App\Services\ActiveStudyPlanRefresher;
 use App\Services\CourseAccessResolver;
 use App\Services\CourseLessonMediaImporter;
 use App\Services\LessonCourseLinker;
+use App\Services\LessonDuplicateMerger;
 use App\Services\PandaVideoClient;
 use App\Services\QuestionPdfImporter;
 use App\Services\StudyPlanGenerator;
@@ -380,6 +381,46 @@ Artisan::command('lessons:normalize-titles {--dry-run}', function () {
 
     return 0;
 })->purpose('Normaliza nomes e numeração das aulas importadas');
+
+Artisan::command('lessons:merge-duplicates {--apply : Executa a unificação. Sem esta opção, apenas simula} {--include-archived : Inclui aulas arquivadas na busca por duplicadas} {--scope=global : Escopo do agrupamento: global ou folder}', function (LessonDuplicateMerger $merger) {
+    $apply = (bool) $this->option('apply');
+    $scope = (string) $this->option('scope');
+
+    if (! in_array($scope, ['global', 'folder'], true)) {
+        $this->error('Escopo inválido. Use --scope=global ou --scope=folder.');
+
+        return 1;
+    }
+
+    $groups = $merger->duplicateGroups((bool) $this->option('include-archived'), $scope);
+
+    if ($groups->isEmpty()) {
+        $this->info('Nenhuma aula duplicada por nome encontrada.');
+
+        return 0;
+    }
+
+    $this->info("Grupos duplicados encontrados: {$groups->count()}.");
+    $groups->take(20)->each(function (array $group): void {
+        $this->line("- {$group['title']} | canônica #{$group['canonical_id']} | duplicadas: ".implode(', ', $group['duplicate_ids']));
+    });
+
+    if ($groups->count() > 20) {
+        $this->line('... mais '.($groups->count() - 20).' grupo(s).');
+    }
+
+    if (! $apply) {
+        $this->warn('Simulação concluída. Nada foi gravado. Rode com --apply para unificar.');
+
+        return 0;
+    }
+
+    $result = $merger->mergeAll((bool) $this->option('include-archived'), $scope);
+
+    $this->info("Unificação concluída. Grupos: {$result['groups']}. Aulas duplicadas removidas: {$result['deleted']}.");
+
+    return 0;
+})->purpose('Unifica aulas duplicadas pelo mesmo nome, preservando vínculos e progresso');
 
 Artisan::command('catalog:detach-course-bindings {--dry-run}', function () {
     $modules = CourseModule::query()

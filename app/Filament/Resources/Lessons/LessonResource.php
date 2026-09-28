@@ -11,10 +11,8 @@ use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
 use App\Models\LessonFolder;
 use App\Models\QuestionBank;
-use App\Services\PandaAiResourceActivator;
-use App\Services\PandaTutorActivator;
+use App\Models\Video;
 use BackedEnum;
-use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -34,7 +32,6 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Str;
-use Throwable;
 
 class LessonResource extends Resource
 {
@@ -163,35 +160,22 @@ class LessonResource extends Resource
                 ->dehydrated(false)
                 ->suffix('min')
                 ->helperText('Calculada automaticamente a partir da duração em segundos.'),
-            Select::make('library_video_lesson_id')
-                ->label('Usar vídeo da biblioteca')
-                ->options(fn (): array => self::libraryVideoOptions())
-                ->getSearchResultsUsing(fn (?string $search): array => self::libraryVideoOptions($search))
-                ->getOptionLabelUsing(fn ($value): ?string => self::libraryVideoOptionLabel($value))
+            Select::make('video_id')
+                ->label('Vídeo da biblioteca')
+                ->options(fn (): array => self::videoLibraryOptions())
+                ->getSearchResultsUsing(fn (?string $search): array => self::videoLibraryOptions($search))
+                ->getOptionLabelUsing(fn ($value): ?string => self::videoLibraryOptionLabel($value))
                 ->searchable()
                 ->preload()
                 ->live()
-                ->dehydrated(false)
-                ->helperText('Opcional. Escolha uma aula já existente para preencher os dados do vídeo manualmente.')
-                ->afterStateUpdated(fn ($state, Set $set) => self::applyLibraryVideoToForm($state, $set)),
+                ->nullable()
+                ->helperText('Opcional. A mídia técnica do Panda fica na Biblioteca de Vídeos; a aula apenas aponta para ela.')
+                ->afterStateUpdated(fn ($state, Set $set) => self::applyVideoToForm($state, $set)),
             TextInput::make('sort_order')
                 ->label('Ordem')
                 ->numeric()
                 ->default(0)
                 ->required(),
-            TextInput::make('panda_video_id')
-                ->label('ID do vídeo no provedor')
-                ->helperText('Preparado para importação/sincronização com a integração de vídeo.'),
-            TextInput::make('panda_embed_url')
-                ->label('URL de embed')
-                ->url()
-                ->maxLength(2048),
-            TextInput::make('panda_player_url')
-                ->label('URL do player')
-                ->url()
-                ->maxLength(2048),
-            TextInput::make('panda_status')
-                ->label('Status no provedor'),
         ]);
     }
 
@@ -412,205 +396,10 @@ class LessonResource extends Resource
             ], layout: FiltersLayout::AboveContent)
             ->filtersFormColumns(3)
             ->recordActions([
-                Action::make('activatePandaAi')
-                    ->label('Gerar Recursos de IA')
-                    ->icon('heroicon-o-sparkles')
-                    ->requiresConfirmation()
-                    ->modalHeading('Gerar recursos de IA em português')
-                    ->modalDescription('Se já houver uma geração em andamento, a plataforma tentará buscar o resultado. Caso contrário, os recursos atuais serão removidos e uma nova geração em português do Brasil será solicitada.')
-                    ->visible(fn (Lesson $record): bool => self::hasPandaVideo($record))
-                    ->action(function (Lesson $record, PandaAiResourceActivator $activator): void {
-                        try {
-                            $result = $activator->reprocess($record);
-
-                            self::notifyPandaAiResult($result);
-                        } catch (Throwable $exception) {
-                            report($exception);
-
-                            Notification::make()
-                                ->title('Não foi possível ativar a IA do Panda')
-                                ->body($exception->getMessage())
-                                ->danger()
-                            ->send();
-                        }
-                    }),
-                Action::make('clearPandaAiCache')
-                    ->label('Limpar cache da IA')
-                    ->icon('heroicon-o-trash')
-                    ->color('warning')
-                    ->requiresConfirmation()
-                    ->modalHeading('Limpar recursos de IA em cache')
-                    ->modalDescription('Remove os resumos, questões, mapas mentais e payload do Panda salvos para esta aula. Depois use "Gerar Recursos de IA" para solicitar uma nova geração.')
-                    ->visible(fn (Lesson $record): bool => self::hasPandaVideo($record))
-                    ->action(function (Lesson $record, PandaAiResourceActivator $activator): void {
-                        $deleted = $activator->clearCachedArtifacts($record);
-
-                        Notification::make()
-                            ->title('Cache da IA limpo')
-                            ->body("{$deleted} recurso(s) de IA foram removidos desta aula.")
-                            ->success()
-                            ->send();
-                    }),
-                Action::make('activatePandaTutor')
-                    ->label('Ativar Tutor IA')
-                    ->icon('heroicon-o-chat-bubble-left-right')
-                    ->requiresConfirmation()
-                    ->modalHeading('Ativar Tutor IA do Panda')
-                    ->modalDescription('A plataforma verificará se o Tutor IA já está disponível no Panda. Se ainda não estiver, solicitará a geração dos recursos necessários e agendará novas verificações.')
-                    ->visible(fn (Lesson $record): bool => self::hasPandaVideo($record))
-                    ->action(function (Lesson $record, PandaTutorActivator $activator): void {
-                        try {
-                            $result = $activator->activate($record);
-
-                            self::notifyPandaTutorResult($result);
-                        } catch (Throwable $exception) {
-                            report($exception);
-
-                            Notification::make()
-                                ->title('Não foi possível ativar o Tutor IA')
-                                ->body($exception->getMessage())
-                                ->danger()
-                                ->send();
-                        }
-                    }),
                 EditAction::make(),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
-                    BulkAction::make('activatePandaAi')
-                        ->label('Gerar Recursos de IA')
-                        ->icon('heroicon-o-sparkles')
-                        ->requiresConfirmation()
-                        ->modalHeading('Gerar recursos de IA em português')
-                        ->modalDescription('Para aulas com geração em andamento, a plataforma tentará buscar o resultado. Para as demais, os recursos atuais serão removidos e uma nova geração em português do Brasil será solicitada.')
-                        ->action(function (Collection $records, PandaAiResourceActivator $activator): void {
-                            if ($records->isEmpty()) {
-                                Notification::make()
-                                    ->title('Nenhuma aula selecionada')
-                                    ->body('Selecione uma ou mais aulas na tabela antes de usar a ação em massa.')
-                                    ->warning()
-                                    ->send();
-
-                                return;
-                            }
-
-                            $requested = 0;
-                            $syncedArtifacts = 0;
-                            $skipped = 0;
-                            $failed = 0;
-                            $pending = 0;
-                            $alreadyReady = 0;
-
-                            foreach ($records as $record) {
-                                if (! self::hasPandaVideo($record)) {
-                                    $skipped++;
-
-                                    continue;
-                                }
-
-                                try {
-                                    $result = $activator->reprocess($record);
-                                    $requested += $result['requested'] ? 1 : 0;
-                                    $pending += $result['pending'] ? 1 : 0;
-                                    $syncedArtifacts += (int) $result['created_artifacts'];
-                                    $alreadyReady += (! $result['requested'] && ! $result['pending'] && (int) $result['created_artifacts'] === 0) ? 1 : 0;
-                                } catch (Throwable $exception) {
-                                    report($exception);
-                                    $failed++;
-                                }
-                            }
-
-                            $notification = Notification::make()
-                                ->title('Geração de IA Panda concluída')
-                                ->body("Solicitadas: {$requested}. Aguardando Panda: {$pending}. Já disponíveis: {$alreadyReady}. Artefatos sincronizados: {$syncedArtifacts}. Ignoradas sem vídeo Panda: {$skipped}. Falhas: {$failed}.");
-
-                            ($failed > 0 ? $notification->warning() : $notification->success())->send();
-                        })
-                        ->deselectRecordsAfterCompletion(),
-                    BulkAction::make('clearPandaAiCache')
-                        ->label('Limpar cache da IA')
-                        ->icon('heroicon-o-trash')
-                        ->color('warning')
-                        ->requiresConfirmation()
-                        ->modalHeading('Limpar recursos de IA em cache')
-                        ->modalDescription('Remove resumos, questões, mapas mentais e payload do Panda salvos para as aulas selecionadas.')
-                        ->action(function (Collection $records, PandaAiResourceActivator $activator): void {
-                            if ($records->isEmpty()) {
-                                Notification::make()
-                                    ->title('Nenhuma aula selecionada')
-                                    ->body('Selecione uma ou mais aulas na tabela antes de usar a ação em massa.')
-                                    ->warning()
-                                    ->send();
-
-                                return;
-                            }
-
-                            $deleted = 0;
-                            $skipped = 0;
-
-                            foreach ($records as $record) {
-                                if (! self::hasPandaVideo($record)) {
-                                    $skipped++;
-
-                                    continue;
-                                }
-
-                                $deleted += $activator->clearCachedArtifacts($record);
-                            }
-
-                            Notification::make()
-                                ->title('Cache da IA limpo')
-                                ->body("Recursos removidos: {$deleted}. Ignoradas sem vídeo Panda: {$skipped}.")
-                                ->success()
-                                ->send();
-                        })
-                        ->deselectRecordsAfterCompletion(),
-                    BulkAction::make('activatePandaTutor')
-                        ->label('Ativar Tutor IA')
-                        ->icon('heroicon-o-chat-bubble-left-right')
-                        ->requiresConfirmation()
-                        ->modalHeading('Ativar Tutor IA do Panda')
-                        ->modalDescription('Para aulas selecionadas, a plataforma verificará se o Tutor IA já está disponível no Panda. Se ainda não estiver, solicitará a geração dos recursos necessários.')
-                        ->action(function (Collection $records, PandaTutorActivator $activator): void {
-                            if ($records->isEmpty()) {
-                                Notification::make()
-                                    ->title('Nenhuma aula selecionada')
-                                    ->body('Selecione uma ou mais aulas na tabela antes de usar a ação em massa.')
-                                    ->warning()
-                                    ->send();
-
-                                return;
-                            }
-
-                            $activated = 0;
-                            $requested = 0;
-                            $skipped = 0;
-                            $failed = 0;
-
-                            foreach ($records as $record) {
-                                if (! self::hasPandaVideo($record)) {
-                                    $skipped++;
-
-                                    continue;
-                                }
-
-                                try {
-                                    $result = $activator->activate($record);
-                                    $activated += $result['available'] ? 1 : 0;
-                                    $requested += $result['requested'] ? 1 : 0;
-                                } catch (Throwable $exception) {
-                                    report($exception);
-                                    $failed++;
-                                }
-                            }
-
-                            $notification = Notification::make()
-                                ->title('Ativação do Tutor IA concluída')
-                                ->body("Ativadas: {$activated}. Solicitadas: {$requested}. Ignoradas sem vídeo Panda: {$skipped}. Falhas: {$failed}.");
-
-                            ($failed > 0 ? $notification->warning() : $notification->success())->send();
-                        })
-                        ->deselectRecordsAfterCompletion(),
                     BulkAction::make('publish')
                         ->label('Publicar selecionadas')
                         ->icon('heroicon-o-eye')
@@ -637,53 +426,49 @@ class LessonResource extends Resource
         ];
     }
 
-    public static function libraryVideoOptions(?string $search = null): array
+    public static function videoLibraryOptions(?string $search = null): array
     {
-        return self::libraryVideoQuery($search)
+        return self::videoLibraryQuery($search)
             ->limit(50)
-            ->get(['id', 'title', 'duration_seconds', 'panda_video_id'])
-            ->mapWithKeys(fn (Lesson $lesson): array => [
-                $lesson->id => self::libraryVideoLabel($lesson),
+            ->get(['id', 'title', 'duration_seconds', 'provider_video_id'])
+            ->mapWithKeys(fn (Video $video): array => [
+                $video->id => self::videoLibraryLabel($video),
             ])
             ->all();
     }
 
-    public static function libraryVideoOptionLabel(mixed $value): ?string
+    public static function videoLibraryOptionLabel(mixed $value): ?string
     {
         if (blank($value)) {
             return null;
         }
 
-        $lesson = self::libraryVideoQuery()
+        $video = self::videoLibraryQuery()
             ->whereKey($value)
-            ->first(['id', 'title', 'duration_seconds', 'panda_video_id']);
+            ->first(['id', 'title', 'duration_seconds', 'provider_video_id']);
 
-        return $lesson ? self::libraryVideoLabel($lesson) : null;
+        return $video ? self::videoLibraryLabel($video) : null;
     }
 
-    public static function applyLibraryVideoToForm(mixed $lessonId, Set $set): void
+    public static function applyVideoToForm(mixed $videoId, Set $set): void
     {
-        if (blank($lessonId)) {
+        if (blank($videoId)) {
             return;
         }
 
-        $lesson = self::libraryVideoQuery()
-            ->whereKey($lessonId)
+        $video = self::videoLibraryQuery()
+            ->whereKey($videoId)
             ->first();
 
-        if (! $lesson) {
+        if (! $video) {
             return;
         }
 
         $set('type', 'video');
-        $set('thumbnail_url', $lesson->thumbnail_url);
-        $set('duration_seconds', (int) $lesson->duration_seconds);
-        $set('duration_minutes_preview', self::durationSecondsToMinutes($lesson->duration_seconds));
-        $set('panda_video_id', $lesson->panda_video_id);
-        $set('panda_embed_url', $lesson->panda_embed_url);
-        $set('panda_player_url', $lesson->panda_player_url);
-        $set('panda_status', $lesson->panda_status);
-        $set('source_status', 'media_ready');
+        $set('thumbnail_url', $video->thumbnail_url);
+        $set('duration_seconds', (int) $video->duration_seconds);
+        $set('duration_minutes_preview', self::durationSecondsToMinutes($video->duration_seconds));
+        $set('source_status', $video->source_status ?: 'media_ready');
     }
 
     protected static function durationSecondsToMinutes(mixed $seconds): int
@@ -691,33 +476,33 @@ class LessonResource extends Resource
         return (int) ceil(max(0, (int) $seconds) / 60);
     }
 
-    protected static function libraryVideoQuery(?string $search = null): \Illuminate\Database\Eloquent\Builder
+    protected static function videoLibraryQuery(?string $search = null): \Illuminate\Database\Eloquent\Builder
     {
         $search = trim((string) $search);
 
-        return Lesson::query()
+        return Video::query()
             ->where(function ($query): void {
                 $query
-                    ->whereNotNull('panda_video_id')
-                    ->orWhereNotNull('panda_embed_url')
-                    ->orWhereNotNull('panda_player_url');
+                    ->whereNotNull('provider_video_id')
+                    ->orWhereNotNull('embed_url')
+                    ->orWhereNotNull('player_url');
             })
             ->when($search !== '', fn ($query) => $query->where(function ($query) use ($search): void {
                 $query
                     ->where('title', 'like', '%'.$search.'%')
-                    ->orWhere('panda_video_id', 'like', '%'.$search.'%');
+                    ->orWhere('provider_video_id', 'like', '%'.$search.'%');
             }))
             ->orderBy('title')
             ->orderBy('id');
     }
 
-    protected static function libraryVideoLabel(Lesson $lesson): string
+    protected static function videoLibraryLabel(Video $video): string
     {
-        $minutes = (int) ceil(((int) $lesson->duration_seconds) / 60);
+        $minutes = (int) ceil(((int) $video->duration_seconds) / 60);
         $duration = $minutes > 0 ? $minutes.' min' : 'sem duração';
-        $panda = filled($lesson->panda_video_id) ? ' · Panda '.$lesson->panda_video_id : '';
+        $panda = filled($video->provider_video_id) ? ' · Panda '.$video->provider_video_id : '';
 
-        return Str::limit($lesson->title, 90).' · '.$duration.$panda;
+        return Str::limit($video->title, 90).' · '.$duration.$panda;
     }
 
     public static function lessonFolderOptions(): array
@@ -860,18 +645,32 @@ class LessonResource extends Resource
 
     public static function hasPandaVideo(Lesson $lesson): bool
     {
+        $lesson->loadMissing('video');
+
         return filled($lesson->panda_video_id)
             || filled($lesson->panda_embed_url)
             || filled($lesson->panda_player_url)
-            || filled(data_get($lesson->metadata, 'payload.id'));
+            || filled($lesson->video?->provider_video_id)
+            || filled($lesson->video?->embed_url)
+            || filled($lesson->video?->player_url)
+            || filled(data_get($lesson->metadata, 'payload.id'))
+            || filled(data_get($lesson->video?->metadata, 'payload.id'));
     }
 
     public static function aiResourcesStatus(Lesson $lesson): string
     {
+        $lesson->loadMissing('video');
+
         $readyTypes = $lesson->aiArtifacts()
             ->where('status', 'ready')
             ->whereIn('artifact_type', ['summary', 'quiz', 'mindmap'])
             ->pluck('artifact_type')
+            ->merge($lesson->video
+                ? $lesson->video->aiArtifacts()
+                    ->where('status', 'ready')
+                    ->whereIn('artifact_type', ['summary', 'quiz', 'mindmap'])
+                    ->pluck('artifact_type')
+                : collect())
             ->unique();
 
         if ($readyTypes->count() >= 3) {
