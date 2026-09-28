@@ -493,7 +493,17 @@ class CourseSpreadsheetParser
             $number = (float) $normalized;
 
             if ($number > 0 && $number < 1) {
-                return max(1, (int) round($number * 24 * 60));
+                $minutesFromExcelSerial = max(1, (int) round($number * 24 * 60));
+
+                if ($minutesFromExcelSerial > (12 * 60)) {
+                    // Excel time serials can display video durations like 19:32; mirror the text parser's mm:ss heuristic.
+                    $clockHours = intdiv($minutesFromExcelSerial, 60);
+                    $clockMinutes = $minutesFromExcelSerial % 60;
+
+                    return max(1, $clockHours + (int) round($clockMinutes / 60));
+                }
+
+                return $minutesFromExcelSerial;
             }
 
             return max(0, (int) round($number));

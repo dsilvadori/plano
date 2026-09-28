@@ -265,6 +265,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame(30, $method->invoke($parser, '00:30'));
         $this->assertSame(75, $method->invoke($parser, '1:15'));
         $this->assertSame(30, $method->invoke($parser, '0.0208333333'));
+        $this->assertSame(20, $method->invoke($parser, '0.8138888889'));
     }
 
     public function test_xlsx_import_without_importable_lessons_does_not_replace_existing_course_structure(): void

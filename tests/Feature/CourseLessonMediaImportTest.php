@@ -4,9 +4,12 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
+use App\Models\Lesson;
 use App\Services\CourseLessonMediaImporter;
 use App\Services\LessonMediaMatcher;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class CourseLessonMediaImportTest extends TestCase
@@ -98,5 +101,81 @@ class CourseLessonMediaImportTest extends TestCase
         $this->assertTrue($module->lessons[0]['has_media']);
         $this->assertTrue($module->lessons[0]['is_published']);
         $this->assertSame('file-1', $module->lessons[0]['media_file_id']);
+    }
+
+    public function test_course_scoped_media_counts_ignore_lessons_from_other_courses(): void
+    {
+        $currentCourse = Course::factory()->create();
+        $otherCourse = Course::factory()->create();
+        $module = CourseModule::factory()->create([
+            'lessons' => [
+                ['name' => 'Aula atual', 'minutes' => 20],
+            ],
+            'workload_minutes' => 20,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Aulas',
+            'slug' => 'aulas',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $module->courses()->attach([
+            $currentCourse->id => ['sort_order' => 1],
+            $otherCourse->id => ['sort_order' => 1],
+        ]);
+        $track->courses()->attach([
+            $currentCourse->id => ['sort_order' => 1],
+            $otherCourse->id => ['sort_order' => 1],
+        ]);
+
+        $currentLesson = Lesson::factory()->create([
+            'title' => 'Aula atual',
+            'status' => 'published',
+            'source_status' => 'media_ready',
+            'panda_video_id' => 'current-video',
+            'duration_seconds' => 1200,
+        ]);
+        $staleLesson = Lesson::factory()->create([
+            'title' => 'Aula antiga',
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+            'duration_seconds' => 1200,
+        ]);
+
+        $module->onlineLessons()->attach([
+            $currentLesson->id => ['sort_order' => 1],
+            $staleLesson->id => ['sort_order' => 2],
+        ]);
+        $track->lessons()->attach([
+            $currentLesson->id => ['sort_order' => 1],
+            $staleLesson->id => ['sort_order' => 2],
+        ]);
+        DB::table('course_module_track_lesson_course')->insert([
+            [
+                'course_id' => $currentCourse->id,
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $currentLesson->id,
+                'sort_order' => 1,
+                'status' => 'published',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'course_id' => $otherCourse->id,
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $staleLesson->id,
+                'sort_order' => 2,
+                'status' => 'published',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->assertSame(2, $module->onlineLessons()->count());
+        $this->assertSame(1, $module->courseScopedOnlineLessonsCount($currentCourse));
+        $this->assertSame('1/1', $module->courseScopedMediaCoverageLabel($currentCourse));
+        $this->assertSame(0, $module->courseScopedMissingMediaLessonsCount($currentCourse));
+        $this->assertSame('Todas com mídia', $module->courseScopedMissingMediaLessonsLabel($currentCourse));
     }
 }

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Database\Factories\CourseModuleFactory;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -358,6 +359,89 @@ class CourseModule extends Model
 
         if ($missingLessons->isEmpty()) {
             return $this->mediaLessonsTotal() === 0
+                ? 'Sem aulas'
+                : 'Todas com mídia';
+        }
+
+        $visible = $missingLessons->take(3)->implode(', ');
+        $remaining = $missingLessons->count() - 3;
+
+        return $remaining > 0
+            ? "{$visible} + {$remaining} aula(s)"
+            : $visible;
+    }
+
+    public function onlineLessonsForCourseQuery(Course|int $course): Builder
+    {
+        $courseId = $course instanceof Course ? (int) $course->getKey() : (int) $course;
+
+        return Lesson::query()
+            ->select('lessons.*')
+            ->join('course_module_track_lesson_course as course_lesson_scope', 'course_lesson_scope.lesson_id', '=', 'lessons.id')
+            ->join('course_module_tracks as scoped_tracks', 'scoped_tracks.id', '=', 'course_lesson_scope.course_module_track_id')
+            ->where('course_lesson_scope.course_id', $courseId)
+            ->where('scoped_tracks.course_module_id', $this->getKey())
+            ->distinct()
+            ->orderBy('course_lesson_scope.sort_order')
+            ->orderBy('lessons.sort_order')
+            ->orderBy('lessons.title');
+    }
+
+    public function onlineLessonsForCourse(Course|int $course): Collection
+    {
+        return $this->onlineLessonsForCourseQuery($course)->get();
+    }
+
+    public function courseScopedOnlineLessonsCount(Course|int $course): int
+    {
+        return $this->onlineLessonsForCourseQuery($course)->count('lessons.id');
+    }
+
+    public function courseScopedImportedMediaLessonsCount(Course|int $course): int
+    {
+        return $this->onlineLessonsForCourse($course)
+            ->filter(fn (Lesson $lesson): bool => $this->lessonHasMedia($lesson))
+            ->count();
+    }
+
+    public function courseScopedMissingMediaLessonsCount(Course|int $course): int
+    {
+        return $this->onlineLessonsForCourse($course)
+            ->filter(fn (Lesson $lesson): bool => ! $this->lessonHasMedia($lesson))
+            ->count();
+    }
+
+    public function courseScopedPublishedLessonsCount(Course|int $course): int
+    {
+        $courseId = $course instanceof Course ? (int) $course->getKey() : (int) $course;
+
+        return $this->onlineLessonsForCourseQuery($course)
+            ->where('course_lesson_scope.course_id', $courseId)
+            ->where('course_lesson_scope.status', 'published')
+            ->count('lessons.id');
+    }
+
+    public function courseScopedMediaCoverageLabel(Course|int $course): string
+    {
+        $total = $this->courseScopedOnlineLessonsCount($course);
+
+        if ($total === 0) {
+            return 'Sem aulas';
+        }
+
+        return "{$this->courseScopedImportedMediaLessonsCount($course)}/{$total}";
+    }
+
+    public function courseScopedMissingMediaLessonsLabel(Course|int $course): string
+    {
+        $missingLessons = $this->onlineLessonsForCourse($course)
+            ->filter(fn (Lesson $lesson): bool => ! $this->lessonHasMedia($lesson))
+            ->pluck('title')
+            ->filter()
+            ->values();
+
+        if ($missingLessons->isEmpty()) {
+            return $this->courseScopedOnlineLessonsCount($course) === 0
                 ? 'Sem aulas'
                 : 'Todas com mídia';
         }
