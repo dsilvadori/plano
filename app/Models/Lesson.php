@@ -169,7 +169,7 @@ class Lesson extends Model
 
     public function getPlayerUrlAttribute(): ?string
     {
-        return $this->panda_embed_url ?: $this->panda_player_url ?: $this->video?->embed_url ?: $this->video?->player_url;
+        return $this->video?->player_url ?: $this->panda_embed_url ?: $this->panda_player_url;
     }
 
     public function syncVideoFromLegacyMedia(): ?Video

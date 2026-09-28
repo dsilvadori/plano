@@ -57,19 +57,56 @@ class Video extends Model
             return $embedUrl;
         }
 
-        $providerVideoId = $this->attributes['provider_video_id'] ?? null;
+        $externalVideoId = $this->pandaExternalVideoId();
         $pullzone = $this->pandaPullzoneName();
 
-        if (blank($providerVideoId) || blank($pullzone)) {
+        if (blank($externalVideoId) || blank($pullzone)) {
             return null;
         }
 
-        return 'https://player-'.$pullzone.'.tv.pandavideo.com.br/embed/?v='.$providerVideoId;
+        return 'https://player-'.$pullzone.'.tv.pandavideo.com.br/embed/?v='.$externalVideoId;
+    }
+
+    protected function pandaExternalVideoId(): ?string
+    {
+        $metadata = is_array($this->metadata) ? $this->metadata : [];
+
+        foreach ([
+            data_get($metadata, 'video_external_id'),
+            data_get($metadata, 'external_id'),
+            data_get($metadata, 'externalId'),
+            data_get($metadata, 'payload.video_external_id'),
+            data_get($metadata, 'payload.external_id'),
+            data_get($metadata, 'payload.externalId'),
+        ] as $candidate) {
+            if (filled($candidate)) {
+                return (string) $candidate;
+            }
+        }
+
+        foreach ($this->pandaPlayerCandidates() as $candidate) {
+            if (! is_string($candidate) || $candidate === '') {
+                continue;
+            }
+
+            $query = parse_url($candidate, PHP_URL_QUERY);
+            parse_str((string) $query, $params);
+
+            if (filled($params['v'] ?? null)) {
+                return (string) $params['v'];
+            }
+
+            if (preg_match('~/vz-[a-z0-9-]+/([^/?#]+)~i', $candidate, $matches) === 1) {
+                return (string) $matches[1];
+            }
+        }
+
+        return null;
     }
 
     protected function pandaPullzoneName(): ?string
     {
-        foreach ($this->pandaPullzoneCandidates() as $candidate) {
+        foreach ($this->pandaPlayerCandidates() as $candidate) {
             if (preg_match('/\b(vz-[a-z0-9-]+)/i', (string) $candidate, $matches) === 1) {
                 return strtolower($matches[1]);
             }
@@ -78,14 +115,21 @@ class Video extends Model
         return null;
     }
 
-    protected function pandaPullzoneCandidates(): array
+    protected function pandaPlayerCandidates(): array
     {
         $metadata = is_array($this->metadata) ? $this->metadata : [];
 
         return [
             $this->attributes['thumbnail_url'] ?? null,
+            $this->attributes['embed_url'] ?? null,
+            $this->attributes['player_url'] ?? null,
             data_get($metadata, 'pullzone'),
             data_get($metadata, 'pullzone_name'),
+            data_get($metadata, 'video_player'),
+            data_get($metadata, 'embed_url'),
+            data_get($metadata, 'player_url'),
+            data_get($metadata, 'thumbnail_url'),
+            data_get($metadata, 'thumbnail'),
             data_get($metadata, 'payload.pullzone'),
             data_get($metadata, 'payload.pullzone_name'),
             data_get($metadata, 'payload.pullzoneName'),

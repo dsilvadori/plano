@@ -1157,7 +1157,7 @@ class CourseCatalogFoundationTest extends TestCase
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lesson]))
             ->assertOk()
-            ->assertSee('https://player-vz-3aab6b05-dd1.tv.pandavideo.com.br/embed/?v=43094692-ea78-46b8-a4fc-5562e7cf9fe', false)
+            ->assertSee('https://player-vz-3aab6b05-dd1.tv.pandavideo.com.br/embed/?v=c189011c-3a8e-460b-aa4e', false)
             ->assertDontSee('Entrará em breve');
     }
 

@@ -121,7 +121,7 @@ class AdminAccessTest extends TestCase
         $this->actingAs($admin)
             ->get("/admin/lessons/{$lesson->id}/edit")
             ->assertOk()
-            ->assertDontSee('Importar URL do Panda')
+            ->assertSee('Importar URL do Panda')
             ->assertSee('Gerar Recursos de IA')
             ->assertSee('Ativar Tutor IA');
     }
