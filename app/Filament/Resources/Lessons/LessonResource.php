@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Lessons;
 use App\Filament\Resources\Lessons\Pages\CreateLesson;
 use App\Filament\Resources\Lessons\Pages\EditLesson;
 use App\Filament\Resources\Lessons\Pages\ListLessons;
+use App\Http\Controllers\CourseCatalogController;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
@@ -739,6 +740,40 @@ class LessonResource extends Resource
             'course_module_id' => $primaryModuleId,
             'course_module_track_id' => $primaryTrackId,
         ])->saveQuietly();
+    }
+
+    public static function forgetCatalogCachesForLesson(Lesson $lesson): void
+    {
+        static::courseIdsForLesson($lesson)
+            ->each(fn (int $courseId): null => CourseCatalogController::forgetCourseCatalogCache($courseId));
+    }
+
+    public static function courseIdsForLesson(Lesson $lesson): \Illuminate\Support\Collection
+    {
+        $lesson->loadMissing([
+            'course:id',
+            'modules:id,course_id',
+            'modules.courses:id',
+            'modules.studyTracks:id,course_id',
+            'tracks:id,course_module_id',
+            'tracks.courses:id',
+            'tracks.module:id,course_id',
+            'tracks.module.courses:id',
+            'tracks.module.studyTracks:id,course_id',
+        ]);
+
+        return collect([$lesson->course_id, $lesson->course?->id])
+            ->merge($lesson->modules->pluck('course_id'))
+            ->merge($lesson->modules->flatMap(fn (CourseModule $module) => $module->courses->pluck('id')))
+            ->merge($lesson->modules->flatMap(fn (CourseModule $module) => $module->studyTracks->pluck('course_id')))
+            ->merge($lesson->tracks->flatMap(fn (CourseModuleTrack $track) => $track->courses->pluck('id')))
+            ->merge($lesson->tracks->pluck('module.course_id'))
+            ->merge($lesson->tracks->flatMap(fn (CourseModuleTrack $track) => $track->module?->courses->pluck('id') ?? collect()))
+            ->merge($lesson->tracks->flatMap(fn (CourseModuleTrack $track) => $track->module?->studyTracks->pluck('course_id') ?? collect()))
+            ->filter()
+            ->map(fn ($courseId): int => (int) $courseId)
+            ->unique()
+            ->values();
     }
 
     protected static function linkedCourseNames(Lesson $lesson): string

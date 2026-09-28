@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\Lessons\Pages;
 
 use App\Filament\Resources\Lessons\LessonResource;
-use App\Services\ActiveStudyPlanRefresher;
 use App\Services\LessonPandaVideoImporter;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
@@ -18,13 +17,13 @@ class EditLesson extends EditRecord
 {
     protected static string $resource = LessonResource::class;
 
-    protected array $courseIdsPendingPlanRefresh = [];
+    protected array $courseIdsPendingCacheForget = [];
 
     protected function afterSave(): void
     {
         LessonResource::syncPrimaryCatalogLinks($this->record);
 
-        app(ActiveStudyPlanRefresher::class)->refreshCoursesForLesson($this->record);
+        LessonResource::forgetCatalogCachesForLesson($this->record);
     }
 
     protected function getHeaderActions(): array
@@ -47,7 +46,7 @@ class EditLesson extends EditRecord
                         $this->record = $importer->importFromReference($this->record, (string) $data['panda_video_reference']);
 
                         LessonResource::syncPrimaryCatalogLinks($this->record);
-                        app(ActiveStudyPlanRefresher::class)->refreshCoursesForLesson($this->record);
+                        LessonResource::forgetCatalogCachesForLesson($this->record);
 
                         $this->refreshFormData([
                             'video_id',
@@ -135,9 +134,13 @@ class EditLesson extends EditRecord
                 }),
             DeleteAction::make()
                 ->before(function (): void {
-                    $this->courseIdsPendingPlanRefresh = app(ActiveStudyPlanRefresher::class)->courseIdsForLesson($this->record);
+                    $this->courseIdsPendingCacheForget = LessonResource::courseIdsForLesson($this->record)->all();
                 })
-                ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCoursesByIds($this->courseIdsPendingPlanRefresh)),
+                ->after(function (): void {
+                    foreach ($this->courseIdsPendingCacheForget as $courseId) {
+                        \App\Http\Controllers\CourseCatalogController::forgetCourseCatalogCache((int) $courseId);
+                    }
+                }),
         ];
     }
 }

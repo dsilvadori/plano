@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\Lessons\Pages;
 
 use App\Filament\Resources\Lessons\LessonResource;
-use App\Services\ActiveStudyPlanRefresher;
 use Filament\Resources\Pages\CreateRecord;
 
 class CreateLesson extends CreateRecord
@@ -14,6 +13,6 @@ class CreateLesson extends CreateRecord
     {
         LessonResource::syncPrimaryCatalogLinks($this->record);
 
-        app(ActiveStudyPlanRefresher::class)->refreshCoursesForLesson($this->record);
+        LessonResource::forgetCatalogCachesForLesson($this->record);
     }
 }
