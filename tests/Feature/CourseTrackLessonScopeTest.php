@@ -7,6 +7,7 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
+use App\Models\User;
 use App\Services\CourseAccessResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -44,6 +45,41 @@ class CourseTrackLessonScopeTest extends TestCase
         $this->assertTrue($method->invoke($controller, $lessonB->fresh(['tracks']), $courseB));
     }
 
+    public function test_student_catalog_and_lesson_sidebar_respect_course_track_lesson_scope(): void
+    {
+        [$courseA, , $lessonA, $lessonB, $track] = $this->sharedTrackFixture();
+        $student = User::factory()->create(['role' => 'student']);
+
+        $student->courses()->attach($courseA, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $courseA->slug))
+            ->assertOk()
+            ->assertSee(route('courses.lessons.show', [$courseA->slug, $lessonA]), false)
+            ->assertDontSee(route('courses.lessons.show', [$courseA->slug, $lessonB]), false);
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$courseA->slug, $track->module, $track]))
+            ->assertOk()
+            ->assertSee('Aula 1')
+            ->assertDontSee('Aula 2')
+            ->assertSee(route('courses.lessons.show', [$courseA->slug, $lessonA]), false)
+            ->assertDontSee(route('courses.lessons.show', [$courseA->slug, $lessonB]), false);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$courseA->slug, $lessonA]))
+            ->assertOk()
+            ->assertSee('Aulas da trilha')
+            ->assertSee('Aula 1')
+            ->assertDontSee('Aula 2')
+            ->assertSee(route('courses.lessons.show', [$courseA->slug, $lessonA]), false)
+            ->assertDontSee(route('courses.lessons.show', [$courseA->slug, $lessonB]), false);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$courseA->slug, $lessonB]))
+            ->assertNotFound();
+    }
+
     public function test_course_access_resolver_matches_noisy_product_name(): void
     {
         $course = Course::factory()->create([
@@ -59,8 +95,16 @@ class CourseTrackLessonScopeTest extends TestCase
 
     protected function sharedTrackFixture(): array
     {
-        $courseA = Course::factory()->create(['name' => 'Curso A']);
-        $courseB = Course::factory()->create(['name' => 'Curso B']);
+        $courseA = Course::factory()->create([
+            'name' => 'Curso A',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $courseB = Course::factory()->create([
+            'name' => 'Curso B',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
         $module = CourseModule::factory()->create([
             'course_id' => null,
             'name' => 'Módulo X',

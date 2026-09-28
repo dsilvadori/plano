@@ -470,12 +470,12 @@ class CourseCatalogFoundationTest extends TestCase
             'name' => 'Português',
         ]);
 
-        Cache::put("course:{$course->id}:catalog-modules:v2", 'cache-antigo', 600);
+        Cache::put("course:{$course->id}:catalog-modules:v3", 'cache-antigo', 600);
         Cache::put("course:{$course->id}:published-lessons-count:v2", 99, 600);
 
         app(\App\Services\ActiveStudyPlanRefresher::class)->refreshCoursesForModule($module);
 
-        $this->assertNull(Cache::get("course:{$course->id}:catalog-modules:v2"));
+        $this->assertNull(Cache::get("course:{$course->id}:catalog-modules:v3"));
         $this->assertNull(Cache::get("course:{$course->id}:published-lessons-count:v2"));
     }
 

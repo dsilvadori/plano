@@ -690,23 +690,47 @@ class CourseCatalogController extends Controller
 
     protected function publishedLessonsForTrackAndCourse(CourseModuleTrack $track, Course $course): Collection
     {
-        $lessonIds = $this->courseTrackLessonsBaseQuery($course)
-            ->where('course_module_track_lessons.course_module_track_id', $track->id)
+        return $this->publishedLessonsByTrackForCourse(collect([(int) $track->id]), $course)
+            ->get((int) $track->id, collect())
+            ->values();
+    }
+
+    protected function publishedLessonsByTrackForCourse(Collection $trackIds, Course $course): Collection
+    {
+        $trackIds = $trackIds
+            ->map(fn ($trackId): int => (int) $trackId)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($trackIds->isEmpty()) {
+            return collect();
+        }
+
+        $orderedLessonsByTrack = $this->courseTrackLessonsBaseQuery($course)
+            ->whereIn('course_module_track_lessons.course_module_track_id', $trackIds)
             ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
             ->where('lessons.status', '!=', 'archived')
             ->select([
-                'lessons.id',
+                'course_module_track_lessons.course_module_track_id',
+                'lessons.id as lesson_id',
                 DB::raw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order) as course_sort_order'),
                 'lessons.sort_order as lesson_sort_order',
                 'lessons.title',
             ])
+            ->orderBy('course_module_track_lessons.course_module_track_id')
             ->orderBy('course_sort_order')
             ->orderBy('lesson_sort_order')
             ->orderBy('lessons.title')
-            ->pluck('lessons.id')
-            ->all();
+            ->get()
+            ->groupBy('course_module_track_id');
 
-        if ($lessonIds === []) {
+        $lessonIds = $orderedLessonsByTrack
+            ->flatMap(fn (Collection $lessons) => $lessons->pluck('lesson_id'))
+            ->unique()
+            ->values();
+
+        if ($lessonIds->isEmpty()) {
             return collect();
         }
 
@@ -715,10 +739,12 @@ class CourseCatalogController extends Controller
             ->get()
             ->keyBy('id');
 
-        return collect($lessonIds)
-            ->map(fn (int $lessonId): ?Lesson => $lessonsById->get($lessonId))
-            ->filter()
-            ->values();
+        return $orderedLessonsByTrack
+            ->map(fn (Collection $trackLessons): Collection => $trackLessons
+                ->pluck('lesson_id')
+                ->map(fn (int $lessonId): ?Lesson => $lessonsById->get($lessonId))
+                ->filter()
+                ->values());
     }
 
     protected function courseTrackLessonsBaseQuery(Course $course)
@@ -974,7 +1000,7 @@ class CourseCatalogController extends Controller
 
     protected function modulesForCourse(Course $course): EloquentCollection
     {
-        return CourseModule::query()
+        $modules = CourseModule::query()
             ->where('is_active', true)
             ->where(function (Builder $query) use ($course): void {
                 $query
@@ -996,10 +1022,6 @@ class CourseCatalogController extends Controller
                 ->with([
                     'module.teacher',
                     'teacher',
-                    'lessons' => fn ($lessonQuery) => $lessonQuery
-                        ->where('status', '!=', 'archived')
-                        ->orderBy('sort_order')
-                        ->orderBy('title'),
                 ])
                 ->orderBy('sort_order')
                 ->orderBy('name'),
@@ -1007,6 +1029,28 @@ class CourseCatalogController extends Controller
             ->orderBy('sort_order')
             ->orderBy('name')
             ->get();
+
+        return $this->setCourseScopedTrackLessons($modules, $course);
+    }
+
+    protected function setCourseScopedTrackLessons(EloquentCollection $modules, Course $course): EloquentCollection
+    {
+        $trackIds = $modules
+            ->flatMap(fn (CourseModule $module): Collection => $module->tracks)
+            ->pluck('id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        $lessonsByTrack = $this->publishedLessonsByTrackForCourse($trackIds, $course);
+
+        $modules->each(function (CourseModule $module) use ($lessonsByTrack): void {
+            $module->tracks->each(function (CourseModuleTrack $track) use ($lessonsByTrack): void {
+                $track->setRelation('lessons', $lessonsByTrack->get((int) $track->id, collect()));
+            });
+        });
+
+        return $modules;
     }
 
     protected function cachedModulesForCourse(Course $course): EloquentCollection
@@ -1063,7 +1107,7 @@ class CourseCatalogController extends Controller
 
     protected static function catalogModulesCacheKeyForCourseId(int $courseId): string
     {
-        return "course:{$courseId}:catalog-modules:v2";
+        return "course:{$courseId}:catalog-modules:v3";
     }
 
     protected static function publishedLessonsCountCacheKeyForCourseId(int $courseId): string
@@ -1484,7 +1528,7 @@ class CourseCatalogController extends Controller
             return null;
         }
 
-        $track = CourseModuleTrack::query()
+        $tracks = CourseModuleTrack::query()
             ->whereIn('id', $trackIds)
             ->where(function (Builder $query) use ($course): void {
                 $query
@@ -1494,24 +1538,22 @@ class CourseCatalogController extends Controller
                         ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
                         ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
             })
-            ->with(['lessons' => fn ($query) => $query
-                ->where('status', '!=', 'archived')
-                ->orderBy('course_module_track_lessons.sort_order')
-                ->orderBy('lessons.sort_order')
-                ->orderBy('lessons.title'),
-            ])
             ->orderBy('sort_order')
             ->orderBy('name')
-            ->first();
+            ->get();
 
-        if (! $track || $track->lessons->isEmpty()) {
-            return null;
+        foreach ($tracks as $track) {
+            $lessons = $this->publishedLessonsForTrackAndCourse($track, $course);
+
+            if ($lessons->contains(fn (Lesson $trackLesson): bool => $trackLesson->is($lesson))) {
+                return [
+                    'track' => $track,
+                    'lessons' => $lessons,
+                ];
+            }
         }
 
-        return [
-            'track' => $track,
-            'lessons' => $track->lessons,
-        ];
+        return null;
     }
 
     protected function commentsForLesson(Lesson $lesson): Collection
