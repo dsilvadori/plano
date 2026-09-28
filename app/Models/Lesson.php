@@ -178,10 +178,12 @@ class Lesson extends Model
             return null;
         }
 
-        $hasMedia = filled($this->panda_video_id)
+        $hasLegacyPandaMedia = filled($this->panda_video_id)
             || filled($this->panda_embed_url)
-            || filled($this->panda_player_url)
-            || in_array((string) $this->source_status, ['media_ready', 'panda_processing'], true);
+            || filled($this->panda_player_url);
+
+        $hasMedia = $hasLegacyPandaMedia
+            || (! $this->video_id && in_array((string) $this->source_status, ['media_ready', 'panda_processing'], true));
 
         if (! $hasMedia) {
             return null;
@@ -208,10 +210,10 @@ class Lesson extends Model
             'description' => $this->description,
             'provider' => 'panda',
             'provider_video_id' => filled($this->panda_video_id) ? (string) $this->panda_video_id : $video->provider_video_id,
-            'provider_status' => $this->panda_status,
-            'embed_url' => $this->panda_embed_url,
-            'player_url' => $this->panda_player_url,
-            'thumbnail_url' => $this->thumbnail_url,
+            'provider_status' => $this->panda_status ?: $video->provider_status,
+            'embed_url' => $this->panda_embed_url ?: $video->getRawOriginal('embed_url'),
+            'player_url' => $this->panda_player_url ?: $video->getRawOriginal('player_url'),
+            'thumbnail_url' => $this->thumbnail_url ?: $video->thumbnail_url,
             'duration_seconds' => (int) $this->duration_seconds,
             'source_status' => (string) ($this->source_status ?: 'awaiting_media'),
             'metadata' => $videoMetadata,

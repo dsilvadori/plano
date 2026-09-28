@@ -20,6 +20,7 @@ use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
 use App\Models\Teacher;
 use App\Models\User;
+use App\Models\Video;
 use App\Notifications\LessonCommentSubmittedNotification;
 use App\Services\PandaVideoClient;
 use App\Services\StudyPlanGenerator;
@@ -1102,6 +1103,62 @@ class CourseCatalogFoundationTest extends TestCase
             ->assertSee('Entrará em breve')
             ->assertSee('A mídia desta aula entrará em breve')
             ->assertSee('Marcar como concluída');
+    }
+
+    public function test_lesson_page_embeds_video_from_library_when_lesson_only_has_video_id(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com vídeo da biblioteca',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'LGPD',
+            'slug' => 'lgpd',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $video = Video::query()->create([
+            'title' => '01 - LGPD',
+            'slug' => '01-lgpd',
+            'provider' => 'panda',
+            'provider_video_id' => '43094692-ea78-46b8-a4fc-5562e7cf9fe',
+            'provider_status' => 'CONVERTED',
+            'thumbnail_url' => 'https://cdn.pandavideo.com/vz-3aab6b05-dd1/c189011c-3a8e-460b-aa4e/thumbnail.jpg',
+            'duration_seconds' => 1560,
+            'source_status' => 'media_ready',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'video_id' => $video->id,
+            'title' => '01 - LGPD: Conceitos iniciais e objetivos da lei',
+            'type' => 'video',
+            'status' => 'published',
+            'source_status' => 'media_ready',
+            'panda_video_id' => null,
+            'panda_embed_url' => null,
+            'panda_player_url' => null,
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('https://player-vz-3aab6b05-dd1.tv.pandavideo.com.br/embed/?v=43094692-ea78-46b8-a4fc-5562e7cf9fe', false)
+            ->assertDontSee('Entrará em breve');
     }
 
     public function test_course_tracks_render_as_filtered_track_cards_when_module_has_multiple_tracks(): void
