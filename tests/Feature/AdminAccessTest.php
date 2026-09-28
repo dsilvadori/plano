@@ -94,7 +94,7 @@ class AdminAccessTest extends TestCase
             ->assertDontSee('Importar Panda');
     }
 
-    public function test_panda_actions_are_shown_on_video_edit_and_not_lesson_edit(): void
+    public function test_panda_actions_are_shown_on_lesson_edit_and_not_video_edit(): void
     {
         $admin = User::factory()->admin()->create();
         $video = Video::query()->create([
@@ -115,15 +115,15 @@ class AdminAccessTest extends TestCase
             ->get("/admin/videos/{$video->id}/edit")
             ->assertOk()
             ->assertSee('Importar URL do Panda')
-            ->assertSee('Gerar Recursos de IA')
-            ->assertSee('Ativar Tutor IA');
+            ->assertDontSee('Gerar Recursos de IA')
+            ->assertDontSee('Ativar Tutor IA');
 
         $this->actingAs($admin)
             ->get("/admin/lessons/{$lesson->id}/edit")
             ->assertOk()
             ->assertDontSee('Importar URL do Panda')
-            ->assertDontSee('Gerar Recursos de IA')
-            ->assertDontSee('Ativar Tutor IA');
+            ->assertSee('Gerar Recursos de IA')
+            ->assertSee('Ativar Tutor IA');
     }
 
     public function test_admin_can_access_student_dashboard_and_see_all_active_courses(): void

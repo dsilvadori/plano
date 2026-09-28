@@ -2,10 +2,7 @@
 
 namespace App\Filament\Resources\Videos\Pages;
 
-use App\Filament\Resources\Lessons\LessonResource;
 use App\Filament\Resources\Videos\VideoResource;
-use App\Services\PandaAiResourceActivator;
-use App\Services\PandaTutorActivator;
 use App\Services\PandaVideoClient;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -105,90 +102,6 @@ class EditVideo extends EditRecord
 
                         Notification::make()
                             ->title('Não foi possível importar o vídeo do Panda')
-                            ->body($exception->getMessage())
-                            ->danger()
-                            ->send();
-                    }
-                }),
-            Action::make('activatePandaAi')
-                ->label('Gerar Recursos de IA')
-                ->icon('heroicon-o-sparkles')
-                ->requiresConfirmation()
-                ->modalHeading('Gerar recursos de IA para este vídeo')
-                ->visible(fn (): bool => VideoResource::hasPandaVideo($this->record))
-                ->action(function (PandaAiResourceActivator $activator): void {
-                    $lesson = VideoResource::lessonForPandaAction($this->record);
-
-                    if (! $lesson) {
-                        Notification::make()
-                            ->title('Vídeo sem aula vinculada')
-                            ->body('Vincule este vídeo a uma aula antes de gerar IA.')
-                            ->warning()
-                            ->send();
-
-                        return;
-                    }
-
-                    try {
-                        LessonResource::notifyPandaAiResult($activator->reprocess($lesson));
-                    } catch (Throwable $exception) {
-                        report($exception);
-
-                        Notification::make()
-                            ->title('Não foi possível ativar a IA do Panda')
-                            ->body($exception->getMessage())
-                            ->danger()
-                            ->send();
-                    }
-                }),
-            Action::make('clearPandaAiCache')
-                ->label('Limpar cache da IA')
-                ->icon('heroicon-o-trash')
-                ->color('warning')
-                ->requiresConfirmation()
-                ->modalHeading('Limpar recursos de IA deste vídeo')
-                ->visible(fn (): bool => VideoResource::hasPandaVideo($this->record))
-                ->action(function (PandaAiResourceActivator $activator): void {
-                    $lesson = VideoResource::lessonForPandaAction($this->record);
-
-                    if (! $lesson) {
-                        return;
-                    }
-
-                    $deleted = $activator->clearCachedArtifacts($lesson);
-
-                    Notification::make()
-                        ->title('Cache da IA limpo')
-                        ->body("{$deleted} recurso(s) de IA foram removidos.")
-                        ->success()
-                        ->send();
-                }),
-            Action::make('activatePandaTutor')
-                ->label('Ativar Tutor IA')
-                ->icon('heroicon-o-chat-bubble-left-right')
-                ->requiresConfirmation()
-                ->modalHeading('Ativar Tutor IA para este vídeo')
-                ->visible(fn (): bool => VideoResource::hasPandaVideo($this->record))
-                ->action(function (PandaTutorActivator $activator): void {
-                    $lesson = VideoResource::lessonForPandaAction($this->record);
-
-                    if (! $lesson) {
-                        Notification::make()
-                            ->title('Vídeo sem aula vinculada')
-                            ->body('Vincule este vídeo a uma aula antes de ativar o Tutor IA.')
-                            ->warning()
-                            ->send();
-
-                        return;
-                    }
-
-                    try {
-                        LessonResource::notifyPandaTutorResult($activator->activate($lesson));
-                    } catch (Throwable $exception) {
-                        report($exception);
-
-                        Notification::make()
-                            ->title('Não foi possível ativar o Tutor IA')
                             ->body($exception->getMessage())
                             ->danger()
                             ->send();

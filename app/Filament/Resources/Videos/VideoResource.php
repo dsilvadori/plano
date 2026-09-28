@@ -9,11 +9,8 @@ use App\Filament\Resources\Videos\Pages\ListVideos;
 use App\Models\Lesson;
 use App\Models\LessonFolder;
 use App\Models\Video;
-use App\Services\PandaAiResourceActivator;
-use App\Services\PandaTutorActivator;
 use BackedEnum;
 use Filament\Actions\Action;
-use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -30,10 +27,8 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
-use Throwable;
 
 class VideoResource extends Resource
 {
@@ -238,87 +233,6 @@ class VideoResource extends Resource
                     ]),
             ], layout: FiltersLayout::AboveContentCollapsible)
             ->recordActions([
-                Action::make('activatePandaAi')
-                    ->label('Gerar Recursos de IA')
-                    ->icon('heroicon-o-sparkles')
-                    ->requiresConfirmation()
-                    ->modalHeading('Gerar recursos de IA para este vídeo')
-                    ->modalDescription('A operação usa a mídia canônica do vídeo. Se houver aula vinculada, os recursos também continuam compatíveis com a área do aluno.')
-                    ->visible(fn (Video $record): bool => self::hasPandaVideo($record))
-                    ->action(function (Video $record, PandaAiResourceActivator $activator): void {
-                        $lesson = self::lessonForPandaAction($record);
-
-                        if (! $lesson) {
-                            self::notifyMissingLessonForVideo();
-
-                            return;
-                        }
-
-                        try {
-                            LessonResource::notifyPandaAiResult($activator->reprocess($lesson));
-                        } catch (Throwable $exception) {
-                            report($exception);
-
-                            Notification::make()
-                                ->title('Não foi possível ativar a IA do Panda')
-                                ->body($exception->getMessage())
-                                ->danger()
-                                ->send();
-                        }
-                    }),
-                Action::make('clearPandaAiCache')
-                    ->label('Limpar cache da IA')
-                    ->icon('heroicon-o-trash')
-                    ->color('warning')
-                    ->requiresConfirmation()
-                    ->modalHeading('Limpar recursos de IA deste vídeo')
-                    ->modalDescription('Remove os recursos de IA Panda salvos para o vídeo e para a aula vinculada usada como compatibilidade.')
-                    ->visible(fn (Video $record): bool => self::hasPandaVideo($record))
-                    ->action(function (Video $record, PandaAiResourceActivator $activator): void {
-                        $lesson = self::lessonForPandaAction($record);
-
-                        if (! $lesson) {
-                            self::notifyMissingLessonForVideo();
-
-                            return;
-                        }
-
-                        $deleted = $activator->clearCachedArtifacts($lesson);
-
-                        Notification::make()
-                            ->title('Cache da IA limpo')
-                            ->body("{$deleted} recurso(s) de IA foram removidos.")
-                            ->success()
-                            ->send();
-                    }),
-                Action::make('activatePandaTutor')
-                    ->label('Ativar Tutor IA')
-                    ->icon('heroicon-o-chat-bubble-left-right')
-                    ->requiresConfirmation()
-                    ->modalHeading('Ativar Tutor IA para este vídeo')
-                    ->modalDescription('A plataforma verificará se o Tutor IA já está disponível no Panda. Se ainda não estiver, solicitará a geração dos recursos necessários.')
-                    ->visible(fn (Video $record): bool => self::hasPandaVideo($record))
-                    ->action(function (Video $record, PandaTutorActivator $activator): void {
-                        $lesson = self::lessonForPandaAction($record);
-
-                        if (! $lesson) {
-                            self::notifyMissingLessonForVideo();
-
-                            return;
-                        }
-
-                        try {
-                            LessonResource::notifyPandaTutorResult($activator->activate($lesson));
-                        } catch (Throwable $exception) {
-                            report($exception);
-
-                            Notification::make()
-                                ->title('Não foi possível ativar o Tutor IA')
-                                ->body($exception->getMessage())
-                                ->danger()
-                                ->send();
-                        }
-                    }),
                 Action::make('openLesson')
                     ->label('Abrir aula')
                     ->icon('heroicon-o-academic-cap')
@@ -329,105 +243,6 @@ class VideoResource extends Resource
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
-                    BulkAction::make('activatePandaAi')
-                        ->label('Gerar Recursos de IA')
-                        ->icon('heroicon-o-sparkles')
-                        ->requiresConfirmation()
-                        ->modalHeading('Gerar recursos de IA para os vídeos selecionados')
-                        ->action(function (Collection $records, PandaAiResourceActivator $activator): void {
-                            [$requested, $pending, $syncedArtifacts, $alreadyReady, $skipped, $failed] = [0, 0, 0, 0, 0, 0];
-
-                            foreach ($records as $record) {
-                                $lesson = self::lessonForPandaAction($record);
-
-                                if (! $lesson || ! self::hasPandaVideo($record)) {
-                                    $skipped++;
-
-                                    continue;
-                                }
-
-                                try {
-                                    $result = $activator->reprocess($lesson);
-                                    $requested += $result['requested'] ? 1 : 0;
-                                    $pending += $result['pending'] ? 1 : 0;
-                                    $syncedArtifacts += (int) $result['created_artifacts'];
-                                    $alreadyReady += (! $result['requested'] && ! $result['pending'] && (int) $result['created_artifacts'] === 0) ? 1 : 0;
-                                } catch (Throwable $exception) {
-                                    report($exception);
-                                    $failed++;
-                                }
-                            }
-
-                            $notification = Notification::make()
-                                ->title('Geração de IA Panda concluída')
-                                ->body("Solicitadas: {$requested}. Aguardando Panda: {$pending}. Já disponíveis: {$alreadyReady}. Artefatos sincronizados: {$syncedArtifacts}. Ignorados sem Panda/aula: {$skipped}. Falhas: {$failed}.");
-
-                            ($failed > 0 ? $notification->warning() : $notification->success())->send();
-                        })
-                        ->deselectRecordsAfterCompletion(),
-                    BulkAction::make('clearPandaAiCache')
-                        ->label('Limpar cache da IA')
-                        ->icon('heroicon-o-trash')
-                        ->color('warning')
-                        ->requiresConfirmation()
-                        ->modalHeading('Limpar recursos de IA dos vídeos selecionados')
-                        ->action(function (Collection $records, PandaAiResourceActivator $activator): void {
-                            $deleted = 0;
-                            $skipped = 0;
-
-                            foreach ($records as $record) {
-                                $lesson = self::lessonForPandaAction($record);
-
-                                if (! $lesson || ! self::hasPandaVideo($record)) {
-                                    $skipped++;
-
-                                    continue;
-                                }
-
-                                $deleted += $activator->clearCachedArtifacts($lesson);
-                            }
-
-                            Notification::make()
-                                ->title('Cache da IA limpo')
-                                ->body("Recursos removidos: {$deleted}. Ignorados sem Panda/aula: {$skipped}.")
-                                ->success()
-                                ->send();
-                        })
-                        ->deselectRecordsAfterCompletion(),
-                    BulkAction::make('activatePandaTutor')
-                        ->label('Ativar Tutor IA')
-                        ->icon('heroicon-o-chat-bubble-left-right')
-                        ->requiresConfirmation()
-                        ->modalHeading('Ativar Tutor IA para os vídeos selecionados')
-                        ->action(function (Collection $records, PandaTutorActivator $activator): void {
-                            [$activated, $requested, $skipped, $failed] = [0, 0, 0, 0];
-
-                            foreach ($records as $record) {
-                                $lesson = self::lessonForPandaAction($record);
-
-                                if (! $lesson || ! self::hasPandaVideo($record)) {
-                                    $skipped++;
-
-                                    continue;
-                                }
-
-                                try {
-                                    $result = $activator->activate($lesson);
-                                    $activated += $result['available'] ? 1 : 0;
-                                    $requested += $result['requested'] ? 1 : 0;
-                                } catch (Throwable $exception) {
-                                    report($exception);
-                                    $failed++;
-                                }
-                            }
-
-                            $notification = Notification::make()
-                                ->title('Ativação do Tutor IA concluída')
-                                ->body("Ativadas: {$activated}. Solicitadas: {$requested}. Ignorados sem Panda/aula: {$skipped}. Falhas: {$failed}.");
-
-                            ($failed > 0 ? $notification->warning() : $notification->success())->send();
-                        })
-                        ->deselectRecordsAfterCompletion(),
                     DeleteBulkAction::make(),
                 ]),
             ])

@@ -9,9 +9,11 @@ use App\Models\QuestionBank;
 use App\Models\StudyPlan;
 use App\Services\ActiveStudyPlanRefresher;
 use App\Services\CourseAccessResolver;
+use App\Services\CourseCatalogDuplicateMerger;
 use App\Services\CourseLessonMediaImporter;
 use App\Services\LessonCourseLinker;
 use App\Services\LessonDuplicateMerger;
+use App\Services\LessonFolderDuplicateMerger;
 use App\Services\PandaVideoClient;
 use App\Services\QuestionPdfImporter;
 use App\Services\StudyPlanGenerator;
@@ -421,6 +423,39 @@ Artisan::command('lessons:merge-duplicates {--apply : Executa a unificação. Se
 
     return 0;
 })->purpose('Unifica aulas duplicadas pelo mesmo nome, preservando vínculos e progresso');
+
+Artisan::command('lesson-folders:merge-duplicates {--apply : Executa a unificação. Sem esta opção, apenas simula} {--scope=global : Escopo do agrupamento: global ou parent}', function (LessonFolderDuplicateMerger $merger) {
+    $apply = (bool) $this->option('apply');
+    $scope = (string) $this->option('scope');
+
+    if (! in_array($scope, ['global', 'parent'], true)) {
+        $this->error('Escopo inválido. Use --scope=global ou --scope=parent.');
+
+        return 1;
+    }
+
+    $summary = $merger->merge($apply, $scope);
+
+    $this->info($apply ? 'Pastas duplicadas mescladas.' : 'Simulação concluída. Nada foi gravado.');
+    $this->line('Escopo: '.$scope);
+    $this->line('Pastas mescladas: '.$summary['folders_merged']);
+    $this->line('Aulas movidas: '.$summary['lessons_moved']);
+    $this->line('Vídeos movidos: '.$summary['videos_moved']);
+    $this->line('Subpastas movidas: '.$summary['children_moved']);
+
+    return 0;
+})->purpose('Unifica pastas duplicadas da biblioteca de aulas e vídeos pelo mesmo nome');
+
+Artisan::command('catalog:merge-duplicates {--apply : Executa a unificação. Sem esta opção, apenas simula}', function (CourseCatalogDuplicateMerger $merger) {
+    $summary = $merger->merge((bool) $this->option('apply'));
+
+    $this->info($this->option('apply') ? 'Estrutura duplicada mesclada.' : 'Simulação concluída. Nada foi gravado.');
+    $this->line('Módulos/pastas mesclados: '.$summary['modules_merged']);
+    $this->line('Trilhas/subpastas mescladas: '.$summary['tracks_merged']);
+    $this->line('Trilhas/subpastas movidas: '.$summary['tracks_moved']);
+
+    return 0;
+})->purpose('Unifica módulos e trilhas duplicados por nome, preservando vínculos');
 
 Artisan::command('catalog:detach-course-bindings {--dry-run}', function () {
     $modules = CourseModule::query()
