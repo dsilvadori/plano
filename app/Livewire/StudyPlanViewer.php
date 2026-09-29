@@ -428,6 +428,7 @@ class StudyPlanViewer extends Component
                 $usedLinkedMinutes = 0;
                 $linkedLessons = $item->orderedLessonsForDisplay()
                     ->map(fn ($lesson): array => [
+                        'lesson_id' => (int) $lesson->id,
                         'name' => $lesson->title,
                         'minutes' => $lesson->duration_minutes,
                         'minutes_label' => $this->formatLessonMinutes($lesson->duration_minutes),
@@ -452,37 +453,9 @@ class StudyPlanViewer extends Component
                     return;
                 }
 
-                if (isset($lessonsByItem[$item->id])) {
-                    $linkedLessonsByName = collect($linkedLessons)
-                        ->keyBy(fn (array $lesson): string => $this->normalizeLessonName((string) ($lesson['name'] ?? '')));
-                    $matchedLinkedLessons = 0;
-
-                    $lessonsByItem[$item->id] = collect($lessonsByItem[$item->id])
-                        ->map(function (array $lesson) use ($linkedLessonsByName, &$matchedLinkedLessons): array {
-                            $linkedLesson = $linkedLessonsByName->get($this->normalizeLessonName((string) ($lesson['name'] ?? '')));
-
-                            if (! $linkedLesson) {
-                                return $lesson;
-                            }
-
-                            $matchedLinkedLessons++;
-
-                            return array_merge($lesson, $linkedLesson, [
-                                'url' => $linkedLesson['url'] ?? null,
-                                'is_online' => true,
-                            ]);
-                        })
-                        ->values()
-                        ->all();
-
-                    if ($matchedLinkedLessons === 0 || $matchedLinkedLessons < count($linkedLessons)) {
-                        $lessonsByItem[$item->id] = $linkedLessons;
-                    }
-
-                    return;
-                }
-
                 $lessonsByItem[$item->id] = $linkedLessons;
+
+                return;
             });
 
         return collect($lessonsByItem)
