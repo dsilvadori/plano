@@ -411,9 +411,9 @@ class StudentDashboardTest extends TestCase
             'week_number' => 1,
             'day_of_week' => strtolower(now()->englishDayOfWeek),
             'title' => 'Bloco 2 · Conhecimentos Específicos: Administração Geral',
-            'description' => 'Bloco de até 4 minutos para estudar Administração Geral.',
+            'description' => 'Bloco de até 20 minutos para estudar Administração Geral.',
             'type' => 'specific',
-            'estimated_minutes' => 4,
+            'estimated_minutes' => 20,
             'sort_order' => 1,
         ]);
         $item->lessons()->attach($lesson->id, ['sort_order' => 1]);
@@ -486,9 +486,70 @@ class StudentDashboardTest extends TestCase
         $this->actingAs($student)
             ->get(route('study-plans.show', $plan))
             ->assertOk()
-            ->assertSee('03 - Teorias da Administração - Teoria das Relações Humanas')
-            ->assertSee('19 min')
+            ->assertSee('01 - Teorias da Administração - Teoria Científica')
+            ->assertSee('23 min')
+            ->assertSee('02 - Teorias da Administração - Teoria Clássica')
+            ->assertSee('18 min')
+            ->assertDontSee('03 - Teorias da Administração - Teoria das Relações Humanas')
+            ->assertDontSee('19 min')
             ->assertDontSee('4 min');
+    }
+
+    public function test_study_plan_viewer_resolves_multiple_lesson_links_from_continuation_description(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Matemática e Raciocínio Lógico',
+            'type' => 'basic',
+            'workload_minutes' => 47,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Operações com Frações',
+            'slug' => 'operacoes-com-fracoes',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $lessons = collect([
+            ['Operações com Frações - Parte II', 15],
+            ['Operações com Frações - Parte III', 16],
+        ])->map(fn (array $payload, int $index): Lesson => Lesson::factory()->create([
+            'title' => $payload[0],
+            'duration_seconds' => $payload[1] * 60,
+            'sort_order' => $index + 1,
+            'status' => 'published',
+        ]));
+        foreach ($lessons as $index => $lesson) {
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Matemática e Raciocínio Lógico',
+            'description' => 'Bloco de até 20 minutos para estudar Matemática e Raciocínio Lógico. Aulas do bloco: Continuação: Operações com Frações - Parte II e Operações com Frações - Parte III.',
+            'type' => 'basic',
+            'estimated_minutes' => 20,
+            'sort_order' => 1,
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[0]]), false)
+            ->assertDontSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[1]]), false);
     }
 
     public function test_lesson_page_plan_track_resyncs_all_lessons_from_the_study_plan_item(): void

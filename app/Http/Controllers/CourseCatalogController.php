@@ -1446,6 +1446,22 @@ class CourseCatalogController extends Controller
             ->filter()
             ->values();
         $availableLessons = $this->sidebarAvailableLessonsForModule($module);
+        $matchedSplitLessonCount = $lessonNames
+            ->filter(fn (string $lessonName): bool => $availableLessons->contains(
+                fn (Lesson $lesson): bool => $this->sidebarLessonKey($lesson->title) === $this->sidebarLessonKey($lessonName)
+            ))
+            ->count();
+
+        if ($matchedSplitLessonCount === 0 && $availableLessons->isNotEmpty()) {
+            $descriptionLessonKey = $this->sidebarLessonKey($lessonNames->implode(' '));
+            $lessonNames = $availableLessons
+                ->filter(fn (Lesson $lesson): bool => $descriptionLessonKey !== ''
+                    && str_contains($descriptionLessonKey, $this->sidebarLessonKey($lesson->title)))
+                ->pluck('title')
+                ->values();
+        }
+
+        $usedMinutes = 0;
 
         return $lessonNames
             ->map(function (string $lessonName) use ($availableLessons, $course): array {
@@ -1457,6 +1473,17 @@ class CourseCatalogController extends Controller
                     'minutes' => $matchedLesson ? max(1, (int) $matchedLesson->duration_minutes) : 0,
                     'url' => $matchedLesson ? route('courses.lessons.show', [$course->slug, $matchedLesson]) : null,
                 ];
+            })
+            ->filter(function (array $row) use (&$usedMinutes, $item): bool {
+                $minutes = max(0, (int) ($row['minutes'] ?? 0));
+
+                if ($minutes <= 0 || $usedMinutes + $minutes > (int) $item->estimated_minutes) {
+                    return false;
+                }
+
+                $usedMinutes += $minutes;
+
+                return true;
             })
             ->values()
             ->all();

@@ -441,6 +441,29 @@ class StudyPlanGeneratorTest extends TestCase
         $this->assertStringNotContainsString('Continuação:', $tuesdayItems[0]->description);
     }
 
+    public function test_lesson_block_only_includes_lessons_that_fit_inside_available_minutes(): void
+    {
+        $module = CourseModule::factory()->create([
+            'name' => 'Matemática',
+            'type' => 'basic',
+        ]);
+        $generator = app(StudyPlanGenerator::class);
+        $method = new \ReflectionMethod($generator, 'buildLessonBlock');
+        $method->setAccessible(true);
+
+        $block = $method->invoke($generator, $module, 20, [
+            'index' => 0,
+            'lessons' => [
+                ['name' => 'Operações com Frações - Parte II', 'minutes' => 15],
+                ['name' => 'Operações com Frações - Parte III', 'minutes' => 16],
+            ],
+        ]);
+
+        $this->assertSame(15, $block['minutes']);
+        $this->assertSame(['Operações com Frações - Parte II'], $block['lesson_names']);
+        $this->assertSame(1, $block['state']['index']);
+    }
+
     public function test_generator_keeps_daily_questions_and_review_at_ten_minutes_each_when_day_has_one_hour(): void
     {
         $course = Course::factory()->create();
@@ -981,6 +1004,54 @@ class StudyPlanGeneratorTest extends TestCase
 
         $this->assertSame([], $questionItem->fresh()->lessons()->pluck('lessons.id')->all());
         $this->assertSame([], $reviewItem->fresh()->lessons()->pluck('lessons.id')->all());
+    }
+
+    public function test_sync_published_lessons_matches_multiple_lessons_from_combined_description(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $module = CourseModule::factory()->for($course)->create([
+            'name' => 'Matemática e Raciocínio Lógico',
+            'type' => 'basic',
+            'workload_minutes' => 31,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Operações com Frações',
+            'slug' => 'operacoes-com-fracoes',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $lessons = collect([
+            ['Operações com Frações - Parte II', 15],
+            ['Operações com Frações - Parte III', 16],
+        ])->map(fn (array $payload, int $index): Lesson => Lesson::factory()->create([
+            'title' => $payload[0],
+            'duration_seconds' => $payload[1] * 60,
+            'sort_order' => $index + 1,
+            'status' => 'published',
+        ]));
+        foreach ($lessons as $index => $lesson) {
+            $module->onlineLessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = \App\Models\StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'type' => 'basic',
+            'description' => 'Bloco de até 20 minutos. Aulas do bloco: Continuação: Operações com Frações - Parte II e Operações com Frações - Parte III.',
+            'estimated_minutes' => 20,
+        ]);
+
+        app(StudyPlanGenerator::class)->syncPublishedLessonsForPlan($plan);
+
+        $this->assertSame([$lessons[0]->id], $item->fresh()->lessons()->pluck('lessons.id')->all());
     }
 
     public function test_generator_does_not_mix_lessons_from_different_tracks_in_the_same_block(): void

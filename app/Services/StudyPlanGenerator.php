@@ -1453,7 +1453,10 @@ class StudyPlanGenerator
 
     protected function attachOnlineLessonsToItem(StudyPlanItem $item, CourseModule $module, array $lessonNames, array $trackNames = [], array $lessonIds = []): void
     {
-        $matchedLessons = $this->matchedOnlineLessonsForItem($module, $lessonNames, $trackNames, $lessonIds);
+        $matchedLessons = $this->lessonsThatFitInMinutes(
+            $this->matchedOnlineLessonsForItem($module, $lessonNames, $trackNames, $lessonIds),
+            (int) $item->estimated_minutes,
+        );
 
         if ($matchedLessons->isEmpty()) {
             return;
@@ -1465,6 +1468,26 @@ class StudyPlanGenerator
             ->all();
 
         $item->lessons()->sync($syncPayload);
+    }
+
+    protected function lessonsThatFitInMinutes(Collection $lessons, int $availableMinutes): Collection
+    {
+        $usedMinutes = 0;
+        $availableMinutes = max(0, $availableMinutes);
+
+        return $lessons
+            ->filter(function (Lesson $lesson) use (&$usedMinutes, $availableMinutes): bool {
+                $lessonMinutes = max(1, (int) $lesson->duration_minutes);
+
+                if ($usedMinutes + $lessonMinutes > $availableMinutes) {
+                    return false;
+                }
+
+                $usedMinutes += $lessonMinutes;
+
+                return true;
+            })
+            ->values();
     }
 
     protected function matchedOnlineLessonsForItem(CourseModule $module, array $lessonNames, array $trackNames = [], array $lessonIds = []): Collection
@@ -1542,6 +1565,18 @@ class StudyPlanGenerator
             if ($matchedLesson) {
                 $matchedLessons->push($matchedLesson);
             }
+        }
+
+        if ($matchedLessons->isEmpty() && $normalizedLessonNames->count() === 1) {
+            $descriptionLessonName = (string) $normalizedLessonNames->first();
+
+            $matchedLessons = $onlineLessons
+                ->filter(function (Lesson $lesson) use ($descriptionLessonName): bool {
+                    $normalizedTitle = $this->normalizeLessonName($lesson->title);
+
+                    return $normalizedTitle !== '' && str_contains($descriptionLessonName, $normalizedTitle);
+                })
+                ->values();
         }
 
         return $matchedLessons->values();
@@ -1961,16 +1996,6 @@ class StudyPlanGenerator
             }
 
             if (($totalMinutes + $lessonMinutes) > $maxBlockMinutes) {
-                if ($totalMinutes > 0) {
-                    break;
-                }
-
-                $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
-                $lessonIds[] = $lesson['lesson_id'] ?? null;
-                $trackNames[] = $lessonTrackName;
-                $totalMinutes += $lessonMinutes;
-                $consumedLessons++;
-
                 break;
             }
 
