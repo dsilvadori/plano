@@ -423,7 +423,7 @@ class StudyPlanViewer extends Component
 
         $this->studyPlan->items
             ->where('week_number', $this->selectedWeek)
-            ->filter(fn (StudyPlanItem $item): bool => $item->lessons->isNotEmpty())
+            ->filter(fn (StudyPlanItem $item): bool => in_array($item->type, ['basic', 'specific', 'complementary'], true) && $item->lessons->isNotEmpty())
             ->each(function (StudyPlanItem $item) use (&$lessonsByItem): void {
                 $linkedLessons = $item->orderedLessonsForDisplay()
                     ->map(fn ($lesson): array => [
@@ -558,9 +558,18 @@ class StudyPlanViewer extends Component
 
     protected function questionLessonReferencesForDate(StudyPlanItem $questionItem): Collection
     {
+        $previousQuestionSortOrder = $this->studyPlan->items
+            ->where('scheduled_date', $questionItem->scheduled_date)
+            ->where('type', 'questions')
+            ->filter(fn (StudyPlanItem $item): bool => (int) $item->sort_order < (int) $questionItem->sort_order)
+            ->max('sort_order');
+
         return $this->studyPlan->items
             ->where('scheduled_date', $questionItem->scheduled_date)
             ->whereIn('type', ['basic', 'specific', 'complementary'])
+            ->filter(fn (StudyPlanItem $item): bool => (int) $item->sort_order < (int) $questionItem->sort_order)
+            ->when($previousQuestionSortOrder !== null, fn (Collection $items): Collection => $items
+                ->filter(fn (StudyPlanItem $item): bool => (int) $item->sort_order > (int) $previousQuestionSortOrder))
             ->flatMap(function (StudyPlanItem $item): array {
                 $linkedLessons = $item->lessons
                     ->map(fn ($lesson): array => [

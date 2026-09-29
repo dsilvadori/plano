@@ -13,6 +13,7 @@ use App\Services\StudyPlanGenerator;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class StudyPlanGeneratorTest extends TestCase
@@ -813,6 +814,173 @@ class StudyPlanGeneratorTest extends TestCase
         $item->load('lessons');
 
         $this->assertSame($lessons->pluck('id')->all(), $item->lessons->pluck('id')->all());
+    }
+
+    public function test_sync_published_lessons_uses_course_scope_without_repeating_stale_global_lessons(): void
+    {
+        $course = Course::factory()->create();
+        $otherCourse = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 40,
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Interpretação',
+            'slug' => 'interpretacao',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $module->courses()->attach([
+            $course->id => ['sort_order' => 1],
+            $otherCourse->id => ['sort_order' => 1],
+        ]);
+        $track->courses()->attach([
+            $course->id => ['sort_order' => 1],
+            $otherCourse->id => ['sort_order' => 1],
+        ]);
+
+        $firstLesson = Lesson::factory()->create([
+            'title' => 'Interpretação - Aula 01',
+            'duration_seconds' => 20 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'title' => 'Interpretação - Aula 02',
+            'duration_seconds' => 20 * 60,
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+        $staleLesson = Lesson::factory()->create([
+            'title' => 'Interpretação - Aula antiga',
+            'duration_seconds' => 20 * 60,
+            'sort_order' => 3,
+            'status' => 'published',
+        ]);
+
+        $module->onlineLessons()->attach([
+            $firstLesson->id => ['sort_order' => 1],
+            $secondLesson->id => ['sort_order' => 2],
+            $staleLesson->id => ['sort_order' => 3],
+        ]);
+        $track->lessons()->attach([
+            $firstLesson->id => ['sort_order' => 1],
+            $secondLesson->id => ['sort_order' => 2],
+            $staleLesson->id => ['sort_order' => 3],
+        ]);
+        DB::table('course_module_track_lesson_course')->insert([
+            [
+                'course_id' => $course->id,
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $firstLesson->id,
+                'sort_order' => 1,
+                'status' => 'published',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'course_id' => $course->id,
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $secondLesson->id,
+                'sort_order' => 2,
+                'status' => 'published',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'course_id' => $otherCourse->id,
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $staleLesson->id,
+                'sort_order' => 3,
+                'status' => 'published',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $plan = \App\Models\StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $firstItem = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 20 minutos para estudar Português.',
+            'type' => 'basic',
+            'estimated_minutes' => 20,
+            'sort_order' => 1,
+        ]);
+        $secondItem = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->addDay()->englishDayOfWeek),
+            'title' => 'Bloco 2 · Matéria Básica: Português',
+            'description' => 'Bloco de até 20 minutos para estudar Português.',
+            'type' => 'basic',
+            'estimated_minutes' => 20,
+            'sort_order' => 2,
+        ]);
+
+        app(StudyPlanGenerator::class)->syncPublishedLessonsForPlan($plan);
+
+        $this->assertSame([$firstLesson->id], $firstItem->fresh()->lessons()->pluck('lessons.id')->all());
+        $this->assertSame([$secondLesson->id], $secondItem->fresh()->lessons()->pluck('lessons.id')->all());
+        $syncedLessonIds = $plan->items()->with('lessons')->get()->flatMap->lessons->pluck('id')->sort()->values()->all();
+
+        $this->assertSame([$firstLesson->id, $secondLesson->id], $syncedLessonIds);
+    }
+
+    public function test_sync_published_lessons_detaches_lessons_from_question_and_review_blocks(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $module = CourseModule::factory()->for($course)->create([
+            'name' => 'Matemática',
+            'type' => 'basic',
+            'workload_minutes' => 20,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'title' => 'Operações com Frações - Parte I',
+            'status' => 'published',
+            'duration_seconds' => 16 * 60,
+        ]);
+        $plan = \App\Models\StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $questionItem = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'type' => 'questions',
+            'estimated_minutes' => 16,
+        ]);
+        $reviewItem = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'type' => 'review',
+            'estimated_minutes' => 16,
+        ]);
+        $questionItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
+        $reviewItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
+
+        app(StudyPlanGenerator::class)->syncPublishedLessonsForPlan($plan);
+
+        $this->assertSame([], $questionItem->fresh()->lessons()->pluck('lessons.id')->all());
+        $this->assertSame([], $reviewItem->fresh()->lessons()->pluck('lessons.id')->all());
     }
 
     public function test_generator_does_not_mix_lessons_from_different_tracks_in_the_same_block(): void

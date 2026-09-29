@@ -1247,10 +1247,6 @@ class CourseCatalogController extends Controller
                 : [];
 
             if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
-                if ($isDayItem && $linkedRows !== []) {
-                    $rowsByItemId[$item->id] = $this->withPlanSidebarUrls($linkedRows, $plan, $item);
-                }
-
                 continue;
             }
 

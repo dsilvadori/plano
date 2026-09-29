@@ -530,6 +530,10 @@ class StudyPlanGenerator
                     $module = $item->courseModule;
 
                     if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
+                        if ($item->lessons()->exists()) {
+                            $item->lessons()->detach();
+                        }
+
                         return;
                     }
 
@@ -663,7 +667,7 @@ class StudyPlanGenerator
     protected function loadModulePlanningRelations(Collection $modules, Course $course): Collection
     {
         $modules->each(function (CourseModule $module) use ($course): void {
-            $module->loadMissing(['onlineLessons' => fn ($query) => $query
+            $courseScopedOnlineLessons = $module->onlineLessonsForCourseQuery($course)
                 ->select([
                     'lessons.id',
                     'lessons.course_id',
@@ -673,15 +677,12 @@ class StudyPlanGenerator
                     'lessons.duration_seconds',
                     'lessons.status',
                     'lessons.sort_order',
-                ])]);
-            $module->setRelation('tracks', $module->tracks()
-                ->where('status', 'published')
-                ->where(function ($query) use ($course): void {
-                    $query
-                        ->whereDoesntHave('courses')
-                        ->orWhereHas('courses', fn ($query) => $query->whereKey($course->id));
-                })
-                ->with(['lessons' => fn ($query) => $query
+                ])
+                ->get();
+
+            $module->setRelation('onlineLessons', $courseScopedOnlineLessons->isNotEmpty()
+                ? $courseScopedOnlineLessons
+                : $module->onlineLessons()
                     ->select([
                         'lessons.id',
                         'lessons.course_id',
@@ -692,10 +693,61 @@ class StudyPlanGenerator
                         'lessons.status',
                         'lessons.sort_order',
                     ])
-                    ->where('lessons.status', '!=', 'archived')])
+                    ->get());
+
+            $tracks = $module->tracks()
+                ->where('status', 'published')
+                ->where(function ($query) use ($course): void {
+                    $query
+                        ->whereDoesntHave('courses')
+                        ->orWhereHas('courses', fn ($query) => $query->whereKey($course->id));
+                })
                 ->orderBy('sort_order')
                 ->orderBy('name')
-                ->get());
+                ->get();
+
+            $tracks->each(function ($track) use ($course): void {
+                $scopedLessons = $track->lessons()
+                    ->select([
+                        'lessons.id',
+                        'lessons.course_id',
+                        'lessons.course_module_id',
+                        'lessons.course_module_track_id',
+                        'lessons.title',
+                        'lessons.duration_seconds',
+                        'lessons.status',
+                        'lessons.sort_order',
+                    ])
+                    ->join('course_module_track_lesson_course as course_lesson_scope', function ($join) use ($course): void {
+                        $join->on('course_lesson_scope.lesson_id', '=', 'lessons.id')
+                            ->where('course_lesson_scope.course_id', '=', $course->id);
+                    })
+                    ->whereColumn('course_lesson_scope.course_module_track_id', 'course_module_track_lessons.course_module_track_id')
+                    ->where('course_lesson_scope.status', 'published')
+                    ->where('lessons.status', '!=', 'archived')
+                    ->orderBy('course_lesson_scope.sort_order')
+                    ->orderBy('lessons.sort_order')
+                    ->orderBy('lessons.title')
+                    ->get();
+
+                $track->setRelation('lessons', $scopedLessons->isNotEmpty()
+                    ? $scopedLessons
+                    : $track->lessons()
+                        ->select([
+                            'lessons.id',
+                            'lessons.course_id',
+                            'lessons.course_module_id',
+                            'lessons.course_module_track_id',
+                            'lessons.title',
+                            'lessons.duration_seconds',
+                            'lessons.status',
+                            'lessons.sort_order',
+                        ])
+                        ->where('lessons.status', '!=', 'archived')
+                        ->get());
+            });
+
+            $module->setRelation('tracks', $tracks);
         });
 
         return $modules;

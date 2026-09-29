@@ -1107,13 +1107,16 @@ XML);
             'type' => 'basic',
             'title' => 'Bloco 1: Matéria Básica: Português',
             'description' => 'Bloco de até 45 minutos para estudar Português. Aulas do bloco: 05 - Interpretação - Panorama Geral.',
+            'sort_order' => 1,
         ]);
+        $theoryItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
         StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $module->id,
             'scheduled_date' => now()->toDateString(),
             'type' => 'questions',
             'title' => 'Bloco 3 - Questões',
+            'sort_order' => 2,
         ]);
 
         $bank = QuestionBank::query()->create([
@@ -1136,6 +1139,82 @@ XML);
             ->assertOk()
             ->assertSee('Resolver questões: Interpretação - Panorama Geral')
             ->assertSee('plan_id='.$plan->id.'&amp;lesson_id='.$lesson->id, false);
+    }
+
+    public function test_question_plan_blocks_do_not_repeat_same_lesson_links_later_in_the_day(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Matemática',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Operações com Frações - Parte I',
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+        ]);
+        $theoryItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'basic',
+            'title' => 'Bloco 1: Matéria Básica: Matemática',
+            'description' => 'Bloco de até 16 minutos para estudar Matemática. Aulas do bloco: Operações com Frações - Parte I.',
+            'sort_order' => 1,
+        ]);
+        $theoryItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'questions',
+            'title' => 'Bloco 2 - Questões',
+            'sort_order' => 2,
+        ]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'review',
+            'title' => 'Bloco 3 - Revisão',
+            'sort_order' => 3,
+        ]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'questions',
+            'title' => 'Bloco 4 - Questões',
+            'sort_order' => 4,
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Operações com Frações - Parte I',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $bank->lessons()->syncWithoutDetaching($lesson->id);
+        Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => 'Questão de frações.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+
+        $response = $this->actingAs($student)->get(route('study-plans.show', $plan));
+
+        $response->assertOk();
+        $this->assertSame(1, substr_count($response->getContent(), 'Resolver questões: Operações com Frações - Parte I'));
     }
 
     public function test_lesson_page_shows_fixation_tab_and_related_question_links(): void
