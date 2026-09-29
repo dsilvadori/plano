@@ -616,7 +616,10 @@ class StudyPlanViewer extends Component
             return [];
         }
 
-        return collect(preg_split('/,\s*|\s+e\s+(?=\d{1,3}\s+-)/u', $matches[1]) ?: [])
+        $lessonList = rtrim(trim((string) $matches[1]), '.');
+        $separator = str_contains($lessonList, ';') ? '/\s*;\s*/u' : '/,\s*|\s+e\s+(?=\d{1,3}\s+-)/u';
+
+        return collect(preg_split($separator, $lessonList) ?: [])
             ->map(fn (string $name): string => trim($name))
             ->filter()
             ->values()
@@ -631,8 +634,10 @@ class StudyPlanViewer extends Component
             ->whereIn('id', $this->studyPlan->items->pluck('course_module_id')->filter()->unique())
             ->get()
             ->keyBy('id');
+        $courseModules = $this->coursePlanningModules();
 
         $modulesById->each(fn (CourseModule $module) => $this->loadModulePlanningRelations($module));
+        $courseModules->each(fn (CourseModule $module) => $this->loadModulePlanningRelations($module));
 
         $this->studyPlan->items
             ->sortBy([
@@ -640,8 +645,9 @@ class StudyPlanViewer extends Component
                 ['sort_order', 'asc'],
                 ['id', 'asc'],
             ])
-            ->each(function (StudyPlanItem $item) use (&$lessonStates, &$lessonsByItem, $modulesById) {
-                $module = $modulesById->get($item->course_module_id);
+            ->each(function (StudyPlanItem $item) use (&$lessonStates, &$lessonsByItem, $modulesById, $courseModules) {
+                $module = $modulesById->get($item->course_module_id)
+                    ?: $this->resolveModuleForPlanItem($item, $courseModules);
 
                 if (! in_array($item->type, ['basic', 'specific', 'complementary'], true) || ! $module) {
                     return;
@@ -672,6 +678,60 @@ class StudyPlanViewer extends Component
             });
 
         return $lessonsByItem;
+    }
+
+    protected function coursePlanningModules(): Collection
+    {
+        if (! $this->studyPlan->course) {
+            return collect();
+        }
+
+        return CourseModule::query()
+            ->where(function ($query): void {
+                $query
+                    ->where('course_id', $this->studyPlan->course_id)
+                    ->orWhereHas('courses', fn ($query) => $query->whereKey($this->studyPlan->course_id));
+            })
+            ->whereIn('type', ['basic', 'specific', 'complementary'])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+    }
+
+    protected function resolveModuleForPlanItem(StudyPlanItem $item, Collection $modules): ?CourseModule
+    {
+        $type = $this->normalizeModuleType((string) $item->type);
+
+        if (! in_array($type, ['basic', 'specific', 'complementary'], true)) {
+            return null;
+        }
+
+        $candidates = $modules
+            ->filter(fn (CourseModule $module): bool => $this->normalizeModuleType((string) $module->type) === $type)
+            ->values();
+
+        if ($candidates->isEmpty()) {
+            return null;
+        }
+
+        $titleKey = $this->normalizeLessonName((string) $item->title);
+        $subjectKey = $this->normalizeLessonName(trim((string) str($item->title)->afterLast(':')));
+
+        $matched = $candidates->first(function (CourseModule $module) use ($titleKey, $subjectKey): bool {
+            $moduleKey = $this->normalizeLessonName((string) $module->name);
+
+            return $moduleKey !== ''
+                && ($titleKey === $moduleKey
+                    || $subjectKey === $moduleKey
+                    || str_contains($titleKey, $moduleKey)
+                    || str_contains($moduleKey, $subjectKey));
+        });
+
+        if ($matched) {
+            return $matched;
+        }
+
+        return $candidates->count() === 1 ? $candidates->first() : null;
     }
 
     protected function buildLessonSelectionForItem(CourseModule $module, int $availableMinutes, array $state): array

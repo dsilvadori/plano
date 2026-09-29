@@ -185,6 +185,66 @@ class StudentDashboardTest extends TestCase
         $this->assertTrue($item->fresh()->lessons()->whereKey($archiveLesson->id)->exists());
     }
 
+    public function test_study_plan_viewer_restores_lesson_links_for_legacy_items_without_module_id(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+        $course->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 1]]);
+
+        $lessons = collect([
+            ['Classes de Palavras - Substantivo e Adjetivo', 10],
+            ['Classes de Palavras - Advérbio', 11],
+            ['Classe de palavras - Conjunção coordenativa', 16],
+        ])->map(function (array $payload, int $index): Lesson {
+            return Lesson::factory()->create([
+                'title' => $payload[0],
+                'duration_seconds' => $payload[1] * 60,
+                'sort_order' => $index + 1,
+                'status' => 'published',
+            ]);
+        });
+
+        foreach ($lessons as $index => $lesson) {
+            $module->onlineLessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => null,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 37 minutos para estudar Português. Aulas do bloco: Classes de Palavras - Substantivo e Adjetivo; Classes de Palavras - Advérbio; Classe de palavras - Conjunção coordenativa.',
+            'type' => 'basic',
+            'estimated_minutes' => 37,
+            'sort_order' => 1,
+        ]);
+
+        $response = $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[0]]), false)
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[1]]), false)
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[2]]), false);
+
+        foreach ($lessons as $lesson) {
+            $this->assertSame(1, substr_count($response->getContent(), route('study-plans.items.lessons.show', [$plan, $item, $lesson])));
+        }
+    }
+
     public function test_study_plan_creation_validation_messages_are_translated(): void
     {
         ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
