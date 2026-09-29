@@ -13,6 +13,7 @@ use App\Support\LessonTitleNormalizer;
 use App\Support\StudyTime;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -20,6 +21,8 @@ use Illuminate\Support\Str;
 class StudyPlanGenerator
 {
     protected const POST_THEORY_RESERVE_WEEKS = 2;
+
+    protected array $publishedReadyCourseIds = [];
 
     public function generate(
         User $user,
@@ -494,15 +497,15 @@ class StudyPlanGenerator
 
     public function syncPublishedLessonsForPlan(StudyPlan $studyPlan): StudyPlan
     {
+        $studyPlan->loadMissing(['course']);
+
+        if (! $studyPlan->course) {
+            return $studyPlan;
+        }
+
+        $this->publishReadyLessonsForCourse($studyPlan->course);
+
         return DB::transaction(function () use ($studyPlan): StudyPlan {
-            $studyPlan->loadMissing(['course']);
-
-            if (! $studyPlan->course) {
-                return $studyPlan;
-            }
-
-            $this->publishReadyLessonsForCourse($studyPlan->course);
-
             $lessonIndexes = [];
             $usedLessonIdsByModule = [];
             $courseModules = $this->coursePlanningModules($studyPlan->course);
@@ -1774,6 +1777,10 @@ class StudyPlanGenerator
 
     protected function publishReadyLessonsForCourse(Course $course): void
     {
+        if (isset($this->publishedReadyCourseIds[$course->id])) {
+            return;
+        }
+
         $trackLessonIds = DB::table('course_module_track_course')
             ->join('course_module_track_lessons', 'course_module_track_lessons.course_module_track_id', '=', 'course_module_track_course.course_module_track_id')
             ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
@@ -1805,16 +1812,43 @@ class StudyPlanGenerator
             ->values();
 
         if ($lessonIds->isEmpty()) {
+            $this->publishedReadyCourseIds[$course->id] = true;
+
             return;
         }
 
-        Lesson::query()
-            ->whereIn('id', $lessonIds)
-            ->where('status', '!=', 'published')
-            ->update([
-                'status' => 'published',
-                'updated_at' => now(),
-            ]);
+        $lessonIds
+            ->chunk(25)
+            ->each(function (Collection $chunk): void {
+                $this->retryOnLockTimeout(function () use ($chunk): void {
+                    Lesson::query()
+                        ->whereIn('id', $chunk->all())
+                        ->where('status', '!=', 'published')
+                        ->update([
+                            'status' => 'published',
+                            'updated_at' => now(),
+                        ]);
+                });
+            });
+
+        $this->publishedReadyCourseIds[$course->id] = true;
+    }
+
+    protected function retryOnLockTimeout(callable $operation): void
+    {
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            try {
+                $operation();
+
+                return;
+            } catch (QueryException $exception) {
+                if ($attempt >= 3 || ! str_contains($exception->getMessage(), 'Lock wait timeout')) {
+                    throw $exception;
+                }
+
+                usleep(250000 * $attempt);
+            }
+        }
     }
 
     protected function readyLessonFilter(): callable
