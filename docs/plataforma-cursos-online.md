@@ -2148,6 +2148,27 @@ Data: 2026-09-09.
   - `/dashboard/plano/{id}`
   - `/dashboard/cursos/{course:slug}/aulas/{lesson}`
 
+### Registro de ajuste - correspondencia de trilhas na planilha
+
+Data: 2026-10-10.
+
+- A planilha e a fonte da estrutura do curso. Cada trilha importada deve receber apenas aulas que correspondam a essa trilha.
+- A revinculacao com a biblioteca nao pode usar apenas o modulo amplo como contexto. Se a planilha informa uma trilha, a aula reaproveitada precisa bater com o nome/caminho da trilha, com aliases conhecidos como ECA, LIA, LAI e LGPD.
+- Depois que a planilha criou o escopo oficial da trilha, a revinculacao nao pode adicionar, remover ou substituir linhas. A estrutura deve permanecer com a mesma quantidade de aulas e os mesmos titulos da planilha.
+- A correspondencia tambem considera numero de parte (`Parte 01`, `Parte 02`), duracao aproximada e temas exclusivos. Poder Executivo, Poder Legislativo, Poder Judiciario, Poder de Policia e leis federais com numeros diferentes nao podem se substituir.
+- Para titulos nao genericos, o nucleo do titulo precisa ser compativel antes de aplicar bonus de trilha ou duracao. Exemplo: `Administracao Publica - Parte 05` nao pode substituir `Principios da Administracao publica` apenas por estar na pasta correta e ter duracao parecida.
+- Quando uma posicao da trilha ja tem uma aula oficial criada pela planilha, uma aula aproximada diferente nao pode ser adicionada sobre a mesma posicao. O metadado `source=spreadsheet` deve ser preservado para proteger essa linha.
+- Aulas antigas da trilha que nao tenham escopo oficial da planilha devem ser removidas do curso, mesmo que estejam pendentes de midia. Elas nao podem acionar nova busca por candidatas prontas.
+- Trilhas repetidas com o mesmo nome dentro do mesmo modulo devem ser diferenciadas pela ordem da trilha. A conferenca nao pode agrupar essas trilhas pelo nome, pois isso mascara divergencias.
+- Validacao feita com o dump de producao e a planilha `Curitiba (2).xlsx`: o curso `Gabaritando Curitiba - Agente Administrativo` ficou com 54 trilhas e 341 aulas, exatamente como a planilha, com titulos e ordem alinhados. A revinculacao posterior ficou com `linked=0` e `replaced=0`, confirmando que nao alterou a estrutura importada.
+- Para conferir uma reimportacao, usar:
+
+```bash
+php artisan courses:compare-spreadsheet 47 "/caminho/para/Curitiba (2).xlsx"
+```
+
+O comando compara modulo, ordem da trilha, nome da trilha, titulos e ordem das aulas. Por padrao ele ignora modulos de sistema como `Comece por aqui`; use `--include-system` para auditar tambem esses modulos.
+
 ### Cache, deploy e operacao
 
 - Apos alteracoes de configuracao, rotas, views ou nome da aplicacao, usar:

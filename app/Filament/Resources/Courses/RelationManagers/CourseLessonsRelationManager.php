@@ -26,7 +26,7 @@ class CourseLessonsRelationManager extends RelationManager
     public function table(Table $table): Table
     {
         return $table
-            ->query(fn (): Builder => $this->getOwnerRecord()->linkedLessonsQuery())
+            ->query(fn (): Builder => $this->getOwnerRecord()->linkedLessonsQuery()->with('video'))
             ->recordTitleAttribute('title')
             ->columns([
                 TextColumn::make('title')->label('Aula')->searchable()->sortable(),
@@ -45,6 +45,7 @@ class CourseLessonsRelationManager extends RelationManager
                 TextColumn::make('source_status')
                     ->label('Mídia')
                     ->badge()
+                    ->getStateUsing(fn (Lesson $record): string => self::mediaStateForLesson($record))
                     ->formatStateUsing(fn (?string $state): string => match ($state) {
                         'structure_only' => 'Somente estrutura',
                         'awaiting_media' => 'Mídia pendente',
@@ -86,7 +87,8 @@ class CourseLessonsRelationManager extends RelationManager
                         'upload_failed' => 'Falha no upload',
                         'media_ready' => 'Mídia pronta',
                         'published' => 'Publicado',
-                    ]),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => self::applyMediaFilter($query, (string) ($data['value'] ?? ''))),
                 SelectFilter::make('status')
                     ->options([
                         'draft' => 'Rascunho',
@@ -101,5 +103,81 @@ class CourseLessonsRelationManager extends RelationManager
                     ->url(fn (Lesson $record): string => LessonResource::getUrl('edit', ['record' => $record]))
                     ->openUrlInNewTab(),
             ]);
+    }
+
+    protected static function applyMediaFilter(Builder $query, string $state): Builder
+    {
+        return match ($state) {
+            'awaiting_media' => $query->where(function (Builder $query): void {
+                self::whereMissingMedia($query)
+                    ->where(function (Builder $query): void {
+                        $query
+                            ->whereNull('lessons.source_status')
+                            ->orWhereIn('lessons.source_status', ['', 'awaiting_media', 'structure_only']);
+                    });
+            }),
+            'media_ready' => $query->where(fn (Builder $query) => self::whereHasReadyMedia($query)),
+            'published' => $query->where('lessons.source_status', 'published'),
+            'upload_queued', 'uploading', 'panda_processing', 'upload_failed', 'structure_only' => $query->where('lessons.source_status', $state),
+            default => $query,
+        };
+    }
+
+    protected static function mediaStateForLesson(Lesson $lesson): string
+    {
+        if (self::lessonHasReadyMedia($lesson)) {
+            return 'media_ready';
+        }
+
+        $state = (string) $lesson->source_status;
+
+        return $state !== '' ? $state : 'awaiting_media';
+    }
+
+    protected static function lessonHasReadyMedia(Lesson $lesson): bool
+    {
+        $lesson->loadMissing('video');
+
+        return filled($lesson->panda_video_id)
+            || filled($lesson->panda_embed_url)
+            || filled($lesson->panda_player_url)
+            || $lesson->source_status === 'media_ready'
+            || filled($lesson->video?->provider_video_id)
+            || filled($lesson->video?->embed_url)
+            || filled($lesson->video?->player_url)
+            || $lesson->video?->source_status === 'media_ready';
+    }
+
+    protected static function whereHasReadyMedia(Builder $query): Builder
+    {
+        return $query->where(function (Builder $query): void {
+            $query
+                ->where('lessons.source_status', 'media_ready')
+                ->orWhereNotNull('lessons.panda_video_id')
+                ->orWhereNotNull('lessons.panda_embed_url')
+                ->orWhereNotNull('lessons.panda_player_url')
+                ->orWhereHas('video', function (Builder $query): void {
+                    $query
+                        ->where('source_status', 'media_ready')
+                        ->orWhereNotNull('provider_video_id')
+                        ->orWhereNotNull('embed_url')
+                        ->orWhereNotNull('player_url');
+                });
+        });
+    }
+
+    protected static function whereMissingMedia(Builder $query): Builder
+    {
+        return $query
+            ->whereNull('lessons.panda_video_id')
+            ->whereNull('lessons.panda_embed_url')
+            ->whereNull('lessons.panda_player_url')
+            ->whereDoesntHave('video', function (Builder $query): void {
+                $query
+                    ->where('source_status', 'media_ready')
+                    ->orWhereNotNull('provider_video_id')
+                    ->orWhereNotNull('embed_url')
+                    ->orWhereNotNull('player_url');
+            });
     }
 }

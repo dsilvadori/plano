@@ -1137,8 +1137,14 @@ class CourseSpreadsheetImporter
             ->sort(function (array $left, array $right): int {
                 return [$right['media_priority'], $right['score'], -$right['lesson']->id]
                     <=> [$left['media_priority'], $left['score'], -$left['lesson']->id];
-            })
-            ->first()['lesson'] ?? null;
+            });
+
+        $exactMatchedCandidate = $this->isGenericLessonTitle($title)
+            ? $matchedLesson->first(fn (array $candidate): bool => $this->matchKey($candidate['lesson']->title, 'lesson-title-key-'.$candidate['lesson']->id) === $this->matchKey($title))
+            : null;
+        $exactMatchedLesson = $exactMatchedCandidate['lesson'] ?? null;
+
+        $matchedLesson = $exactMatchedLesson ?? ($matchedLesson->first()['lesson'] ?? null);
 
         return $matchedLesson
             ?? $this->resolveReusableVideoLesson($title, $module, $track, $lessonData, $excludeLessonIds)
@@ -1270,11 +1276,25 @@ class CourseSpreadsheetImporter
 
         $lessonNumber = $this->leadingNumber($lesson->title, 'lesson-title-'.$lesson->id);
         $titleNumber = $this->leadingNumber($title);
+        $lessonPartNumber = $this->partNumber($lesson->title);
+        $titlePartNumber = $this->partNumber($title);
 
         $sameContextualNumber = $lessonNumber && $titleNumber && $lessonNumber === $titleNumber;
 
         if ($lessonNumber && $titleNumber) {
             $score += $lessonNumber === $titleNumber ? 8 : 0;
+        }
+
+        if ($lessonPartNumber && $titlePartNumber && $lessonPartNumber !== $titlePartNumber) {
+            return 0;
+        }
+
+        if ($lessonPartNumber && $titlePartNumber && $lessonPartNumber === $titlePartNumber) {
+            $score += 12;
+        }
+
+        if (! $this->isGenericLessonTitle($title) && ! $this->titleCoresAreCompatible($lessonKey, $titleKey)) {
+            return 0;
         }
 
         $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
@@ -1322,11 +1342,13 @@ class CourseSpreadsheetImporter
 
         if ($durationScore !== null) {
             if ($durationScore >= 90) {
-                $score += 6;
-            } elseif ($durationScore < 50 && $score < 90) {
-                $score -= 8;
-            } elseif ($durationScore < 75 && $score < 82) {
-                $score -= 5;
+                $score += 10;
+            } elseif ($durationScore >= 75) {
+                $score += 4;
+            } elseif ($durationScore < 50) {
+                $score -= 30;
+            } else {
+                $score -= 12;
             }
         }
 
@@ -1562,6 +1584,21 @@ class CourseSpreadsheetImporter
             return 0.0;
         }
 
+        $videoPartNumber = $this->partNumber($video->title);
+        $titlePartNumber = $this->partNumber($title);
+
+        if ($videoPartNumber && $titlePartNumber && $videoPartNumber !== $titlePartNumber) {
+            return 0.0;
+        }
+
+        if ($videoPartNumber && $titlePartNumber && $videoPartNumber === $titlePartNumber) {
+            $score += 12;
+        }
+
+        if (! $this->isGenericLessonTitle($title) && ! $this->titleCoresAreCompatible($videoKey, $titleKey)) {
+            return 0.0;
+        }
+
         $metadata = is_array($video->metadata) ? $video->metadata : [];
         $rawPath = (string) ($metadata['library_folder_path'] ?? $metadata['drive_source_folder_path'] ?? $video->folder?->path ?? '');
         $path = $this->matchKey($rawPath, 'video-path-'.$video->id);
@@ -1600,11 +1637,13 @@ class CourseSpreadsheetImporter
 
         if ($durationScore !== null) {
             if ($durationScore >= 90) {
-                $score += 6;
-            } elseif ($durationScore < 50 && $score < 90) {
-                $score -= 8;
-            } elseif ($durationScore < 75 && $score < 82) {
-                $score -= 5;
+                $score += 10;
+            } elseif ($durationScore >= 75) {
+                $score += 4;
+            } elseif ($durationScore < 50) {
+                $score -= 30;
+            } else {
+                $score -= 12;
             }
         }
 
@@ -1806,6 +1845,35 @@ class CourseSpreadsheetImporter
         return count($union) > 0 ? (count($intersection) / count($union)) * 100 : 0.0;
     }
 
+    protected function titleCoresAreCompatible(string $leftKey, string $rightKey): bool
+    {
+        if ($leftKey === '' || $rightKey === '') {
+            return false;
+        }
+
+        if ($leftKey === $rightKey) {
+            return true;
+        }
+
+        $leftCore = $this->titleCoreKey($leftKey);
+        $rightCore = $this->titleCoreKey($rightKey);
+
+        if ($leftCore === $rightCore) {
+            return true;
+        }
+
+        return $this->tokenOverlapPercent($leftCore, $rightCore) >= 75;
+    }
+
+    protected function titleCoreKey(string $key): string
+    {
+        return Str::of($key)
+            ->replaceMatches('/\bparte\s+0*\d{1,3}\b/u', '')
+            ->replaceMatches('/\b0*\d{1,3}\b/u', '')
+            ->squish()
+            ->value();
+    }
+
     protected function directionalTokenMatchPercent(string $needleKey, string $haystackKey): float
     {
         $needleTokens = $this->comparisonTokens($needleKey);
@@ -1839,6 +1907,22 @@ class CourseSpreadsheetImporter
         return in_array($last, ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x'], true)
             ? $last
             : null;
+    }
+
+    protected function partNumber(string $key): ?int
+    {
+        $key = Str::of($key)
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
+            ->value();
+
+        if (preg_match('/\bparte\s+0*(\d{1,3})\b/u', $key, $matches) !== 1) {
+            return null;
+        }
+
+        return max(1, (int) $matches[1]);
     }
 
     protected function pathMatchesContext(string $path, string $context): bool
@@ -1879,6 +1963,38 @@ class CourseSpreadsheetImporter
             ->squish()
             ->value();
 
+        if (str_contains($value, 'eca')) {
+            $variants[] = 'estatuto da crianca e do adolescente';
+        }
+
+        if (str_contains($value, 'estatuto') && str_contains($value, 'crianca') && str_contains($value, 'adolescente')) {
+            $variants[] = 'eca';
+        }
+
+        if (str_contains($value, 'lia')) {
+            $variants[] = 'lei de improbidade administrativa';
+        }
+
+        if (str_contains($value, 'improbidade administrativa')) {
+            $variants[] = 'lia';
+        }
+
+        if (str_contains($value, 'lai')) {
+            $variants[] = 'lei de acesso a informacao';
+        }
+
+        if (str_contains($value, 'acesso') && str_contains($value, 'informacao')) {
+            $variants[] = 'lai';
+        }
+
+        if (str_contains($value, 'lgpd')) {
+            $variants[] = 'lei geral de protecao de dados';
+        }
+
+        if (str_contains($value, 'geral') && str_contains($value, 'protecao') && str_contains($value, 'dados')) {
+            $variants[] = 'lgpd';
+        }
+
         return array_values(array_unique($variants));
     }
 
@@ -1908,15 +2024,11 @@ class CourseSpreadsheetImporter
             return true;
         }
 
-        $hasHierarchicalPath = str_contains($rawPath, '/') || str_contains($rawPath, ' / ');
-
-        if ($hasHierarchicalPath) {
-            return ($trackKey !== '' && $this->pathMatchesContext($path, $trackKey))
-                || ($moduleKey === '' || $this->pathMatchesContext($path, $moduleKey));
+        if ($trackKey !== '') {
+            return $this->pathMatchesContext($path, $trackKey);
         }
 
-        return ($trackKey !== '' && $this->pathMatchesContext($path, $trackKey))
-            || ($moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey));
+        return $moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey);
     }
 
     protected function contentProduct(string $value): ?string
@@ -1945,6 +2057,30 @@ class CourseSpreadsheetImporter
             return 'internet';
         }
 
+        if (preg_match('/\blei\s+federal\s+(?:no\s+)?(\d{1,3})\s+(\d{3})\b/u', $value, $matches) === 1) {
+            return 'lei-federal-'.$matches[1].$matches[2];
+        }
+
+        if (str_contains($value, 'poder executivo')) {
+            return 'poder-executivo';
+        }
+
+        if (str_contains($value, 'poder legislativo') || str_contains($value, 'legislativo')) {
+            return 'poder-legislativo';
+        }
+
+        if (str_contains($value, 'poder judiciario') || str_contains($value, 'judiciario')) {
+            return 'poder-judiciario';
+        }
+
+        if (str_contains($value, 'poder de policia')) {
+            return 'poder-de-policia';
+        }
+
+        if (str_contains($value, 'direito administrativo') || str_contains($value, 'administracao publica') || str_contains($value, 'autarquia')) {
+            return 'direito-administrativo';
+        }
+
         $hasEca = str_contains($value, 'estatuto') && str_contains($value, 'crianca') && str_contains($value, 'adolescente');
         $hasLdb = str_contains($value, 'ldb') || str_contains($value, 'diretrizes bases');
 
@@ -1962,6 +2098,22 @@ class CourseSpreadsheetImporter
 
         if (str_contains($value, 'improbidade administrativa')) {
             return 'lia';
+        }
+
+        if (preg_match('/\bl\s*i\s*a\b/u', $value) === 1) {
+            return 'lia';
+        }
+
+        if (preg_match('/\bl\s*a\s*i\b/u', $value) === 1) {
+            return 'lai';
+        }
+
+        if (preg_match('/\bl\s*g\s*p\s*d\b/u', $value) === 1) {
+            return 'lgpd';
+        }
+
+        if (preg_match('/\be\s*c\s*a\b/u', $value) === 1) {
+            return 'eca';
         }
 
         if ($hasLdb) {

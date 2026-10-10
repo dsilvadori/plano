@@ -281,14 +281,20 @@ class LessonCourseLinkerTest extends TestCase
 
         $stats = app(LessonCourseLinker::class)->sync($course);
 
-        $this->assertSame(4, $stats['linked']);
+        $this->assertSame(2, $stats['linked']);
         $this->assertSame(2, $stats['replaced']);
-        $readyLessons->each(function (Lesson $lesson) use ($module, $track): void {
+        $readyLessons->take(2)->each(function (Lesson $lesson) use ($module, $track): void {
             $this->assertDatabaseHas('course_module_lessons', [
                 'course_module_id' => $module->id,
                 'lesson_id' => $lesson->id,
             ]);
             $this->assertDatabaseHas('course_module_track_lessons', [
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $lesson->id,
+            ]);
+        });
+        $readyLessons->skip(2)->each(function (Lesson $lesson) use ($track): void {
+            $this->assertDatabaseMissing('course_module_track_lessons', [
                 'course_module_track_id' => $track->id,
                 'lesson_id' => $lesson->id,
             ]);
@@ -356,6 +362,289 @@ class LessonCourseLinkerTest extends TestCase
             'id' => $readyLesson->id,
             'status' => 'published',
         ]);
+    }
+
+    public function test_it_does_not_use_module_planning_fallback_when_course_has_scoped_track_lessons(): void
+    {
+        $course = Course::factory()->create(['name' => 'Gabaritando Curitiba']);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Legislação',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Princípios fundamentais - Parte 01', 'minutes' => 17],
+                ['name' => '01 - Lei Federal nº 13.460/2017.', 'minutes' => 32],
+            ],
+            'is_active' => true,
+        ]);
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+
+        $principlesTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Princípios Fundamentais',
+            'slug' => 'principios-fundamentais',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $lawTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Lei Federal nº 13.460/2017',
+            'slug' => 'lei-federal-no-13460-2017',
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+        $principlesTrack->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $lawTrack->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 2]]);
+
+        $placeholder = Lesson::query()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $principlesTrack->id,
+            'title' => 'Princípios fundamentais - Parte 01',
+            'slug' => 'principios-fundamentais-parte-01',
+            'type' => 'video',
+            'duration_seconds' => 17 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+        $readyLawLesson = Lesson::query()->create([
+            'title' => '01 - Lei Federal nº 13.460/2017.',
+            'slug' => '01-lei-federal-no-13460-2017',
+            'type' => 'video',
+            'duration_seconds' => 32 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-lei-federal-13460-01',
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'library_folder_path' => 'Conhecimentos Específicos / Lei Federal nº 13.460/2017',
+            ],
+        ]);
+
+        $principlesTrack->lessons()->syncWithoutDetaching([
+            $placeholder->id => ['sort_order' => 1],
+        ]);
+        DB::table('course_module_track_lesson_course')->insert([
+            'course_id' => $course->id,
+            'course_module_track_id' => $principlesTrack->id,
+            'lesson_id' => $placeholder->id,
+            'sort_order' => 1,
+            'status' => 'published',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        app(LessonCourseLinker::class)->sync($course);
+
+        $this->assertDatabaseMissing('course_module_track_lesson_course', [
+            'course_id' => $course->id,
+            'course_module_track_id' => $principlesTrack->id,
+            'lesson_id' => $readyLawLesson->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_lesson_course', [
+            'course_id' => $course->id,
+            'course_module_track_id' => $lawTrack->id,
+            'lesson_id' => $readyLawLesson->id,
+        ]);
+    }
+
+    public function test_it_removes_ready_lesson_from_unrelated_track_context(): void
+    {
+        $course = Course::factory()->create(['name' => 'Gabaritando Curitiba']);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Legislação',
+            'is_active' => true,
+        ]);
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Princípios Fundamentais',
+            'slug' => 'principios-fundamentais',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $wrongLesson = Lesson::query()->create([
+            'title' => '01 - Lei Federal nº 13.460/2017.',
+            'slug' => '01-lei-federal-no-13460-2017',
+            'type' => 'video',
+            'duration_seconds' => 32 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-lei-federal-13460-01',
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'library_folder_path' => 'Conhecimentos Específicos / Lei Federal nº 13.460/2017',
+            ],
+        ]);
+        $track->lessons()->syncWithoutDetaching([
+            $wrongLesson->id => ['sort_order' => 1],
+        ]);
+        DB::table('course_module_track_lesson_course')->insert([
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $wrongLesson->id,
+            'sort_order' => 1,
+            'status' => 'published',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        app(LessonCourseLinker::class)->sync($course);
+
+        $this->assertDatabaseMissing('course_module_track_lessons', [
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $wrongLesson->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_lesson_course', [
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $wrongLesson->id,
+        ]);
+    }
+
+    public function test_it_preserves_spreadsheet_track_structure_without_extra_or_missing_lessons(): void
+    {
+        $course = Course::factory()->create(['name' => 'Gabaritando Curitiba']);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Legislação',
+            'is_active' => true,
+        ]);
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Poder Executivo',
+            'slug' => 'poder-executivo',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $officialFirst = Lesson::query()->create([
+            'title' => 'Poder Executivo - Parte 01',
+            'slug' => 'poder-executivo-parte-01',
+            'type' => 'video',
+            'duration_seconds' => 21 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+        $officialSecond = Lesson::query()->create([
+            'title' => 'Poder Executivo - Parte 02',
+            'slug' => 'poder-executivo-parte-02',
+            'type' => 'video',
+            'duration_seconds' => 21 * 60,
+            'sort_order' => 2,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+        $extraReady = Lesson::query()->create([
+            'title' => 'Poder Legislativo - Parte 01',
+            'slug' => 'poder-legislativo-parte-01',
+            'type' => 'video',
+            'duration_seconds' => 21 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-legislativo-01',
+            'source_status' => 'media_ready',
+        ]);
+        $extraPending = Lesson::query()->create([
+            'title' => 'Aula extra pendente',
+            'slug' => 'aula-extra-pendente',
+            'type' => 'video',
+            'duration_seconds' => 10 * 60,
+            'sort_order' => 3,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+
+        $track->lessons()->syncWithoutDetaching([
+            $officialFirst->id => ['sort_order' => 1],
+            $officialSecond->id => ['sort_order' => 2],
+            $extraReady->id => ['sort_order' => 1],
+            $extraPending->id => ['sort_order' => 3],
+        ]);
+
+        foreach ([[$officialFirst, 1], [$officialSecond, 2]] as [$lesson, $sortOrder]) {
+            DB::table('course_module_track_lesson_course')->insert([
+                'course_id' => $course->id,
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $lesson->id,
+                'sort_order' => $sortOrder,
+                'status' => 'published',
+                'metadata' => json_encode(['source' => 'spreadsheet']),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        DB::table('course_module_track_lesson_course')->insert([
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $extraReady->id,
+            'sort_order' => 1,
+            'status' => 'published',
+            'metadata' => json_encode(['source' => 'lesson_course_linker']),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('course_module_track_lesson_course')->insert([
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $extraPending->id,
+            'sort_order' => 3,
+            'status' => 'published',
+            'metadata' => json_encode(['source' => 'legacy']),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $stats = app(LessonCourseLinker::class)->sync($course);
+
+        $this->assertSame(0, $stats['linked']);
+        $this->assertSame(0, $stats['replaced']);
+        $this->assertDatabaseHas('course_module_track_lesson_course', [
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $officialFirst->id,
+        ]);
+        $this->assertDatabaseHas('course_module_track_lesson_course', [
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $officialSecond->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_lesson_course', [
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $extraReady->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_lesson_course', [
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $extraPending->id,
+        ]);
+        $this->assertSame([
+            'Poder Executivo - Parte 01',
+            'Poder Executivo - Parte 02',
+        ], DB::table('course_module_track_lesson_course as scope')
+            ->join('lessons', 'lessons.id', '=', 'scope.lesson_id')
+            ->where('scope.course_id', $course->id)
+            ->where('scope.course_module_track_id', $track->id)
+            ->orderBy('scope.sort_order')
+            ->pluck('lessons.title')
+            ->all());
     }
 
     public function test_it_prefers_ready_lesson_with_closer_duration_when_titles_match(): void

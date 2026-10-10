@@ -872,6 +872,47 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame(1, Lesson::query()->where('title', 'Introdução')->whereHas('tracks', fn ($query) => $query->whereKey($importedTrack->id))->count());
     }
 
+    public function test_spreadsheet_import_does_not_reuse_contextual_lesson_with_different_title_core(): void
+    {
+        $folder = LessonFolder::findOrCreatePath('Conhecimentos Específicos / Administração Pública');
+        $existingLesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'lesson_folder_id' => $folder->id,
+            'title' => 'Administração Pública - Parte 05',
+            'slug' => 'administracao-publica-parte-05',
+            'duration_seconds' => 2400,
+            'panda_video_id' => 'panda-adm-publica-05',
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'library_folder_path' => 'Conhecimentos Específicos / Administração Pública',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-title-core-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Novo,Conhecimentos Específicos,specific,1,Administração Pública,Princípios da Administração publica,40',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $track = $course->modules()
+            ->where('course_modules.name', 'Conhecimentos Específicos')
+            ->firstOrFail()
+            ->tracks()
+            ->where('name', 'Administração Pública')
+            ->firstOrFail();
+
+        $this->assertFalse($track->lessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->where('title', 'Princípios da Administração publica')->exists());
+    }
+
     public function test_spreadsheet_import_recreates_same_named_module_and_keeps_teacher(): void
     {
         $teacher = Teacher::factory()->create(['name' => 'Professora Maria Silva']);
@@ -2009,6 +2050,102 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($track->lessons()->whereKey($pptLesson->id)->exists());
         $this->assertFalse($track->lessons()->whereKey($excelLesson->id)->exists());
         $this->assertSame(1, $track->lessons()->count());
+    }
+
+    public function test_spreadsheet_import_does_not_reuse_lesson_from_different_part_number(): void
+    {
+        $readyPartTwo = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Princípios fundamentais - Parte 02',
+            'slug' => 'principios-fundamentais-parte-02',
+            'type' => 'video',
+            'duration_seconds' => 20 * 60,
+            'sort_order' => 2,
+            'status' => 'published',
+            'panda_video_id' => 'panda-principios-parte-02',
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'library_folder_path' => 'Legislação / Princípios Fundamentais',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-part-number-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Partes,Legislação,basic,1,Princípios Fundamentais,Princípios fundamentais - Parte 03,20',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $track = $course->modules()->where('name', 'Legislação')->firstOrFail()
+            ->tracks()->where('name', 'Princípios Fundamentais')->firstOrFail();
+
+        $this->assertFalse($track->lessons()->whereKey($readyPartTwo->id)->exists());
+        $this->assertTrue($track->lessons()->where('lessons.title', 'Princípios fundamentais - Parte 03')->exists());
+    }
+
+    public function test_spreadsheet_import_requires_exact_track_context_for_reused_lessons(): void
+    {
+        $policePowerLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Poder de Polícia',
+            'slug' => '01-poder-de-policia',
+            'type' => 'video',
+            'duration_seconds' => 23 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-poder-policia',
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'library_folder_path' => 'Conhecimentos Específicos / Poder de Polícia',
+            ],
+        ]);
+        $healthLawLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Lei Federal nº 8.080',
+            'slug' => 'lei-federal-no-8080',
+            'type' => 'video',
+            'duration_seconds' => 17 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-lei-8080',
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'library_folder_path' => 'Políticas Públicas de Saúde / Lei Federal nº 8.080',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-exact-track-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Contexto Exato,Legislação,basic,1,Poder Judiciário,Poder Judiciário - Parte 01,23',
+            'Curso Contexto Exato,Legislação,basic,1,Lei Federal nº 10.048,Lei Federal nº 10.048,17',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Legislação')->firstOrFail();
+        $judiciaryTrack = $module->tracks()->where('name', 'Poder Judiciário')->firstOrFail();
+        $lawTrack = $module->tracks()->where('name', 'Lei Federal nº 10.048')->firstOrFail();
+
+        $this->assertFalse($judiciaryTrack->lessons()->whereKey($policePowerLesson->id)->exists());
+        $this->assertFalse($lawTrack->lessons()->whereKey($healthLawLesson->id)->exists());
+        $this->assertTrue($judiciaryTrack->lessons()->where('lessons.title', 'Poder Judiciário - Parte 01')->exists());
+        $this->assertTrue($lawTrack->lessons()->where('lessons.title', 'Lei Federal nº 10.048')->exists());
     }
 
     protected function createMinimalCourseSpreadsheet(array $options = []): string

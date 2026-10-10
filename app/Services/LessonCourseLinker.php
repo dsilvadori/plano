@@ -36,12 +36,41 @@ class LessonCourseLinker
 
                         $stats['tracks']++;
                         $courseIds = $this->courseIdsForTrack($track, $module, $course);
+                        $scopeCourseIds = $course instanceof Course ? [(int) $course->id] : $courseIds;
+                        $hasSpreadsheetScope = $this->trackHasSpreadsheetScope($scopeCourseIds, $track);
+
+                        if ($hasSpreadsheetScope) {
+                            $this->removeNonSpreadsheetCourseScopes($scopeCourseIds, $track);
+                        }
+
                         $trackLessons = $this->lessonsForTrack($track);
 
                         foreach ($trackLessons as $lesson) {
                             $sortOrder = (int) ($lesson->pivot?->sort_order ?? $lesson->sort_order);
 
+                            if ($hasSpreadsheetScope && ! $this->lessonHasSpreadsheetScope($scopeCourseIds, $track, $lesson)) {
+                                $track->lessons()->detach($lesson->id);
+                                DB::table('course_module_track_lesson_course')
+                                    ->whereIn('course_id', $scopeCourseIds)
+                                    ->where('course_module_track_id', $track->id)
+                                    ->where('lesson_id', $lesson->id)
+                                    ->delete();
+
+                                continue;
+                            }
+
                             if ($this->lessonHasReadyMedia($lesson)) {
+                                if ($this->hasDifferentSpreadsheetLessonAtSort($courseIds, $track, $sortOrder, $lesson)) {
+                                    $track->lessons()->detach($lesson->id);
+                                    DB::table('course_module_track_lesson_course')
+                                        ->whereIn('course_id', $courseIds)
+                                        ->where('course_module_track_id', $track->id)
+                                        ->where('lesson_id', $lesson->id)
+                                        ->delete();
+
+                                    continue;
+                                }
+
                                 if (! $this->readyLessonBelongsToTrack($lesson, $module, $track)) {
                                     $track->lessons()->detach($lesson->id);
                                     DB::table('course_module_track_lesson_course')
@@ -62,6 +91,10 @@ class LessonCourseLinker
                                 ]);
                                 $this->syncCourseTrackLessonScopes($courseIds, $track, $lesson, $sortOrder);
 
+                                continue;
+                            }
+
+                            if ($hasSpreadsheetScope && $this->lessonHasSpreadsheetScope($scopeCourseIds, $track, $lesson)) {
                                 continue;
                             }
 
@@ -150,6 +183,17 @@ class LessonCourseLinker
             return $candidates->take(1)->pluck('lesson');
         }
 
+        $placeholderKey = LessonTitleNormalizer::matchKey($placeholder->title);
+        $exactCandidates = $candidates
+            ->filter(fn (array $candidate): bool => LessonTitleNormalizer::matchKey($candidate['lesson']->title) === $placeholderKey)
+            ->take(1)
+            ->pluck('lesson')
+            ->values();
+
+        if ($exactCandidates->isNotEmpty()) {
+            return $exactCandidates;
+        }
+
         $placeholderNumber = $this->contextualLessonNumber($placeholder->title) ?? $sortOrder;
         $sameNumberContextCandidates = $candidates
             ->filter(function (array $candidate) use ($placeholderNumber): bool {
@@ -157,6 +201,7 @@ class LessonCourseLinker
 
                 return $placeholderNumber !== null && $lessonNumber !== null && $placeholderNumber === $lessonNumber;
             })
+            ->take(1)
             ->pluck('lesson')
             ->values();
 
@@ -181,6 +226,11 @@ class LessonCourseLinker
                     }
 
                     $courseIds = $this->courseIdsForModule($module, $course);
+
+                    if ($course instanceof Course && $this->moduleHasCourseScopedTrackLessons($module, $courseIds)) {
+                        continue;
+                    }
+
                     $attachedLessonIds = DB::table('course_module_lessons')
                         ->where('course_module_id', $module->id)
                         ->pluck('lesson_id')
@@ -438,6 +488,17 @@ class LessonCourseLinker
     protected function syncCourseTrackLessonScopes(array $courseIds, CourseModuleTrack $track, Lesson $lesson, int $sortOrder, ?Lesson $replacedLesson = null): void
     {
         foreach (array_unique(array_filter($courseIds)) as $courseId) {
+            $existingScope = DB::table('course_module_track_lesson_course')
+                ->where('course_id', $courseId)
+                ->where('course_module_track_id', $track->id)
+                ->where('lesson_id', $lesson->id)
+                ->first(['metadata', 'created_at']);
+            $existingMetadata = $existingScope
+                ? json_decode((string) $existingScope->metadata, true)
+                : null;
+            $preserveSpreadsheetScope = is_array($existingMetadata)
+                && ($existingMetadata['source'] ?? null) === 'spreadsheet';
+
             DB::table('course_module_track_lesson_course')->updateOrInsert([
                 'course_id' => $courseId,
                 'course_module_track_id' => $track->id,
@@ -445,12 +506,14 @@ class LessonCourseLinker
             ], [
                 'sort_order' => $sortOrder,
                 'status' => 'published',
-                'metadata' => json_encode([
-                    'source' => 'lesson_course_linker',
-                    'linked_at' => now()->toIso8601String(),
-                    'replaced_lesson_id' => $replacedLesson?->id,
-                ]),
-                'created_at' => now(),
+                'metadata' => $preserveSpreadsheetScope
+                    ? $existingScope->metadata
+                    : json_encode([
+                        'source' => 'lesson_course_linker',
+                        'linked_at' => now()->toIso8601String(),
+                        'replaced_lesson_id' => $replacedLesson?->id,
+                    ]),
+                'created_at' => $existingScope?->created_at ?? now(),
                 'updated_at' => now(),
             ]);
 
@@ -462,6 +525,65 @@ class LessonCourseLinker
                     ->delete();
             }
         }
+    }
+
+    protected function hasDifferentSpreadsheetLessonAtSort(array $courseIds, CourseModuleTrack $track, int $sortOrder, Lesson $lesson): bool
+    {
+        if ($courseIds === []) {
+            return false;
+        }
+
+        return DB::table('course_module_track_lesson_course')
+            ->whereIn('course_id', $courseIds)
+            ->where('course_module_track_id', $track->id)
+            ->where('sort_order', $sortOrder)
+            ->where('lesson_id', '!=', $lesson->id)
+            ->where('metadata', 'like', '%"source":"spreadsheet"%')
+            ->exists();
+    }
+
+    protected function trackHasSpreadsheetScope(array $courseIds, CourseModuleTrack $track): bool
+    {
+        if ($courseIds === []) {
+            return false;
+        }
+
+        return DB::table('course_module_track_lesson_course')
+            ->whereIn('course_id', $courseIds)
+            ->where('course_module_track_id', $track->id)
+            ->where('metadata', 'like', '%"source":"spreadsheet"%')
+            ->exists();
+    }
+
+    protected function lessonHasSpreadsheetScope(array $courseIds, CourseModuleTrack $track, Lesson $lesson): bool
+    {
+        if ($courseIds === []) {
+            return false;
+        }
+
+        return DB::table('course_module_track_lesson_course')
+            ->whereIn('course_id', $courseIds)
+            ->where('course_module_track_id', $track->id)
+            ->where('lesson_id', $lesson->id)
+            ->where('metadata', 'like', '%"source":"spreadsheet"%')
+            ->exists();
+    }
+
+    protected function removeNonSpreadsheetCourseScopes(array $courseIds, CourseModuleTrack $track): void
+    {
+        if ($courseIds === []) {
+            return;
+        }
+
+        DB::table('course_module_track_lesson_course')
+            ->whereIn('course_id', $courseIds)
+            ->where('course_module_track_id', $track->id)
+            ->where(function ($query): void {
+                $query
+                    ->whereNull('metadata')
+                    ->orWhere('metadata', 'not like', '%"source":"spreadsheet"%');
+            })
+            ->delete();
     }
 
     protected function findReadyCandidateForPlanningLesson(string $title, CourseModule $module, int $sortOrder, array $attachedLessonIds): ?Lesson
@@ -502,6 +624,8 @@ class LessonCourseLinker
 
         $lessonNumber = $this->contextualLessonNumber($lesson->title);
         $titleNumber = $this->contextualLessonNumber($title) ?? $sortOrder;
+        $lessonPartNumber = $this->partNumber($lesson->title);
+        $titlePartNumber = $this->partNumber($title);
 
         $sameContextualNumber = $lessonNumber && $titleNumber && $lessonNumber === $titleNumber;
 
@@ -513,17 +637,29 @@ class LessonCourseLinker
             return 0.0;
         }
 
+        if ($lessonPartNumber && $titlePartNumber && $lessonPartNumber !== $titlePartNumber) {
+            return 0.0;
+        }
+
+        if ($lessonPartNumber && $titlePartNumber && $lessonPartNumber === $titlePartNumber) {
+            $score += 12;
+        }
+
         if ($this->romanSuffix($lessonKey) !== $this->romanSuffix($titleKey)) {
             return 0.0;
         }
 
         $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
-        $path = LessonTitleNormalizer::matchKey((string) ($metadata['drive_source_folder_path'] ?? ''));
+        $path = LessonTitleNormalizer::matchKey((string) ($metadata['library_folder_path'] ?? $metadata['drive_source_folder_path'] ?? ''));
         $trackKey = $track ? LessonTitleNormalizer::matchKey($track->name) : '';
         $moduleKey = LessonTitleNormalizer::matchKey($module->name);
         $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
         $lessonProduct = $this->contentProduct($lessonKey) ?? $this->contentProduct($path);
         $trackProduct = $this->contentProduct($trackKey);
+
+        if ($trackKey !== '' && $path !== '' && ! $pathMatchesTrack) {
+            return 0.0;
+        }
 
         if ($lessonProduct && $trackProduct && $lessonProduct !== $trackProduct) {
             return 0.0;
@@ -549,13 +685,13 @@ class LessonCourseLinker
 
         if ($durationScore !== null) {
             if ($durationScore >= 90) {
-                $score += 8;
+                $score += 10;
             } elseif ($durationScore >= 75) {
                 $score += 4;
-            } elseif ($durationScore < 50 && $score < 95) {
-                $score -= 10;
-            } elseif ($durationScore < 70 && $score < 90) {
-                $score -= 6;
+            } elseif ($durationScore < 50) {
+                $score -= 30;
+            } else {
+                $score -= 12;
             }
         }
 
@@ -622,7 +758,7 @@ class LessonCourseLinker
         $lesson->loadMissing('video');
 
         $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
-        $path = LessonTitleNormalizer::matchKey((string) ($metadata['drive_source_folder_path'] ?? ''));
+        $path = LessonTitleNormalizer::matchKey((string) ($metadata['library_folder_path'] ?? $metadata['drive_source_folder_path'] ?? ''));
         $lessonKey = LessonTitleNormalizer::matchKey((string) ($lesson->video?->title ?: $lesson->title));
         $trackKey = LessonTitleNormalizer::matchKey($track->name);
         $lessonProduct = $this->contentProduct($lessonKey);
@@ -636,9 +772,28 @@ class LessonCourseLinker
             return true;
         }
 
-        return $this->pathMatchesContext($path, $trackKey)
-            || $this->pathMatchesContext($path, LessonTitleNormalizer::matchKey($module->name))
-            || $lessonProduct === null;
+        if ($path !== '') {
+            return $this->pathMatchesContext($path, $trackKey);
+        }
+
+        return $lessonProduct === null;
+    }
+
+    protected function moduleHasCourseScopedTrackLessons(CourseModule $module, array $courseIds): bool
+    {
+        $trackIds = ($module->relationLoaded('tracks') ? $module->tracks : $module->tracks()->get())
+            ->pluck('id')
+            ->filter()
+            ->values();
+
+        if ($trackIds->isEmpty() || $courseIds === []) {
+            return false;
+        }
+
+        return DB::table('course_module_track_lesson_course')
+            ->whereIn('course_id', $courseIds)
+            ->whereIn('course_module_track_id', $trackIds)
+            ->exists();
     }
 
     protected function lessonMediaPriority(Lesson $lesson): int
@@ -743,6 +898,22 @@ class LessonCourseLinker
             : null;
     }
 
+    protected function partNumber(string $key): ?int
+    {
+        $key = Str::of($key)
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
+            ->value();
+
+        if (preg_match('/\bparte\s+0*(\d{1,3})\b/u', $key, $matches) !== 1) {
+            return null;
+        }
+
+        return max(1, (int) $matches[1]);
+    }
+
     protected function contextualLessonNumber(string $title): ?int
     {
         $key = LessonTitleNormalizer::matchKey($title);
@@ -774,11 +945,45 @@ class LessonCourseLinker
 
     protected function contextVariants(string $value): array
     {
-        return array_values(array_unique([
+        $variants = [
             $value,
             Str::of($value)->replace('ppt', 'power point')->replace('powerpoint', 'power point')->replace('windowns', 'windows')->squish()->value(),
             Str::of($value)->replace('power point', 'ppt')->replace('powerpoint', 'ppt')->replace('windowns', 'windows')->squish()->value(),
-        ]));
+        ];
+
+        if (str_contains($value, 'eca')) {
+            $variants[] = 'estatuto da crianca e do adolescente';
+        }
+
+        if (str_contains($value, 'estatuto') && str_contains($value, 'crianca') && str_contains($value, 'adolescente')) {
+            $variants[] = 'eca';
+        }
+
+        if (str_contains($value, 'lia')) {
+            $variants[] = 'lei de improbidade administrativa';
+        }
+
+        if (str_contains($value, 'improbidade administrativa')) {
+            $variants[] = 'lia';
+        }
+
+        if (str_contains($value, 'lai')) {
+            $variants[] = 'lei de acesso a informacao';
+        }
+
+        if (str_contains($value, 'acesso') && str_contains($value, 'informacao')) {
+            $variants[] = 'lai';
+        }
+
+        if (str_contains($value, 'lgpd')) {
+            $variants[] = 'lei geral de protecao de dados';
+        }
+
+        if (str_contains($value, 'geral') && str_contains($value, 'protecao') && str_contains($value, 'dados')) {
+            $variants[] = 'lgpd';
+        }
+
+        return array_values(array_unique($variants));
     }
 
     protected function contentProduct(string $value): ?string
@@ -807,6 +1012,30 @@ class LessonCourseLinker
             return 'internet';
         }
 
+        if (preg_match('/\blei\s+federal\s+(?:no\s+)?(\d{1,3})\s+(\d{3})\b/u', $value, $matches) === 1) {
+            return 'lei-federal-'.$matches[1].$matches[2];
+        }
+
+        if (str_contains($value, 'poder executivo')) {
+            return 'poder-executivo';
+        }
+
+        if (str_contains($value, 'poder legislativo') || str_contains($value, 'legislativo')) {
+            return 'poder-legislativo';
+        }
+
+        if (str_contains($value, 'poder judiciario') || str_contains($value, 'judiciario')) {
+            return 'poder-judiciario';
+        }
+
+        if (str_contains($value, 'poder de policia')) {
+            return 'poder-de-policia';
+        }
+
+        if (str_contains($value, 'direito administrativo') || str_contains($value, 'administracao publica') || str_contains($value, 'autarquia')) {
+            return 'direito-administrativo';
+        }
+
         $hasEca = str_contains($value, 'estatuto') && str_contains($value, 'crianca') && str_contains($value, 'adolescente');
         $hasLdb = str_contains($value, 'ldb') || str_contains($value, 'diretrizes bases');
 
@@ -824,6 +1053,22 @@ class LessonCourseLinker
 
         if (str_contains($value, 'improbidade administrativa')) {
             return 'lia';
+        }
+
+        if (preg_match('/\bl\s*i\s*a\b/u', $value) === 1) {
+            return 'lia';
+        }
+
+        if (preg_match('/\bl\s*a\s*i\b/u', $value) === 1) {
+            return 'lai';
+        }
+
+        if (preg_match('/\bl\s*g\s*p\s*d\b/u', $value) === 1) {
+            return 'lgpd';
+        }
+
+        if (preg_match('/\be\s*c\s*a\b/u', $value) === 1) {
+            return 'eca';
         }
 
         if ($hasLdb) {

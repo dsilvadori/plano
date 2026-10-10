@@ -11,6 +11,7 @@ use App\Services\ActiveStudyPlanRefresher;
 use App\Services\CourseAccessResolver;
 use App\Services\CourseCatalogDuplicateMerger;
 use App\Services\CourseLessonMediaImporter;
+use App\Services\CourseSpreadsheetParser;
 use App\Services\LessonCourseLinker;
 use App\Services\LessonDuplicateMerger;
 use App\Services\LessonFolderDuplicateMerger;
@@ -568,6 +569,157 @@ Artisan::command('lessons:sync-course-links {courseId?} {--dry-run}', function (
 
     return 0;
 })->purpose('Substitui aulas sem mídia por aulas prontas correspondentes no curso');
+
+Artisan::command('courses:compare-spreadsheet {courseId} {path} {--include-system : Inclui módulos de sistema como Comece por aqui}', function (int $courseId, string $path, CourseSpreadsheetParser $parser) {
+    $course = Course::query()->findOrFail($courseId);
+    $payload = $parser->parse($path);
+    $keyFor = fn (string $moduleName, int $trackSortOrder, string $trackName): string => LessonTitleNormalizer::matchKey($moduleName).'||'.$trackSortOrder.'||'.LessonTitleNormalizer::matchKey($trackName);
+    $displayFor = fn (string $moduleName, int $trackSortOrder, string $trackName): string => "{$moduleName} > {$trackSortOrder}. {$trackName}";
+
+    $expected = collect($payload['modules'] ?? [])
+        ->flatMap(function (array $module) use ($keyFor, $displayFor) {
+            return collect($module['tracks'] ?? [])
+                ->mapWithKeys(function (array $track) use ($module, $keyFor, $displayFor): array {
+                    $moduleName = trim((string) ($module['name'] ?? ''));
+                    $trackName = trim((string) ($track['name'] ?? ''));
+                    $trackSortOrder = (int) ($track['sort_order'] ?? 0);
+                    $lessons = collect($track['lessons'] ?? [])
+                        ->map(fn (array $lesson): string => trim((string) ($lesson['name'] ?? '')))
+                        ->filter()
+                        ->values()
+                        ->all();
+
+                    return [
+                        $keyFor($moduleName, $trackSortOrder, $trackName) => [
+                            'display' => $displayFor($moduleName, $trackSortOrder, $trackName),
+                            'lessons' => $lessons,
+                        ],
+                    ];
+                });
+        });
+
+    $rows = DB::table('course_module_track_course as track_course')
+        ->join('course_module_tracks as tracks', 'tracks.id', '=', 'track_course.course_module_track_id')
+        ->join('course_modules as modules', 'modules.id', '=', 'tracks.course_module_id')
+        ->leftJoin('course_module_course as module_course', function ($join) use ($course): void {
+            $join->on('module_course.course_module_id', '=', 'modules.id')
+                ->where('module_course.course_id', '=', $course->id);
+        })
+        ->leftJoin('course_module_track_lesson_course as scope', function ($join) use ($course): void {
+            $join->on('scope.course_module_track_id', '=', 'tracks.id')
+                ->where('scope.course_id', '=', $course->id)
+                ->where('scope.status', '=', 'published');
+        })
+        ->leftJoin('lessons', 'lessons.id', '=', 'scope.lesson_id')
+        ->where('track_course.course_id', $course->id)
+        ->select([
+            'modules.name as module_name',
+            'modules.metadata as module_metadata',
+            DB::raw('coalesce(module_course.sort_order, modules.sort_order) as module_sort_order'),
+            'tracks.name as track_name',
+            'track_course.sort_order as track_sort_order',
+            'lessons.title as lesson_title',
+            'scope.sort_order as lesson_sort_order',
+        ])
+        ->orderBy('module_sort_order')
+        ->orderBy('track_course.sort_order')
+        ->orderBy('scope.sort_order')
+        ->orderBy('lessons.id')
+        ->get()
+        ->reject(function ($row): bool {
+            if ($this->option('include-system')) {
+                return false;
+            }
+
+            $metadata = json_decode((string) $row->module_metadata, true);
+            $normalizedName = LessonTitleNormalizer::matchKey((string) $row->module_name);
+
+            return ($metadata['source'] ?? null) === 'system_start_here'
+                || str_contains($normalizedName, 'comece por aqui');
+        })
+        ->values();
+
+    $actual = $rows
+        ->groupBy(fn ($row): string => $keyFor((string) $row->module_name, (int) $row->track_sort_order, (string) $row->track_name))
+        ->map(function ($rows) use ($displayFor): array {
+            $first = $rows->first();
+
+            return [
+                'display' => $displayFor((string) $first->module_name, (int) $first->track_sort_order, (string) $first->track_name),
+                'lessons' => $rows
+                    ->sortBy([
+                        ['lesson_sort_order', 'asc'],
+                    ])
+                    ->pluck('lesson_title')
+                    ->filter(fn ($title): bool => filled($title))
+                    ->map(fn (string $title): string => trim($title))
+                    ->values()
+                    ->all(),
+            ];
+        });
+
+    $allKeys = $expected->keys()->merge($actual->keys())->unique()->values();
+    $mismatches = 0;
+    $expectedLessonCount = $expected->sum(fn (array $group): int => count($group['lessons']));
+    $actualLessonCount = $actual->sum(fn (array $group): int => count($group['lessons']));
+
+    $this->info("Curso {$course->id}: {$course->name}");
+    $this->line('Planilha: '.($payload['course_name'] ?? basename($path)));
+    $this->line("Trilhas na planilha: {$expected->count()} | Trilhas no curso: {$actual->count()}");
+    $this->line("Aulas na planilha: {$expectedLessonCount} | Aulas no curso: {$actualLessonCount}");
+
+    foreach ($allKeys as $key) {
+        $expectedGroup = $expected->get($key);
+        $actualGroup = $actual->get($key);
+
+        if ($expectedGroup === null) {
+            $mismatches++;
+            $this->warn('Trilha sobrando no curso: '.$actualGroup['display'].' ('.count($actualGroup['lessons']).' aula(s))');
+
+            continue;
+        }
+
+        if ($actualGroup === null) {
+            $mismatches++;
+            $this->error('Trilha faltando no curso: '.$expectedGroup['display'].' ('.count($expectedGroup['lessons']).' aula(s))');
+
+            continue;
+        }
+
+        if ($expectedGroup['lessons'] === $actualGroup['lessons']) {
+            continue;
+        }
+
+        $mismatches++;
+        $this->error('Diferença em '.$expectedGroup['display']);
+        $this->line('  Planilha: '.count($expectedGroup['lessons']).' aula(s) | Curso: '.count($actualGroup['lessons']).' aula(s)');
+
+        $max = max(count($expectedGroup['lessons']), count($actualGroup['lessons']));
+
+        for ($index = 0; $index < $max; $index++) {
+            $expectedTitle = $expectedGroup['lessons'][$index] ?? '[faltando na planilha]';
+            $actualTitle = $actualGroup['lessons'][$index] ?? '[faltando no curso]';
+
+            if ($expectedTitle === $actualTitle) {
+                continue;
+            }
+
+            $position = $index + 1;
+            $this->line("  {$position}. planilha: {$expectedTitle}");
+            $this->line("     curso:    {$actualTitle}");
+        }
+    }
+
+    if ($mismatches === 0) {
+        $this->info('OK: curso corresponde 100% a planilha em trilhas, aulas e ordem.');
+
+        return 0;
+    }
+
+    $this->error("Encontrada(s) {$mismatches} divergência(s) entre curso e planilha.");
+
+    return 1;
+})->purpose('Compara a montagem final de um curso com a planilha importada');
 
 Artisan::command('lessons:sync-panda-durations {--lesson-id=* : ID de aula específica, pode repetir} {--course-id= : Limita às aulas vinculadas ao curso} {--only-wrong : Atualiza só aulas sem duração ou com até 1 minuto} {--dry-run}', function (PandaVideoClient $panda) {
     $lessonIds = collect($this->option('lesson-id'))
