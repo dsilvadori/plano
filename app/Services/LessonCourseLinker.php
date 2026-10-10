@@ -24,11 +24,9 @@ class LessonCourseLinker
                 'published' => 0,
                 'plans_synced' => 0,
             ];
-            $readyLessons = $this->readyLessons();
-
             $this->tracksQuery($course)
-                ->with(['module.courses', 'courses', 'lessons.modules', 'lessons.tracks'])
-                ->chunkById(50, function ($tracks) use ($readyLessons, &$stats): void {
+                ->with(['module:id,name'])
+                ->chunkById(25, function ($tracks) use ($course, &$stats): void {
                     foreach ($tracks as $track) {
                         $module = $track->module;
 
@@ -37,14 +35,10 @@ class LessonCourseLinker
                         }
 
                         $stats['tracks']++;
-                        $courseIds = $track->courses
-                            ->pluck('id')
-                            ->merge($module->courses->pluck('id'))
-                            ->unique()
-                            ->values()
-                            ->all();
+                        $courseIds = $this->courseIdsForTrack($track, $module, $course);
+                        $trackLessons = $this->lessonsForTrack($track);
 
-                        foreach ($track->lessons as $lesson) {
+                        foreach ($trackLessons as $lesson) {
                             $sortOrder = (int) ($lesson->pivot?->sort_order ?? $lesson->sort_order);
 
                             if ($this->lessonHasReadyMedia($lesson)) {
@@ -71,7 +65,7 @@ class LessonCourseLinker
                                 continue;
                             }
 
-                            $candidates = $this->findReadyCandidates($readyLessons, $lesson, $module, $track, $sortOrder);
+                            $candidates = $this->findReadyCandidates($lesson, $module, $track, $sortOrder);
 
                             if ($candidates->isEmpty()) {
                                 continue;
@@ -103,7 +97,7 @@ class LessonCourseLinker
                     }
                 });
 
-            $this->linkReadyLessonsToPlanningLessons($course, $readyLessons, $stats);
+            $this->linkReadyLessonsToPlanningLessons($course, $stats);
 
             return $stats;
         });
@@ -124,34 +118,25 @@ class LessonCourseLinker
         });
     }
 
-    protected function readyLessons(): Collection
+    protected function lessonsForTrack(CourseModuleTrack $track): Collection
     {
-        return Lesson::query()
-            ->where(function (Builder $query): void {
-                $query->whereNotNull('panda_video_id')
-                    ->orWhereNotNull('panda_embed_url')
-                    ->orWhereNotNull('panda_player_url')
-                    ->orWhere('source_status', 'media_ready')
-                    ->orWhereHas('video', function (Builder $query): void {
-                        $query->whereNotNull('provider_video_id')
-                            ->orWhereNotNull('embed_url')
-                            ->orWhereNotNull('player_url')
-                            ->orWhere('source_status', 'media_ready');
-                    });
-            })
-            ->with('video')
+        return $track->lessons()
+            ->select($this->lessonSelectColumns())
+            ->with($this->videoRelationSelect())
+            ->orderByPivot('sort_order')
+            ->orderBy('lessons.sort_order')
+            ->orderBy('lessons.title')
             ->get();
     }
 
-    protected function findReadyCandidate(Collection $readyLessons, Lesson $placeholder, CourseModule $module, CourseModuleTrack $track, ?int $sortOrder = null): ?Lesson
+    protected function findReadyCandidate(Lesson $placeholder, CourseModule $module, CourseModuleTrack $track, ?int $sortOrder = null): ?Lesson
     {
-        return $this->findReadyCandidates($readyLessons, $placeholder, $module, $track, $sortOrder)->first();
+        return $this->findReadyCandidates($placeholder, $module, $track, $sortOrder)->first();
     }
 
-    protected function findReadyCandidates(Collection $readyLessons, Lesson $placeholder, CourseModule $module, CourseModuleTrack $track, ?int $sortOrder = null): Collection
+    protected function findReadyCandidates(Lesson $placeholder, CourseModule $module, CourseModuleTrack $track, ?int $sortOrder = null): Collection
     {
-        $candidates = $readyLessons
-            ->where('id', '!=', $placeholder->id)
+        $candidates = $this->readyLessonCandidatesFor($placeholder->title, $module, $track, [$placeholder->id])
             ->map(fn (Lesson $lesson): array => [
                 'lesson' => $lesson,
                 'score' => $this->lessonMatchScore($lesson, $placeholder->title, $module, $track, $sortOrder, (int) $placeholder->duration_seconds),
@@ -180,11 +165,14 @@ class LessonCourseLinker
             : $candidates->take(1)->pluck('lesson');
     }
 
-    protected function linkReadyLessonsToPlanningLessons(?Course $course, Collection $readyLessons, array &$stats): void
+    protected function linkReadyLessonsToPlanningLessons(?Course $course, array &$stats): void
     {
         $this->planningModulesQuery($course)
-            ->with(['courses', 'onlineLessons', 'tracks.courses'])
-            ->chunkById(50, function ($modules) use ($course, $readyLessons, &$stats): void {
+            ->with([
+                'onlineLessons' => fn ($query) => $query->select($this->lessonSelectColumns())->with($this->videoRelationSelect()),
+                'tracks' => fn ($query) => $query->select(['course_module_tracks.id', 'course_module_tracks.course_module_id', 'course_module_tracks.name', 'course_module_tracks.sort_order', 'course_module_tracks.status']),
+            ])
+            ->chunkById(25, function ($modules) use ($course, &$stats): void {
                 foreach ($modules as $module) {
                     $planningLessons = $module->planning_lessons;
 
@@ -192,13 +180,12 @@ class LessonCourseLinker
                         continue;
                     }
 
-                    $courseIds = $module->courses
-                        ->pluck('id')
-                        ->when($course instanceof Course, fn (Collection $ids) => $ids->push($course->id))
-                        ->unique()
-                        ->values()
+                    $courseIds = $this->courseIdsForModule($module, $course);
+                    $attachedLessonIds = DB::table('course_module_lessons')
+                        ->where('course_module_id', $module->id)
+                        ->pluck('lesson_id')
+                        ->map(fn ($id): int => (int) $id)
                         ->all();
-                    $attachedLessonIds = $module->onlineLessons->pluck('id')->all();
 
                     foreach ($planningLessons as $index => $planningLesson) {
                         $sortOrder = $index + 1;
@@ -216,7 +203,7 @@ class LessonCourseLinker
                             continue;
                         }
 
-                        $candidate = $this->findReadyCandidateForPlanningLesson($readyLessons, $title, $module, $sortOrder, $attachedLessonIds);
+                        $candidate = $this->findReadyCandidateForPlanningLesson($title, $module, $sortOrder, $attachedLessonIds);
 
                         if (! $candidate instanceof Lesson) {
                             continue;
@@ -264,7 +251,188 @@ class LessonCourseLinker
             $query
                 ->where('course_id', $course->id)
                 ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id));
-        });
+            });
+    }
+
+    protected function readyLessonCandidatesFor(string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $excludeLessonIds = []): Collection
+    {
+        $tokens = $this->candidateSearchTokens($title, $module, $track);
+
+        return Lesson::query()
+            ->select($this->lessonSelectColumns())
+            ->whereNotIn('lessons.id', array_values(array_filter(array_map('intval', $excludeLessonIds))))
+            ->where($this->readyLessonFilter())
+            ->when($tokens !== [], function (Builder $query) use ($tokens): void {
+                $query->where(function (Builder $query) use ($tokens): void {
+                    foreach ($tokens as $token) {
+                        $like = '%'.$token.'%';
+                        $query
+                            ->orWhere('lessons.title', 'like', $like)
+                            ->orWhere('lessons.metadata', 'like', $like)
+                            ->orWhereHas('video', function (Builder $query) use ($like): void {
+                                $query
+                                    ->where('title', 'like', $like)
+                                    ->orWhere('provider_video_id', 'like', $like);
+                            });
+                    }
+                });
+            })
+            ->with($this->videoRelationSelect())
+            ->orderByRaw("(case when panda_video_id is not null or panda_embed_url is not null or panda_player_url is not null or exists (select 1 from videos where videos.id = lessons.video_id and (videos.provider_video_id is not null or videos.embed_url is not null or videos.player_url is not null)) then 0 when source_status = 'media_ready' then 1 else 2 end)")
+            ->orderBy('lessons.sort_order')
+            ->orderBy('lessons.title')
+            ->limit(500)
+            ->get();
+    }
+
+    protected function readyLessonFilter(): callable
+    {
+        return function (Builder $query): void {
+            $query->where(function (Builder $query): void {
+                $query->whereNotNull('lessons.panda_video_id')
+                    ->orWhereNotNull('lessons.panda_embed_url')
+                    ->orWhereNotNull('lessons.panda_player_url')
+                    ->orWhere('lessons.source_status', 'media_ready')
+                    ->orWhereHas('video', function (Builder $query): void {
+                        $query->whereNotNull('provider_video_id')
+                            ->orWhereNotNull('embed_url')
+                            ->orWhereNotNull('player_url')
+                            ->orWhere('source_status', 'media_ready');
+                    });
+            });
+        };
+    }
+
+    protected function candidateSearchTokens(string $title, CourseModule $module, ?CourseModuleTrack $track = null): array
+    {
+        $tokens = [
+            ...$this->tokensForSearch($title),
+            ...$this->knownAcronymSearchTokens($title),
+            ...$this->tokensForSearch($track?->name ?? ''),
+            ...$this->knownAcronymSearchTokens($track?->name ?? ''),
+            ...$this->tokensForSearch($module->name),
+            ...$this->knownAcronymSearchTokens($module->name),
+        ];
+
+        $number = $this->contextualLessonNumber($title);
+
+        if ($number !== null) {
+            $tokens[] = str_pad((string) $number, 2, '0', STR_PAD_LEFT);
+            $tokens[] = (string) $number;
+        }
+
+        return collect($tokens)
+            ->map(fn (string $token): string => trim($token))
+            ->filter(fn (string $token): bool => $token !== '' && (mb_strlen($token) >= 3 || is_numeric($token)))
+            ->unique()
+            ->take(12)
+            ->values()
+            ->all();
+    }
+
+    protected function tokensForSearch(string $value): array
+    {
+        $ignored = ['a', 'as', 'ao', 'aos', 'aula', 'bloco', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na', 'nas', 'no', 'nos', 'o', 'os', 'para', 'por', 'um', 'uma'];
+
+        return collect(explode(' ', LessonTitleNormalizer::matchKey($value)))
+            ->filter(fn (string $token): bool => $token !== '' && mb_strlen($token) >= 4 && ! in_array($token, $ignored, true))
+            ->values()
+            ->all();
+    }
+
+    protected function knownAcronymSearchTokens(string $value): array
+    {
+        $key = LessonTitleNormalizer::matchKey($value);
+        $tokens = [];
+
+        if (str_contains($key, 'estatuto') && str_contains($key, 'crianca') && str_contains($key, 'adolescente')) {
+            $tokens[] = 'eca';
+        }
+
+        if (str_contains($key, 'improbidade administrativa')) {
+            $tokens[] = 'lia';
+        }
+
+        if (str_contains($key, 'acesso') && str_contains($key, 'informacao')) {
+            $tokens[] = 'lai';
+        }
+
+        if (str_contains($key, 'geral') && str_contains($key, 'protecao') && str_contains($key, 'dados')) {
+            $tokens[] = 'lgpd';
+        }
+
+        if (str_contains($key, 'ldb') || str_contains($key, 'diretrizes bases')) {
+            $tokens[] = 'ldb';
+        }
+
+        return $tokens;
+    }
+
+    protected function courseIdsForTrack(CourseModuleTrack $track, CourseModule $module, ?Course $course = null): array
+    {
+        $courseIds = DB::table('course_module_track_course')
+            ->where('course_module_track_id', $track->id)
+            ->pluck('course_id')
+            ->merge(DB::table('course_module_course')
+                ->where('course_module_id', $module->id)
+                ->pluck('course_id'));
+
+        if ($course instanceof Course) {
+            $courseIds->push($course->id);
+        }
+
+        return $courseIds
+            ->map(fn ($id): int => (int) $id)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    protected function courseIdsForModule(CourseModule $module, ?Course $course = null): array
+    {
+        $courseIds = DB::table('course_module_course')
+            ->where('course_module_id', $module->id)
+            ->pluck('course_id');
+
+        if (filled($module->course_id)) {
+            $courseIds->push((int) $module->course_id);
+        }
+
+        if ($course instanceof Course) {
+            $courseIds->push($course->id);
+        }
+
+        return $courseIds
+            ->map(fn ($id): int => (int) $id)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    protected function lessonSelectColumns(): array
+    {
+        return [
+            'lessons.id',
+            'lessons.video_id',
+            'lessons.title',
+            'lessons.duration_seconds',
+            'lessons.status',
+            'lessons.source_status',
+            'lessons.panda_video_id',
+            'lessons.panda_embed_url',
+            'lessons.panda_player_url',
+            'lessons.sort_order',
+            'lessons.metadata',
+        ];
+    }
+
+    protected function videoRelationSelect(): array
+    {
+        return [
+            'video:id,title,provider_video_id,embed_url,player_url,source_status',
+        ];
     }
 
     protected function syncCourseTrackLessonScopes(array $courseIds, CourseModuleTrack $track, Lesson $lesson, int $sortOrder, ?Lesson $replacedLesson = null): void
@@ -296,10 +464,9 @@ class LessonCourseLinker
         }
     }
 
-    protected function findReadyCandidateForPlanningLesson(Collection $readyLessons, string $title, CourseModule $module, int $sortOrder, array $attachedLessonIds): ?Lesson
+    protected function findReadyCandidateForPlanningLesson(string $title, CourseModule $module, int $sortOrder, array $attachedLessonIds): ?Lesson
     {
-        return $readyLessons
-            ->whereNotIn('id', $attachedLessonIds)
+        return $this->readyLessonCandidatesFor($title, $module, null, $attachedLessonIds)
             ->map(fn (Lesson $lesson): array => [
                 'lesson' => $lesson,
                 'score' => $this->lessonMatchScore($lesson, $title, $module),
