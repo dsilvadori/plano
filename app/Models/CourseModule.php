@@ -376,7 +376,7 @@ class CourseModule extends Model
         $courseId = $course instanceof Course ? (int) $course->getKey() : (int) $course;
 
         return Lesson::query()
-            ->select('lessons.*')
+            ->select('lessons.*', 'course_lesson_scope.sort_order as course_scope_sort_order')
             ->join('course_module_track_lesson_course as course_lesson_scope', 'course_lesson_scope.lesson_id', '=', 'lessons.id')
             ->join('course_module_tracks as scoped_tracks', 'scoped_tracks.id', '=', 'course_lesson_scope.course_module_track_id')
             ->where('course_lesson_scope.course_id', $courseId)

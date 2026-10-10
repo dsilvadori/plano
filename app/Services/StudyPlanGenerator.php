@@ -681,6 +681,7 @@ class StudyPlanGenerator
                     'lessons.duration_seconds',
                     'lessons.status',
                     'lessons.sort_order',
+                    'course_lesson_scope.sort_order as course_scope_sort_order',
                 ])
                 ->get();
 
@@ -1546,6 +1547,7 @@ class StudyPlanGenerator
                 'name' => $lessonName,
                 'normalized' => $this->normalizeLessonName($lessonName),
                 'leading_number' => LessonTitleNormalizer::leadingNumber($lessonName),
+                'is_contextual_generic' => $this->isContextualGenericLessonName($lessonName),
             ])
             ->filter(fn (array $entry): bool => filled($entry['normalized']))
             ->values();
@@ -1566,6 +1568,20 @@ class StudyPlanGenerator
             ->map(fn ($trackName): string => $this->normalizeLessonName((string) $trackName))
             ->filter()
             ->values();
+        $inferredTrackNames = collect();
+
+        if ($normalizedTrackNames->isEmpty() && $module->relationLoaded('tracks')) {
+            $inferredTrackNames = $module->tracks
+                ->map(fn ($track): string => $this->normalizeLessonName((string) $track->name))
+                ->filter(fn (string $trackName): bool => $trackName !== '' && $lessonNameEntries->contains(
+                    fn (array $entry): bool => str_contains((string) $entry['normalized'], $trackName)
+                        || str_contains($trackName, (string) $entry['normalized'])
+                ))
+                ->values();
+            $normalizedTrackNames = $inferredTrackNames;
+        }
+        $hasSpecificTrackContext = $normalizedTrackNames->isNotEmpty();
+
         $allTrackLessons = $module->relationLoaded('tracks')
             ? $module->tracks
                 ->flatMap(fn ($track) => $track->relationLoaded('lessons') ? $track->lessons : $track->lessons()->get())
@@ -1577,6 +1593,7 @@ class StudyPlanGenerator
                 ))
                 ->flatMap(fn ($track) => $track->relationLoaded('lessons') ? $track->lessons : $track->lessons()->get())
             : collect();
+        $specificTrackLessonIds = $trackLessons->pluck('id')->map(fn ($id): int => (int) $id)->flip();
         $trackLessons = $trackLessons->isNotEmpty() ? $trackLessons : $allTrackLessons;
 
         $moduleLessons = $module->relationLoaded('onlineLessons')
@@ -1609,7 +1626,7 @@ class StudyPlanGenerator
         }
 
         foreach ($lessonNameEntries as $lessonNameEntry) {
-            $matchedLesson = $onlineLessons->first(function (Lesson $lesson) use ($lessonNameEntry, $matchedLessons) {
+            $matchingLessons = $onlineLessons->filter(function (Lesson $lesson) use ($lessonNameEntry, $matchedLessons, $normalizedTrackNames, $specificTrackLessonIds, $hasSpecificTrackContext) {
                 if ($matchedLessons->contains(fn (Lesson $matched) => $matched->is($lesson))) {
                     return false;
                 }
@@ -1625,20 +1642,48 @@ class StudyPlanGenerator
                     return false;
                 }
 
-                return $this->lessonNamesMatchExactly($normalizedTitle, $lessonNameEntry['normalized']);
+                if ($this->lessonNamesMatchExactly($normalizedTitle, $lessonNameEntry['normalized'])) {
+                    return true;
+                }
+
+                return $normalizedTrackNames->isNotEmpty()
+                    && $hasSpecificTrackContext
+                    && $specificTrackLessonIds->has((int) $lesson->id)
+                    && $lessonNameEntry['is_contextual_generic']
+                    && $lessonNameEntry['leading_number'] !== null
+                    && $lessonNumber !== null
+                    && $lessonNumber === $lessonNameEntry['leading_number'];
             });
 
-            if ($matchedLesson) {
+            if ($lessonNameEntry['is_contextual_generic'] && $matchingLessons->isNotEmpty()) {
+                $matchingLessons->each(fn (Lesson $lesson) => $matchedLessons->push($lesson));
+
+                continue;
+            }
+
+            $matchedLesson = $matchingLessons->first();
+
+            if ($matchedLesson instanceof Lesson) {
                 $matchedLessons->push($matchedLesson);
             }
         }
 
         if ($matchedLessons->isEmpty() && $lessonNameEntries->count() === 1) {
-            $descriptionLessonName = (string) ($lessonNameEntries->first()['normalized'] ?? '');
+            $lessonNameEntry = $lessonNameEntries->first();
+            $descriptionLessonName = (string) ($lessonNameEntry['normalized'] ?? '');
 
             $matchedLessons = $onlineLessons
-                ->filter(function (Lesson $lesson) use ($descriptionLessonName): bool {
+                ->filter(function (Lesson $lesson) use ($descriptionLessonName, $lessonNameEntry): bool {
                     $normalizedTitle = $this->normalizeLessonName($lesson->title);
+                    $lessonNumber = LessonTitleNormalizer::leadingNumber($lesson->title);
+
+                    if (
+                        $lessonNumber !== null
+                        && $lessonNameEntry['leading_number'] !== null
+                        && $lessonNumber !== $lessonNameEntry['leading_number']
+                    ) {
+                        return false;
+                    }
 
                     return $normalizedTitle !== '' && str_contains($descriptionLessonName, $normalizedTitle);
                 })
@@ -1865,13 +1910,14 @@ class StudyPlanGenerator
 
     protected function normalizeLessonName(string $value): string
     {
-        return Str::of($value)
-            ->replaceMatches('/^continua(?:c|ç)(?:a|ã)o:\s*/iu', '')
-            ->lower()
-            ->ascii()
-            ->replaceMatches('/[^a-z0-9]+/', ' ')
-            ->squish()
-            ->value();
+        return LessonTitleNormalizer::matchKey(
+            preg_replace('/^continua(?:c|ç)(?:a|ã)o:\s*/iu', '', $value) ?: $value
+        );
+    }
+
+    protected function isContextualGenericLessonName(string $value): bool
+    {
+        return preg_match('/\b(?:L\.?\s*I\.?\s*A|L\.?\s*A\.?\s*I|L\.?\s*G\.?\s*P\.?\s*D|E\.?\s*C\.?\s*A)\b/iu', $value) === 1;
     }
 
     protected function withoutLeadingLessonNumber(string $value): string

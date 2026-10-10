@@ -6,7 +6,6 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
-use App\Models\StudyPlan;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -25,12 +24,11 @@ class LessonCourseLinker
                 'published' => 0,
                 'plans_synced' => 0,
             ];
-            $affectedCourseIds = [];
             $readyLessons = $this->readyLessons();
 
             $this->tracksQuery($course)
                 ->with(['module.courses', 'courses', 'lessons.modules', 'lessons.tracks'])
-                ->chunkById(50, function ($tracks) use ($readyLessons, &$stats, &$affectedCourseIds): void {
+                ->chunkById(50, function ($tracks) use ($readyLessons, &$stats): void {
                     foreach ($tracks as $track) {
                         $module = $track->module;
 
@@ -50,6 +48,17 @@ class LessonCourseLinker
                             $sortOrder = (int) ($lesson->pivot?->sort_order ?? $lesson->sort_order);
 
                             if ($this->lessonHasReadyMedia($lesson)) {
+                                if (! $this->readyLessonBelongsToTrack($lesson, $module, $track)) {
+                                    $track->lessons()->detach($lesson->id);
+                                    DB::table('course_module_track_lesson_course')
+                                        ->whereIn('course_id', $courseIds)
+                                        ->where('course_module_track_id', $track->id)
+                                        ->where('lesson_id', $lesson->id)
+                                        ->delete();
+
+                                    continue;
+                                }
+
                                 if ($this->publishLesson($lesson)) {
                                     $stats['published']++;
                                 }
@@ -62,59 +71,39 @@ class LessonCourseLinker
                                 continue;
                             }
 
-                            $candidate = $this->findReadyCandidate($readyLessons, $lesson, $module, $track, $sortOrder);
+                            $candidates = $this->findReadyCandidates($readyLessons, $lesson, $module, $track, $sortOrder);
 
-                            if (! $candidate instanceof Lesson) {
+                            if ($candidates->isEmpty()) {
                                 continue;
                             }
 
-                            if ($this->publishLesson($candidate)) {
-                                $stats['published']++;
-                            }
+                            $candidates->each(function (Lesson $candidate) use ($module, $track, $courseIds, $sortOrder, $lesson, &$stats): void {
+                                if ($this->publishLesson($candidate)) {
+                                    $stats['published']++;
+                                }
 
-                            $module->onlineLessons()->syncWithoutDetaching([
-                                $candidate->id => ['sort_order' => $sortOrder],
-                            ]);
-                            $track->lessons()->syncWithoutDetaching([
-                                $candidate->id => ['sort_order' => $sortOrder],
-                            ]);
-                            $this->syncCourseTrackLessonScopes($courseIds, $track, $candidate, $sortOrder, $lesson);
+                                $module->onlineLessons()->syncWithoutDetaching([
+                                    $candidate->id => ['sort_order' => $sortOrder],
+                                ]);
+                                $track->lessons()->syncWithoutDetaching([
+                                    $candidate->id => ['sort_order' => $sortOrder],
+                                ]);
+                                $this->syncCourseTrackLessonScopes($courseIds, $track, $candidate, $sortOrder, $lesson);
 
-                            if ($lesson->isNot($candidate)) {
+                                $stats['linked']++;
+                            });
+
+                            if ($candidates->doesntContain(fn (Lesson $candidate): bool => $lesson->is($candidate))) {
                                 $module->onlineLessons()->detach($lesson->id);
                                 $track->lessons()->detach($lesson->id);
                                 $this->archiveDetachedPlaceholder($lesson);
                                 $stats['replaced']++;
                             }
-
-                            $stats['linked']++;
-                            $affectedCourseIds = array_values(array_unique([...$affectedCourseIds, ...$courseIds]));
                         }
                     }
                 });
 
-            $this->linkReadyLessonsToPlanningLessons($course, $readyLessons, $stats, $affectedCourseIds);
-
-            if ($course instanceof Course) {
-                $affectedCourseIds[] = $course->id;
-            }
-
-            $affectedCourseIds = array_values(array_unique(array_filter($affectedCourseIds)));
-
-            if ($affectedCourseIds !== []) {
-                $generator = app(StudyPlanGenerator::class);
-
-                StudyPlan::query()
-                    ->whereIn('course_id', $affectedCourseIds)
-                    ->where('status', 'active')
-                    ->with(['items.courseModule', 'course', 'studyTrack', 'user'])
-                    ->chunkById(50, function ($plans) use ($generator, &$stats): void {
-                        foreach ($plans as $plan) {
-                            $generator->syncPublishedLessonsForPlan($plan);
-                            $stats['plans_synced']++;
-                        }
-                    });
-            }
+            $this->linkReadyLessonsToPlanningLessons($course, $readyLessons, $stats);
 
             return $stats;
         });
@@ -156,23 +145,46 @@ class LessonCourseLinker
 
     protected function findReadyCandidate(Collection $readyLessons, Lesson $placeholder, CourseModule $module, CourseModuleTrack $track, ?int $sortOrder = null): ?Lesson
     {
-        return $readyLessons
+        return $this->findReadyCandidates($readyLessons, $placeholder, $module, $track, $sortOrder)->first();
+    }
+
+    protected function findReadyCandidates(Collection $readyLessons, Lesson $placeholder, CourseModule $module, CourseModuleTrack $track, ?int $sortOrder = null): Collection
+    {
+        $candidates = $readyLessons
             ->where('id', '!=', $placeholder->id)
             ->map(fn (Lesson $lesson): array => [
                 'lesson' => $lesson,
-                'score' => $this->lessonMatchScore($lesson, $placeholder->title, $module, $track, $sortOrder),
+                'score' => $this->lessonMatchScore($lesson, $placeholder->title, $module, $track, $sortOrder, (int) $placeholder->duration_seconds),
                 'priority' => $this->lessonMediaPriority($lesson),
             ])
             ->filter(fn (array $candidate): bool => $candidate['score'] >= 72)
             ->sortByDesc(fn (array $candidate): float => ($candidate['score'] * 10) + $candidate['priority'])
-            ->first()['lesson'] ?? null;
+            ->values();
+
+        if (! $this->isGenericLessonTitle($placeholder->title)) {
+            return $candidates->take(1)->pluck('lesson');
+        }
+
+        $placeholderNumber = $this->contextualLessonNumber($placeholder->title) ?? $sortOrder;
+        $sameNumberContextCandidates = $candidates
+            ->filter(function (array $candidate) use ($placeholderNumber): bool {
+                $lessonNumber = $this->contextualLessonNumber($candidate['lesson']->title);
+
+                return $placeholderNumber !== null && $lessonNumber !== null && $placeholderNumber === $lessonNumber;
+            })
+            ->pluck('lesson')
+            ->values();
+
+        return $sameNumberContextCandidates->isNotEmpty()
+            ? $sameNumberContextCandidates
+            : $candidates->take(1)->pluck('lesson');
     }
 
-    protected function linkReadyLessonsToPlanningLessons(?Course $course, Collection $readyLessons, array &$stats, array &$affectedCourseIds): void
+    protected function linkReadyLessonsToPlanningLessons(?Course $course, Collection $readyLessons, array &$stats): void
     {
         $this->planningModulesQuery($course)
             ->with(['courses', 'onlineLessons', 'tracks.courses'])
-            ->chunkById(50, function ($modules) use ($course, $readyLessons, &$stats, &$affectedCourseIds): void {
+            ->chunkById(50, function ($modules) use ($course, $readyLessons, &$stats): void {
                 foreach ($modules as $module) {
                     $planningLessons = $module->planning_lessons;
 
@@ -229,7 +241,6 @@ class LessonCourseLinker
 
                         $attachedLessonIds[] = $candidate->id;
                         $stats['linked']++;
-                        $affectedCourseIds = array_values(array_unique([...$affectedCourseIds, ...$courseIds]));
                     }
                 }
             });
@@ -313,7 +324,7 @@ class LessonCourseLinker
             ->first()['track'] ?? null;
     }
 
-    protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null, ?int $sortOrder = null): float
+    protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null, ?int $sortOrder = null, ?int $expectedDurationSeconds = null): float
     {
         $titleKey = LessonTitleNormalizer::matchKey($title);
         [$lessonKey, $score] = $this->bestLessonTitleMatch($lesson, $titleKey);
@@ -325,7 +336,9 @@ class LessonCourseLinker
         $lessonNumber = $this->contextualLessonNumber($lesson->title);
         $titleNumber = $this->contextualLessonNumber($title) ?? $sortOrder;
 
-        if ($lessonNumber && $titleNumber && $lessonNumber === $titleNumber) {
+        $sameContextualNumber = $lessonNumber && $titleNumber && $lessonNumber === $titleNumber;
+
+        if ($sameContextualNumber) {
             $score += 20;
         }
 
@@ -342,7 +355,7 @@ class LessonCourseLinker
         $trackKey = $track ? LessonTitleNormalizer::matchKey($track->name) : '';
         $moduleKey = LessonTitleNormalizer::matchKey($module->name);
         $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
-        $lessonProduct = $this->contentProduct($path) ?? $this->contentProduct($lessonKey);
+        $lessonProduct = $this->contentProduct($lessonKey) ?? $this->contentProduct($path);
         $trackProduct = $this->contentProduct($trackKey);
 
         if ($lessonProduct && $trackProduct && $lessonProduct !== $trackProduct) {
@@ -353,6 +366,10 @@ class LessonCourseLinker
             return 0.0;
         }
 
+        if ($this->isGenericLessonTitle($title) && $pathMatchesTrack && $sameContextualNumber) {
+            $score = max($score, 96);
+        }
+
         if ($pathMatchesTrack) {
             $score += 12;
         }
@@ -361,7 +378,36 @@ class LessonCourseLinker
             $score += 4;
         }
 
+        $durationScore = $this->durationMatchPercent($lesson, $expectedDurationSeconds);
+
+        if ($durationScore !== null) {
+            if ($durationScore >= 90) {
+                $score += 8;
+            } elseif ($durationScore >= 75) {
+                $score += 4;
+            } elseif ($durationScore < 50 && $score < 95) {
+                $score -= 10;
+            } elseif ($durationScore < 70 && $score < 90) {
+                $score -= 6;
+            }
+        }
+
         return $score;
+    }
+
+    protected function durationMatchPercent(Lesson $lesson, ?int $expectedDurationSeconds): ?float
+    {
+        $expectedDurationSeconds = max(0, (int) $expectedDurationSeconds);
+        $actualDurationSeconds = max(0, (int) $lesson->duration_seconds);
+
+        if ($expectedDurationSeconds <= 0 || $actualDurationSeconds <= 0) {
+            return null;
+        }
+
+        $shorter = min($expectedDurationSeconds, $actualDurationSeconds);
+        $longer = max($expectedDurationSeconds, $actualDurationSeconds);
+
+        return round(($shorter / $longer) * 100, 4);
     }
 
     protected function publishLesson(Lesson $lesson): bool
@@ -402,6 +448,30 @@ class LessonCourseLinker
     protected function lessonHasReadyMedia(Lesson $lesson): bool
     {
         return $this->lessonMediaPriority($lesson) >= 100;
+    }
+
+    protected function readyLessonBelongsToTrack(Lesson $lesson, CourseModule $module, CourseModuleTrack $track): bool
+    {
+        $lesson->loadMissing('video');
+
+        $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+        $path = LessonTitleNormalizer::matchKey((string) ($metadata['drive_source_folder_path'] ?? ''));
+        $lessonKey = LessonTitleNormalizer::matchKey((string) ($lesson->video?->title ?: $lesson->title));
+        $trackKey = LessonTitleNormalizer::matchKey($track->name);
+        $lessonProduct = $this->contentProduct($lessonKey);
+        $trackProduct = $this->contentProduct($trackKey);
+
+        if ($lessonProduct && $trackProduct && $lessonProduct !== $trackProduct) {
+            return false;
+        }
+
+        if ($lessonProduct && $trackProduct && $lessonProduct === $trackProduct) {
+            return true;
+        }
+
+        return $this->pathMatchesContext($path, $trackKey)
+            || $this->pathMatchesContext($path, LessonTitleNormalizer::matchKey($module->name))
+            || $lessonProduct === null;
     }
 
     protected function lessonMediaPriority(Lesson $lesson): int
@@ -489,6 +559,10 @@ class LessonCourseLinker
 
     protected function isGenericLessonTitle(string $title): bool
     {
+        if (preg_match('/\b(?:L\.?\s*I\.?\s*A|L\.?\s*A\.?\s*I|L\.?\s*G\.?\s*P\.?\s*D|E\.?\s*C\.?\s*A)\b/iu', $title) === 1) {
+            return true;
+        }
+
         return count(array_filter(explode(' ', LessonTitleNormalizer::matchKey($title)))) <= 2;
     }
 
@@ -564,6 +638,33 @@ class LessonCourseLinker
 
         if (str_contains($value, 'internet') || str_contains($value, 'firefox') || str_contains($value, 'edge')) {
             return 'internet';
+        }
+
+        $hasEca = str_contains($value, 'estatuto') && str_contains($value, 'crianca') && str_contains($value, 'adolescente');
+        $hasLdb = str_contains($value, 'ldb') || str_contains($value, 'diretrizes bases');
+
+        if ($hasEca && $hasLdb) {
+            return null;
+        }
+
+        if (str_contains($value, 'geral') && str_contains($value, 'protecao') && str_contains($value, 'dados')) {
+            return 'lgpd';
+        }
+
+        if (str_contains($value, 'acesso') && str_contains($value, 'informacao')) {
+            return 'lai';
+        }
+
+        if (str_contains($value, 'improbidade administrativa')) {
+            return 'lia';
+        }
+
+        if ($hasLdb) {
+            return 'ldb';
+        }
+
+        if ($hasEca) {
+            return 'eca';
         }
 
         return null;

@@ -256,7 +256,7 @@ class EditCourse extends EditRecord
 
                     Notification::make()
                         ->title('Importação iniciada.')
-                        ->body('Acompanhe o progresso nesta tela. A importação não atualiza planos automaticamente.')
+                        ->body('Ao finalizar, o curso será atualizado e as aulas serão revinculadas com a biblioteca. Planos de alunos continuam separados e precisam ser reprocessados pelo botão do plano.')
                         ->success()
                         ->send();
 
@@ -318,11 +318,10 @@ class EditCourse extends EditRecord
     protected static function formatSyncStats(array $stats): string
     {
         return sprintf(
-            '%d aula(s) vinculada(s), %d placeholder(s) substituído(s), %d aula(s) publicada(s) e %d plano(s) atualizado(s).',
+            '%d aula(s) vinculada(s), %d placeholder(s) substituído(s) e %d aula(s) publicada(s). Os planos dos alunos não são atualizados automaticamente.',
             (int) ($stats['linked'] ?? 0),
             (int) ($stats['replaced'] ?? 0),
             (int) ($stats['published'] ?? 0),
-            (int) ($stats['plans_synced'] ?? 0),
         );
     }
 

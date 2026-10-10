@@ -14,6 +14,7 @@ use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class StudyPlanGeneratorTest extends TestCase
@@ -394,6 +395,128 @@ class StudyPlanGeneratorTest extends TestCase
 
         $this->assertSame($lessons->take(2)->pluck('id')->all(), $item->fresh()->lessons()->pluck('lessons.id')->all());
         $this->assertSame([$lessons[2]->id], $nextItem->fresh()->lessons()->pluck('lessons.id')->all());
+    }
+
+    public function test_sync_published_lessons_matches_generic_eca_plan_items_by_track_context_and_number(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Legislação',
+            'type' => 'specific',
+            'workload_minutes' => 120,
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Estatuto da Criança e do Adolescente',
+            'slug' => 'estatuto-da-crianca-e-do-adolescente',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $lessons = collect([
+            ['01 - Disposições Preliminares', 1],
+            ['05 - Eca Parte 1', 5],
+            ['05 - Eca Parte 2', 5],
+            ['05 - Eca Parte 3', 5],
+        ])->map(function (array $payload): Lesson {
+            return Lesson::factory()->create([
+                'title' => $payload[0],
+                'duration_seconds' => 900,
+                'sort_order' => $payload[1],
+                'status' => 'published',
+                'panda_video_id' => 'panda-'.Str::slug($payload[0]),
+                'source_status' => 'media_ready',
+            ]);
+        });
+
+        $track->lessons()->sync($lessons->mapWithKeys(fn (Lesson $lesson): array => [
+            $lesson->id => ['sort_order' => $lesson->sort_order],
+        ])->all());
+
+        $plan = \App\Models\StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'title' => 'Bloco 1 · Conhecimentos Específicos: Legislação',
+            'description' => 'Bloco de até 90 minutos para avançar em Legislação. Aulas do bloco: 01 - ECA.; 5 - ECA..',
+            'type' => 'specific',
+            'estimated_minutes' => 90,
+            'sort_order' => 1,
+        ]);
+
+        app(StudyPlanGenerator::class)->syncPublishedLessonsForPlan($plan);
+
+        $this->assertSame(
+            $lessons->pluck('id')->all(),
+            $item->fresh()->lessons()->pluck('lessons.id')->all(),
+        );
+    }
+
+    public function test_sync_published_lessons_does_not_match_generic_legal_acronym_without_specific_track_context(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Legislação',
+            'type' => 'specific',
+            'workload_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+        $ecaTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Estatuto da Criança e do Adolescente',
+            'slug' => 'estatuto-da-crianca-e-do-adolescente',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Lei de Improbidade Administrativa',
+            'slug' => 'lei-de-improbidade-administrativa',
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+        $ecaLesson = Lesson::factory()->create([
+            'title' => '01 - Disposições Preliminares',
+            'duration_seconds' => 900,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-eca-01',
+            'source_status' => 'media_ready',
+        ]);
+        $ecaTrack->lessons()->attach($ecaLesson->id, ['sort_order' => 1]);
+
+        $plan = \App\Models\StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = \App\Models\StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'title' => 'Bloco 1 · Conhecimentos Específicos: Legislação',
+            'description' => 'Bloco de até 60 minutos para avançar em Legislação. Aulas do bloco: 01 - LIA.',
+            'type' => 'specific',
+            'estimated_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+
+        app(StudyPlanGenerator::class)->syncPublishedLessonsForPlan($plan);
+
+        $this->assertSame([], $item->fresh()->lessons()->pluck('lessons.id')->all());
     }
 
     public function test_sync_matches_lesson_names_exactly_without_treating_part_one_as_other_parts(): void

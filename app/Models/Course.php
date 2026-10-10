@@ -266,7 +266,13 @@ class Course extends Model
                 $query->where('source_status', 'media_ready')
                     ->orWhereNotNull('panda_video_id')
                     ->orWhereNotNull('panda_embed_url')
-                    ->orWhereNotNull('panda_player_url');
+                    ->orWhereNotNull('panda_player_url')
+                    ->orWhereHas('video', function (Builder $query): void {
+                        $query->where('source_status', 'media_ready')
+                            ->orWhereNotNull('provider_video_id')
+                            ->orWhereNotNull('embed_url')
+                            ->orWhereNotNull('player_url');
+                    });
             })
             ->count('lessons.id');
     }

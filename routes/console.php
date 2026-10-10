@@ -564,7 +564,7 @@ Artisan::command('lessons:sync-course-links {courseId?} {--dry-run}', function (
     $this->line("Aulas vinculadas: {$stats['linked']}");
     $this->line("Placeholders substituídos: {$stats['replaced']}");
     $this->line("Aulas publicadas: {$stats['published']}");
-    $this->line("Planos ativos sincronizados: {$stats['plans_synced']}");
+    $this->line('Planos ativos: não sincronizados automaticamente.');
 
     return 0;
 })->purpose('Substitui aulas sem mídia por aulas prontas correspondentes no curso');

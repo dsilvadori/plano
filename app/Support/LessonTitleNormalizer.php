@@ -117,6 +117,10 @@ class LessonTitleNormalizer
     {
         return Str::of($title)
             ->replaceMatches('/\bL\.?\s*O\.?\s+Santos\b/iu', 'Lei Orgânica Santos')
+            ->replaceMatches('/\bL\.?\s*I\.?\s*A\.?\b/iu', 'Lei de Improbidade Administrativa')
+            ->replaceMatches('/\bL\.?\s*A\.?\s*I\.?\b/iu', 'Lei de Acesso à Informação')
+            ->replaceMatches('/\bL\.?\s*G\.?\s*P\.?\s*D\.?\b/iu', 'Lei Geral de Proteção de Dados')
+            ->replaceMatches('/\bE\.?\s*C\.?\s*A\.?\b/iu', 'Estatuto da Criança e do Adolescente')
             ->value();
     }
 

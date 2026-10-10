@@ -232,6 +232,11 @@ class CourseSpreadsheetImporter
             CourseCatalogController::forgetCourseCatalogCache((int) $course->id);
         });
 
+        $run->forceFill([
+            'latest_message' => 'Curso atualizado. Revinculando aulas com a biblioteca.',
+        ])->save();
+
+        $linkStats = app(LessonCourseLinker::class)->sync($course);
         $modules = $course->modules()->with('tracks.lessons')->get();
         $moduleCount = $modules->count();
         $trackCount = $modules->sum(fn (CourseModule $module): int => $module->tracks->count());
@@ -241,7 +246,7 @@ class CourseSpreadsheetImporter
             'status' => 'finished',
             'course_name' => $run->course_name ?: $course->name,
             'processed_modules' => $totalModules,
-            'latest_message' => 'Importação concluída. Planos não foram atualizados automaticamente.',
+            'latest_message' => 'Curso atualizado e aulas revinculadas. Planos não foram atualizados automaticamente; alunos precisam clicar em Reprocessar aulas no plano.',
             'error_message' => null,
             'finished_at' => now(),
             'summary' => [
@@ -250,6 +255,7 @@ class CourseSpreadsheetImporter
                 'modules' => $moduleCount,
                 'tracks' => $trackCount,
                 'lessons' => $lessonCount,
+                'link_stats' => $linkStats,
             ],
         ])->save();
 
@@ -283,10 +289,12 @@ class CourseSpreadsheetImporter
             return $run;
         }
 
+        $linkStats = app(LessonCourseLinker::class)->sync($course);
+
         $run->forceFill([
             'status' => 'finished',
             'processed_modules' => max((int) $run->processed_modules, (int) $run->total_modules),
-            'latest_message' => 'Importação concluída. Planos não foram atualizados automaticamente.',
+            'latest_message' => 'Curso atualizado e aulas revinculadas. Planos não foram atualizados automaticamente; alunos precisam clicar em Reprocessar aulas no plano.',
             'error_message' => null,
             'finished_at' => $run->finished_at ?: now(),
             'summary' => [
@@ -295,6 +303,7 @@ class CourseSpreadsheetImporter
                 'modules' => $moduleCount,
                 'tracks' => $trackCount,
                 'lessons' => $lessonCount,
+                'link_stats' => $linkStats,
                 'recovered_from_completed_structure' => true,
             ],
         ])->save();
@@ -1262,6 +1271,8 @@ class CourseSpreadsheetImporter
         $lessonNumber = $this->leadingNumber($lesson->title, 'lesson-title-'.$lesson->id);
         $titleNumber = $this->leadingNumber($title);
 
+        $sameContextualNumber = $lessonNumber && $titleNumber && $lessonNumber === $titleNumber;
+
         if ($lessonNumber && $titleNumber) {
             $score += $lessonNumber === $titleNumber ? 8 : 0;
         }
@@ -1272,7 +1283,7 @@ class CourseSpreadsheetImporter
         $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
         $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
         $pathMatchesModule = $moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey);
-        $lessonProduct = $this->contentProduct($path) ?? $this->contentProduct($lessonKey);
+        $lessonProduct = $this->contentProduct($lessonKey) ?? $this->contentProduct($path);
         $trackProduct = $this->contentProduct($trackKey);
 
         if (! $this->lessonMatchesImportContext($lesson, $module, $track, $path)) {
@@ -1289,6 +1300,10 @@ class CourseSpreadsheetImporter
 
         if ($this->isGenericLessonTitle($title) && $lessonKey !== $titleKey && ! $pathMatchesTrack) {
             return 0;
+        }
+
+        if ($this->isGenericLessonTitle($title) && $pathMatchesTrack && $sameContextualNumber) {
+            $score = max($score, 96);
         }
 
         if ($pathMatchesTrack) {
@@ -1374,6 +1389,10 @@ class CourseSpreadsheetImporter
 
     protected function isGenericLessonTitle(string $title): bool
     {
+        if (preg_match('/\b(?:L\.?\s*I\.?\s*A|L\.?\s*A\.?\s*I|L\.?\s*G\.?\s*P\.?\s*D|E\.?\s*C\.?\s*A)\b/iu', $title) === 1) {
+            return true;
+        }
+
         return count(array_filter(explode(' ', $this->matchKey($title)))) <= 2;
     }
 
@@ -1631,27 +1650,58 @@ class CourseSpreadsheetImporter
 
     protected function candidateTitleSearchTokens(string $title): array
     {
-        return $this->filterCandidateSearchTokens($this->comparisonTokens($this->matchKey($title)), 4);
+        return $this->filterCandidateSearchTokens([
+            ...$this->comparisonTokens($this->matchKey($title)),
+            ...$this->knownAcronymSearchTokens($title),
+        ], 4);
     }
 
     protected function candidateContextSearchTokens(CourseModule $module, ?CourseModuleTrack $track = null): array
     {
         $tokens = $track ? $this->comparisonTokens($this->matchKey($track->name, 'track-'.$track->id)) : [];
         $tokens = array_merge($tokens, $this->comparisonTokens($this->matchKey($module->name, 'module-'.$module->id)));
+        $tokens = array_merge($tokens, $track ? $this->knownAcronymSearchTokens($track->name) : []);
+        $tokens = array_merge($tokens, $this->knownAcronymSearchTokens($module->name));
 
         return $this->filterCandidateSearchTokens($tokens, 3);
     }
 
     protected function filterCandidateSearchTokens(array $tokens, int $limit): array
     {
+        $knownAcronyms = ['lia', 'lai', 'lgpd', 'eca'];
+
         return collect($tokens)
             ->map(fn (string $token): string => trim($token))
             ->reject(fn (string $token): bool => in_array($token, ['aula', 'video', 'modulo', 'trilha'], true))
-            ->filter(fn (string $token): bool => mb_strlen($token) >= 4)
+            ->filter(fn (string $token): bool => mb_strlen($token) >= 4 || in_array($token, $knownAcronyms, true))
             ->unique()
             ->take($limit)
             ->values()
             ->all();
+    }
+
+    protected function knownAcronymSearchTokens(string $value): array
+    {
+        $key = $this->normalizeName($value);
+        $tokens = [];
+
+        if (str_contains($key, 'lei de improbidade administrativa') || preg_match('/\blia\b/u', $key) === 1) {
+            $tokens[] = 'lia';
+        }
+
+        if (str_contains($key, 'lei de acesso a informacao') || preg_match('/\blai\b/u', $key) === 1) {
+            $tokens[] = 'lai';
+        }
+
+        if (str_contains($key, 'lei geral de protecao de dados') || preg_match('/\blgpd\b/u', $key) === 1) {
+            $tokens[] = 'lgpd';
+        }
+
+        if (str_contains($key, 'estatuto da crianca e do adolescente') || str_contains($key, 'estatuto crianca adolescente') || preg_match('/\beca\b/u', $key) === 1) {
+            $tokens[] = 'eca';
+        }
+
+        return $tokens;
     }
 
     protected function rememberReusableLessonCandidate(?Lesson $lesson): void
@@ -1893,6 +1943,33 @@ class CourseSpreadsheetImporter
 
         if (str_contains($value, 'internet') || str_contains($value, 'firefox') || str_contains($value, 'edge')) {
             return 'internet';
+        }
+
+        $hasEca = str_contains($value, 'estatuto') && str_contains($value, 'crianca') && str_contains($value, 'adolescente');
+        $hasLdb = str_contains($value, 'ldb') || str_contains($value, 'diretrizes bases');
+
+        if ($hasEca && $hasLdb) {
+            return null;
+        }
+
+        if (str_contains($value, 'geral') && str_contains($value, 'protecao') && str_contains($value, 'dados')) {
+            return 'lgpd';
+        }
+
+        if (str_contains($value, 'acesso') && str_contains($value, 'informacao')) {
+            return 'lai';
+        }
+
+        if (str_contains($value, 'improbidade administrativa')) {
+            return 'lia';
+        }
+
+        if ($hasLdb) {
+            return 'ldb';
+        }
+
+        if ($hasEca) {
+            return 'eca';
         }
 
         return null;

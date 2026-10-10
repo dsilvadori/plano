@@ -6,6 +6,7 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseSpreadsheetImportRun;
 use App\Services\CourseSpreadsheetImporter;
+use App\Services\LessonCourseLinker;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -41,7 +42,7 @@ class ImportCourseSpreadsheet implements ShouldQueue
         return [120, 300, 900];
     }
 
-    public function handle(CourseSpreadsheetImporter $importer): void
+    public function handle(CourseSpreadsheetImporter $importer, LessonCourseLinker $linker): void
     {
         $absolutePath = Storage::disk('local')->path($this->path);
         $run = $this->runId ? CourseSpreadsheetImportRun::query()->find($this->runId) : null;
@@ -90,6 +91,11 @@ class ImportCourseSpreadsheet implements ShouldQueue
                     fn (array $progress) => $this->updateRunProgress($progress),
                 );
 
+            $run?->forceFill([
+                'latest_message' => 'Curso atualizado. Revinculando aulas com a biblioteca.',
+            ])->save();
+
+            $linkStats = $linker->sync($course);
             $modules = $course->modules()->with('tracks.lessons')->get();
             $moduleCount = $modules->count();
             $trackCount = $modules->sum(fn (CourseModule $module): int => $module->tracks->count());
@@ -99,7 +105,7 @@ class ImportCourseSpreadsheet implements ShouldQueue
                 'course_id' => $course->id,
                 'course_name' => $run->course_name ?: $course->name,
                 'status' => 'finished',
-                'latest_message' => 'Importação concluída. Planos não foram atualizados automaticamente.',
+                'latest_message' => 'Curso atualizado e aulas revinculadas. Planos não foram atualizados automaticamente; alunos precisam clicar em Reprocessar aulas no plano.',
                 'error_message' => null,
                 'finished_at' => now(),
                 'summary' => [
@@ -108,6 +114,7 @@ class ImportCourseSpreadsheet implements ShouldQueue
                     'modules' => $moduleCount,
                     'tracks' => $trackCount,
                     'lessons' => $lessonCount,
+                    'link_stats' => $linkStats,
                 ],
             ])->save();
 
@@ -118,6 +125,7 @@ class ImportCourseSpreadsheet implements ShouldQueue
                 'modules' => $moduleCount,
                 'tracks' => $trackCount,
                 'lessons' => $lessonCount,
+                'link_stats' => $linkStats,
                 'run_id' => $this->runId,
             ]);
         } catch (Throwable $exception) {

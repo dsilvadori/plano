@@ -9,6 +9,7 @@ use App\Models\Lesson;
 use App\Models\Video;
 use App\Services\LessonCourseLinker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -175,6 +176,141 @@ class LessonCourseLinkerTest extends TestCase
         ]);
     }
 
+    public function test_it_replaces_generic_eca_placeholders_with_ready_lessons_from_matching_folder_context(): void
+    {
+        $course = Course::factory()->create(['name' => 'Gabaritando Curitiba']);
+        $module = CourseModule::factory()->for($course)->create(['name' => 'Legislação']);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Estatuto da Criança e do Adolescente',
+            'slug' => 'estatuto-da-crianca-e-do-adolescente',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $firstPlaceholder = Lesson::query()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - ECA.',
+            'slug' => '01-eca-placeholder',
+            'type' => 'video',
+            'duration_seconds' => 3480,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+        $fifthPlaceholder = Lesson::query()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '5 - ECA.',
+            'slug' => '5-eca-placeholder',
+            'type' => 'video',
+            'duration_seconds' => 2100,
+            'sort_order' => 5,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+
+        $readyLessons = collect([
+            ['01 - Disposições Preliminares', 'panda-eca-01', 1],
+            ['05 - Eca Parte 1', 'panda-eca-05-1', 5],
+            ['05 - Eca Parte 2', 'panda-eca-05-2', 5],
+            ['05 - Eca Parte 3', 'panda-eca-05-3', 5],
+        ])->map(fn (array $payload): Lesson => Lesson::query()->create([
+            'title' => $payload[0],
+            'slug' => Str::slug($payload[0]),
+            'type' => 'video',
+            'duration_seconds' => 1200,
+            'sort_order' => $payload[2],
+            'status' => 'published',
+            'panda_video_id' => $payload[1],
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'drive_source_folder_path' => 'ECA + LDB',
+            ],
+        ]));
+        $ldbLesson = Lesson::query()->create([
+            'title' => '02 - Ldb',
+            'slug' => '02-ldb',
+            'type' => 'video',
+            'duration_seconds' => 1200,
+            'sort_order' => 2,
+            'status' => 'published',
+            'panda_video_id' => 'panda-ldb-02',
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'drive_source_folder_path' => 'ECA + LDB',
+            ],
+        ]);
+        $existingEcaLesson = Lesson::query()->create([
+            'title' => '09 - Eca',
+            'slug' => '09-eca',
+            'type' => 'video',
+            'duration_seconds' => 1200,
+            'sort_order' => 9,
+            'status' => 'published',
+            'panda_video_id' => 'panda-eca-09',
+            'source_status' => 'media_ready',
+        ]);
+        $track->lessons()->syncWithoutDetaching([
+            $ldbLesson->id => ['sort_order' => 2],
+            $existingEcaLesson->id => ['sort_order' => 9],
+        ]);
+        DB::table('course_module_track_lesson_course')->insert([
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $ldbLesson->id,
+            'sort_order' => 2,
+            'status' => 'published',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('course_module_track_lesson_course')->insert([
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $existingEcaLesson->id,
+            'sort_order' => 9,
+            'status' => 'published',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $stats = app(LessonCourseLinker::class)->sync($course);
+
+        $this->assertSame(4, $stats['linked']);
+        $this->assertSame(2, $stats['replaced']);
+        $readyLessons->each(function (Lesson $lesson) use ($module, $track): void {
+            $this->assertDatabaseHas('course_module_lessons', [
+                'course_module_id' => $module->id,
+                'lesson_id' => $lesson->id,
+            ]);
+            $this->assertDatabaseHas('course_module_track_lessons', [
+                'course_module_track_id' => $track->id,
+                'lesson_id' => $lesson->id,
+            ]);
+        });
+        $this->assertDatabaseMissing('course_module_track_lessons', [
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $firstPlaceholder->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_lessons', [
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $fifthPlaceholder->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_lessons', [
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $ldbLesson->id,
+        ]);
+        $this->assertDatabaseHas('course_module_track_lessons', [
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $existingEcaLesson->id,
+        ]);
+    }
+
     public function test_it_links_ready_standalone_lesson_to_module_planning_lesson_by_approximate_name_without_placeholder(): void
     {
         $course = Course::factory()->create(['name' => 'Gabaritando Santos']);
@@ -219,6 +355,69 @@ class LessonCourseLinkerTest extends TestCase
         $this->assertDatabaseHas('lessons', [
             'id' => $readyLesson->id,
             'status' => 'published',
+        ]);
+    }
+
+    public function test_it_prefers_ready_lesson_with_closer_duration_when_titles_match(): void
+    {
+        $course = Course::factory()->create(['name' => 'Gabaritando Santos']);
+        $module = CourseModule::factory()->for($course)->create(['name' => 'Administração']);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Protocolo',
+            'slug' => 'protocolo',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $placeholder = Lesson::query()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Protocolo e arquivo administrativo',
+            'slug' => '01-protocolo-arquivo-administrativo-placeholder',
+            'type' => 'video',
+            'duration_seconds' => 30 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+        ]);
+        $shortLesson = Lesson::query()->create([
+            'title' => '01 - Protocolo e arquivo administrativo',
+            'slug' => '01-protocolo-arquivo-administrativo-curta',
+            'type' => 'video',
+            'duration_seconds' => 5 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-protocolo-curta',
+            'source_status' => 'media_ready',
+        ]);
+        $matchingDurationLesson = Lesson::query()->create([
+            'title' => '01 - Protocolo e arquivo administrativo',
+            'slug' => '01-protocolo-arquivo-administrativo-completa',
+            'type' => 'video',
+            'duration_seconds' => 29 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_video_id' => 'panda-protocolo-completa',
+            'source_status' => 'media_ready',
+        ]);
+
+        app(LessonCourseLinker::class)->sync($course);
+
+        $this->assertDatabaseHas('course_module_track_lessons', [
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $matchingDurationLesson->id,
+            'sort_order' => 1,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_lessons', [
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $shortLesson->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_lessons', [
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $placeholder->id,
         ]);
     }
 

@@ -31,6 +31,7 @@ class StudyPlan extends Model
         'viability_status',
         'viability_message',
         'generated_at',
+        'lessons_reprocessed_at',
     ];
 
     protected $casts = [
@@ -40,6 +41,7 @@ class StudyPlan extends Model
         'available_days' => 'array',
         'available_minutes_by_day' => 'array',
         'generated_at' => 'datetime',
+        'lessons_reprocessed_at' => 'datetime',
     ];
 
     public function user(): BelongsTo

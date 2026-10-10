@@ -18,11 +18,11 @@
             @if ($run?->status === 'finished')
                 <div class="space-y-3">
                     <div class="rounded-md bg-success-50 px-3 py-2 text-sm font-semibold text-success-700 ring-1 ring-success-200 dark:bg-success-400/10 dark:text-success-300 dark:ring-success-400/20">
-                        Importação 100% concluída
+                        Curso atualizado e aulas revinculadas
                     </div>
 
                     <div class="rounded-md bg-warning-50 px-3 py-3 text-sm text-warning-800 ring-1 ring-warning-200 dark:bg-warning-400/10 dark:text-warning-200 dark:ring-warning-400/20">
-                        A importação não atualiza planos automaticamente. Os planos serão ajustados pelo fluxo individual de cada aluno, preservando o progresso já realizado.
+                        Os planos de estudo não foram atualizados automaticamente. Cada aluno precisa abrir o plano e clicar em Reprocessar aulas para carregar as mudanças do curso, preservando o progresso já realizado.
                     </div>
                 </div>
             @else

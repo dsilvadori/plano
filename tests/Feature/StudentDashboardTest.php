@@ -176,13 +176,15 @@ class StudentDashboardTest extends TestCase
         $this->actingAs($student)
             ->get(route('study-plans.show', $plan))
             ->assertOk()
+            ->assertSee('Este curso pode ter recebido atualizações de aulas')
+            ->assertSee('Reprocessar aulas')
             ->assertSee('Conceitos de Arquivologia')
             ->assertSee('17 min')
             ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $archiveLesson]), false)
             ->assertDontSee('01 - Licitação')
             ->assertDontSee('Aula 01 - Conceitos de Recursos Materiais');
 
-        $this->assertTrue($item->fresh()->lessons()->whereKey($archiveLesson->id)->exists());
+        $this->assertFalse($item->fresh()->lessons()->whereKey($archiveLesson->id)->exists());
     }
 
     public function test_study_plan_viewer_restores_lesson_links_for_legacy_items_without_module_id(): void
@@ -726,7 +728,7 @@ class StudentDashboardTest extends TestCase
             ->assertDontSee('Trilha do plano');
     }
 
-    public function test_lesson_page_with_active_plan_syncs_before_finding_the_matching_plan_day(): void
+    public function test_student_can_reprocess_plan_lessons_before_opening_the_matching_plan_day(): void
     {
         $course = Course::factory()->create();
         $student = User::factory()->create();
@@ -782,6 +784,18 @@ class StudentDashboardTest extends TestCase
             'estimated_minutes' => 45,
             'sort_order' => 1,
         ]);
+
+        $this->actingAs($student)
+            ->post(route('study-plans.sync-lessons', $plan))
+            ->assertRedirect(route('study-plans.show', $plan))
+            ->assertSessionHas('status', 'Curso atualizado. Reprocessamos seu plano de estudos com as aulas disponíveis sem perder os dias já concluídos.');
+
+        $this->assertNotNull($plan->fresh()->lessons_reprocessed_at);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertDontSee('Reprocessar aulas');
 
         $this->actingAs($student)
             ->get(route('courses.lessons.show', [$course->slug, $lessons->last()]))

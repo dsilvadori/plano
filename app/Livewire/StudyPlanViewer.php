@@ -1094,6 +1094,7 @@ class StudyPlanViewer extends Component
                 'lessons.duration_seconds',
                 'lessons.status',
                 'lessons.sort_order',
+                'course_lesson_scope.sort_order as course_scope_sort_order',
             ])
             ->get();
 

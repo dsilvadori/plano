@@ -21,7 +21,6 @@ use App\Services\LessonSummaryPdfGenerator;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
 use App\Services\PandaVideoClient;
-use App\Services\StudyPlanGenerator;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
@@ -243,7 +242,7 @@ class CourseCatalogController extends Controller
         ]);
     }
 
-    public function lesson(Course $course, Lesson $lesson, PandaVideoClient $panda, PandaTutorActivator $tutor, StudyPlanGenerator $studyPlanGenerator): View
+    public function lesson(Course $course, Lesson $lesson, PandaVideoClient $panda, PandaTutorActivator $tutor): View
     {
         $user = request()->user();
 
@@ -305,7 +304,7 @@ class CourseCatalogController extends Controller
         $orderedLessons = $this->publishedLessonsForCourse($course)->get();
         $currentIndex = $orderedLessons->search(fn (Lesson $orderedLesson) => $orderedLesson->is($lesson));
 
-        $planLessonContext = $this->planLessonContextForLesson($user, $course, $lesson, $studyPlanGenerator);
+        $planLessonContext = $this->planLessonContextForLesson($user, $course, $lesson);
 
         return view('dashboard.courses.lesson', [
             'course' => $course,
@@ -771,6 +770,13 @@ class CourseCatalogController extends Controller
     {
         return Lesson::query()
             ->select('lessons.*')
+            ->addSelect([
+                'course_module_course.sort_order as course_module_course_sort_order',
+                'course_modules.sort_order as course_module_sort_order',
+                'course_modules.name as course_module_order_name',
+                'course_module_tracks.sort_order as course_module_track_sort_order',
+            ])
+            ->selectRaw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order) as course_track_lesson_sort_order')
             ->join('course_module_track_lessons', 'course_module_track_lessons.lesson_id', '=', 'lessons.id')
             ->join('course_module_tracks', 'course_module_tracks.id', '=', 'course_module_track_lessons.course_module_track_id')
             ->join('course_modules', 'course_modules.id', '=', 'course_module_tracks.course_module_id')
@@ -1128,15 +1134,8 @@ class CourseCatalogController extends Controller
             ->all();
     }
 
-    protected function planLessonContextForLesson(User $user, Course $course, Lesson $lesson, StudyPlanGenerator $studyPlanGenerator): ?array
+    protected function planLessonContextForLesson(User $user, Course $course, Lesson $lesson): ?array
     {
-        $user->studyPlans()
-            ->where('course_id', $course->id)
-            ->where('status', 'active')
-            ->orderBy('id')
-            ->get()
-            ->each(fn (StudyPlan $plan) => $studyPlanGenerator->syncPublishedLessonsForPlan($plan));
-
         $currentItem = $this->planItemFromRequestContext($user, $course, $lesson) ?? StudyPlanItem::query()
             ->whereHas('studyPlan', fn (Builder $query) => $query
                 ->where('user_id', $user->id)

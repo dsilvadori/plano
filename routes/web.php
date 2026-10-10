@@ -72,6 +72,10 @@ Route::middleware('auth')->group(function () {
         ->can('update', 'studyPlan')
         ->missing(fn () => auth()->user()?->isAdmin() ? redirect('/admin') : redirect()->route('dashboard'))
         ->name('study-plans.rebalance');
+    Route::post('/dashboard/plano/{studyPlan}/reprocessar-aulas', [StudyPlanController::class, 'syncLessons'])
+        ->can('update', 'studyPlan')
+        ->missing(fn () => auth()->user()?->isAdmin() ? redirect('/admin') : redirect()->route('dashboard'))
+        ->name('study-plans.sync-lessons');
     Route::get('/dashboard/plano/{studyPlan}', [StudyPlanController::class, 'show'])
         ->can('view', 'studyPlan')
         ->missing(fn () => auth()->user()?->isAdmin() ? redirect('/admin') : redirect()->route('dashboard'))

@@ -17,6 +17,7 @@ use App\Models\Video;
 use App\Support\CourseSpreadsheetUpload;
 use App\Services\CourseSpreadsheetImporter;
 use App\Services\CourseSpreadsheetParser;
+use App\Services\LessonCourseLinker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
@@ -157,19 +158,41 @@ class CourseSpreadsheetImportTest extends TestCase
             'total_lessons' => 24,
             'latest_message' => 'Importação na fila.',
         ]);
+        $linker = new class extends LessonCourseLinker
+        {
+            public ?int $courseId = null;
+
+            public function sync(?Course $course = null): array
+            {
+                $this->courseId = $course?->id;
+
+                return [
+                    'tracks' => 3,
+                    'linked' => 2,
+                    'replaced' => 1,
+                    'published' => 0,
+                    'plans_synced' => 0,
+                ];
+            }
+        };
+
+        $this->app->instance(LessonCourseLinker::class, $linker);
 
         app()->call([new ImportCourseSpreadsheet('imports/courses/oficial.xlsx', null, $run->id), 'handle']);
 
         $run->refresh();
 
         $this->assertSame('finished', $run->status);
-        $this->assertSame('Importação concluída.', $run->latest_message);
+        $this->assertSame('Curso atualizado e aulas revinculadas. Planos não foram atualizados automaticamente; alunos precisam clicar em Reprocessar aulas no plano.', $run->latest_message);
         $this->assertNotNull($run->course_id);
+        $this->assertSame($run->course_id, $linker->courseId);
         $this->assertNotNull($run->started_at);
         $this->assertNotNull($run->finished_at);
         $this->assertSame('100% concluído', $run->progress_label);
         $this->assertIsArray($run->summary);
         $this->assertSame('Oficial de Administração', $run->summary['course_name']);
+        $this->assertSame(2, $run->summary['link_stats']['linked']);
+        $this->assertSame(0, $run->summary['link_stats']['plans_synced']);
     }
 
     public function test_course_spreadsheet_import_run_can_be_processed_in_chunks(): void
@@ -1313,6 +1336,139 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-conjuncao-duration-different')->count());
         $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
         $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+    }
+
+    public function test_spreadsheet_import_matches_legal_acronym_folder_to_full_track_name(): void
+    {
+        $folder = LessonFolder::query()->create([
+            'name' => 'LIA',
+            'slug' => 'lia',
+            'path' => 'legislacao/lia',
+            'sort_order' => 1,
+        ]);
+
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'lesson_folder_id' => $folder->id,
+            'title' => '01 - LIA',
+            'slug' => 'lia-01',
+            'type' => 'video',
+            'duration_seconds' => 900,
+            'sort_order' => 1,
+            'panda_video_id' => 'panda-lia-01',
+            'panda_embed_url' => 'https://player.example.com/lia-01',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-lia-acronym-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso LIA,Conhecimentos Específicos,specific,1,Lei de Improbidade Administrativa,01 - Lei de Improbidade Administrativa,15',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Conhecimentos Específicos')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Lei de Improbidade Administrativa')->firstOrFail();
+
+        $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-lia-01')->count());
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+    }
+
+    public function test_spreadsheet_import_matches_eca_acronym_to_full_track_name(): void
+    {
+        $folder = LessonFolder::query()->create([
+            'name' => 'ECA',
+            'slug' => 'eca',
+            'path' => 'legislacao/eca',
+            'sort_order' => 1,
+        ]);
+
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'lesson_folder_id' => $folder->id,
+            'title' => '01 - ECA',
+            'slug' => 'eca-01',
+            'type' => 'video',
+            'duration_seconds' => 900,
+            'sort_order' => 1,
+            'panda_video_id' => 'panda-eca-01',
+            'panda_embed_url' => 'https://player.example.com/eca-01',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-eca-acronym-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso ECA,Legislação,specific,1,Estatuto da Criança e do Adolescente,01 - Estatuto da Criança e do Adolescente,15',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Legislação')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Estatuto da Criança e do Adolescente')->firstOrFail();
+
+        $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-eca-01')->count());
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+    }
+
+    public function test_spreadsheet_import_matches_generic_eca_row_to_ready_lesson_by_folder_context_and_number(): void
+    {
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Disposições Preliminares',
+            'slug' => 'eca-disposicoes-preliminares',
+            'type' => 'video',
+            'duration_seconds' => 900,
+            'sort_order' => 1,
+            'panda_video_id' => 'panda-eca-disposicoes',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => [
+                'drive_source_folder_path' => 'ECA + LDB',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-eca-folder-context-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso ECA,Legislação,specific,1,Estatuto da Criança e do Adolescente,01 - ECA,15',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Legislação')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Estatuto da Criança e do Adolescente')->firstOrFail();
+
+        $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-eca-disposicoes')->count());
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+        $this->assertDatabaseMissing('lessons', [
+            'title' => '01 - ECA',
+            'source_status' => 'awaiting_media',
+        ]);
     }
 
     public function test_spreadsheet_import_keeps_lesson_published_when_media_is_missing(): void

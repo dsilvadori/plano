@@ -141,10 +141,24 @@ class StudyPlanController extends Controller
             ->with('status', 'Reajuste concluído. Preservamos o que você já concluiu e reorganizamos automaticamente só o restante do plano a partir de hoje.');
     }
 
-    public function show(StudyPlan $studyPlan, StudyPlanGenerator $generator): View
+    public function syncLessons(StudyPlan $studyPlan, StudyPlanGenerator $generator): RedirectResponse
+    {
+        $this->authorize('update', $studyPlan);
+        abort_unless(request()->user()?->canAccessStudentArea(), 403);
+
+        $generator->syncPublishedLessonsForPlan($studyPlan);
+        $studyPlan->forceFill([
+            'lessons_reprocessed_at' => now(),
+        ])->save();
+
+        return redirect()
+            ->route('study-plans.show', $studyPlan)
+            ->with('status', 'Curso atualizado. Reprocessamos seu plano de estudos com as aulas disponíveis sem perder os dias já concluídos.');
+    }
+
+    public function show(StudyPlan $studyPlan): View
     {
         $this->authorize('view', $studyPlan);
-        $generator->syncPublishedLessonsForPlan($studyPlan);
 
         return view('dashboard.study-plans.show', [
             'studyPlan' => $studyPlan->load(['items.courseModule', 'items.lessons', 'course', 'studyTrack']),

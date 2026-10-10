@@ -42,4 +42,27 @@ class LessonTitleNormalizerTest extends TestCase
             LessonTitleNormalizer::normalizePreservingNumber('AULA 01 - INTRODUCAO.mp4', 99),
         );
     }
+
+    public function test_it_matches_known_legal_acronyms_to_full_names(): void
+    {
+        $this->assertSame(
+            LessonTitleNormalizer::matchKey('Lei de Improbidade Administrativa'),
+            LessonTitleNormalizer::matchKey('LIA'),
+        );
+
+        $this->assertSame(
+            LessonTitleNormalizer::matchKey('Lei de Acesso à Informação'),
+            LessonTitleNormalizer::matchKey('LAI'),
+        );
+
+        $this->assertSame(
+            LessonTitleNormalizer::matchKey('Lei Geral de Proteção de Dados'),
+            LessonTitleNormalizer::matchKey('LGPD'),
+        );
+
+        $this->assertSame(
+            LessonTitleNormalizer::matchKey('Estatuto da Criança e do Adolescente'),
+            LessonTitleNormalizer::matchKey('ECA'),
+        );
+    }
 }
