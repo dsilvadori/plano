@@ -142,8 +142,15 @@ class LessonCourseLinker
                 $query->whereNotNull('panda_video_id')
                     ->orWhereNotNull('panda_embed_url')
                     ->orWhereNotNull('panda_player_url')
-                    ->orWhere('source_status', 'media_ready');
+                    ->orWhere('source_status', 'media_ready')
+                    ->orWhereHas('video', function (Builder $query): void {
+                        $query->whereNotNull('provider_video_id')
+                            ->orWhereNotNull('embed_url')
+                            ->orWhereNotNull('player_url')
+                            ->orWhere('source_status', 'media_ready');
+                    });
             })
+            ->with('video')
             ->get();
     }
 
@@ -308,14 +315,13 @@ class LessonCourseLinker
 
     protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null, ?int $sortOrder = null): float
     {
-        $score = LessonTitleNormalizer::matchScore($lesson->title, $title);
+        $titleKey = LessonTitleNormalizer::matchKey($title);
+        [$lessonKey, $score] = $this->bestLessonTitleMatch($lesson, $titleKey);
 
         if ($score <= 0) {
             return 0.0;
         }
 
-        $lessonKey = LessonTitleNormalizer::matchKey($lesson->title);
-        $titleKey = LessonTitleNormalizer::matchKey($title);
         $lessonNumber = $this->contextualLessonNumber($lesson->title);
         $titleNumber = $this->contextualLessonNumber($title) ?? $sortOrder;
 
@@ -400,15 +406,85 @@ class LessonCourseLinker
 
     protected function lessonMediaPriority(Lesson $lesson): int
     {
-        if (filled($lesson->panda_video_id) || filled($lesson->panda_embed_url) || filled($lesson->panda_player_url)) {
+        $lesson->loadMissing('video');
+
+        if (
+            filled($lesson->panda_video_id)
+            || filled($lesson->panda_embed_url)
+            || filled($lesson->panda_player_url)
+            || filled($lesson->video?->provider_video_id)
+            || filled($lesson->video?->embed_url)
+            || filled($lesson->video?->player_url)
+        ) {
             return 120;
         }
 
-        if ($lesson->source_status === 'media_ready') {
+        if ($lesson->source_status === 'media_ready' || $lesson->video?->source_status === 'media_ready') {
             return 100;
         }
 
         return 0;
+    }
+
+    protected function bestLessonTitleMatch(Lesson $lesson, string $titleKey): array
+    {
+        $lesson->loadMissing('video');
+
+        return collect([
+            $lesson->title,
+            $lesson->video?->title,
+            $lesson->video?->provider_video_id,
+        ])
+            ->filter(fn ($value): bool => filled($value))
+            ->map(function (string $value) use ($titleKey): array {
+                $lessonKey = LessonTitleNormalizer::matchKey($value);
+                $score = $this->matchScoreForKeys($lessonKey, $titleKey);
+
+                return [$lessonKey, $score];
+            })
+            ->sortByDesc(fn (array $match): float => $match[1])
+            ->first() ?? ['', 0.0];
+    }
+
+    protected function matchScoreForKeys(string $leftKey, string $rightKey): float
+    {
+        if ($leftKey === '' || $rightKey === '') {
+            return 0.0;
+        }
+
+        if ($leftKey === $rightKey) {
+            return 100.0;
+        }
+
+        similar_text($leftKey, $rightKey, $percent);
+
+        return max($this->tokenOverlapPercent($leftKey, $rightKey), $percent);
+    }
+
+    protected function tokenOverlapPercent(string $leftKey, string $rightKey): float
+    {
+        $leftTokens = $this->comparisonTokens($leftKey);
+        $rightTokens = $this->comparisonTokens($rightKey);
+
+        if ($leftTokens === [] || $rightTokens === []) {
+            return 0.0;
+        }
+
+        $intersection = array_intersect($leftTokens, $rightTokens);
+        $union = array_unique([...$leftTokens, ...$rightTokens]);
+
+        return count($union) > 0 ? (count($intersection) / count($union)) * 100 : 0.0;
+    }
+
+    protected function comparisonTokens(string $key): array
+    {
+        $ignored = ['a', 'as', 'ao', 'aos', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na', 'nas', 'no', 'nos', 'o', 'os', 'para', 'por', 'um', 'uma'];
+
+        return collect(explode(' ', $key))
+            ->filter(fn (string $token): bool => $token !== '' && ! in_array($token, $ignored, true))
+            ->unique()
+            ->values()
+            ->all();
     }
 
     protected function isGenericLessonTitle(string $title): bool

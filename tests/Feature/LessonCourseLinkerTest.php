@@ -6,6 +6,7 @@ use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\Lesson;
+use App\Models\Video;
 use App\Services\LessonCourseLinker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
@@ -204,6 +205,58 @@ class LessonCourseLinkerTest extends TestCase
             'metadata' => [
                 'drive_source_folder_path' => 'Aulas avulsas / Português',
             ],
+        ]);
+
+        $stats = app(LessonCourseLinker::class)->sync($course);
+
+        $this->assertSame(1, $stats['linked']);
+        $this->assertSame(1, $stats['published']);
+        $this->assertDatabaseHas('course_module_lessons', [
+            'course_module_id' => $module->id,
+            'lesson_id' => $readyLesson->id,
+            'sort_order' => 1,
+        ]);
+        $this->assertDatabaseHas('lessons', [
+            'id' => $readyLesson->id,
+            'status' => 'published',
+        ]);
+    }
+
+    public function test_it_links_ready_lesson_using_linked_video_title(): void
+    {
+        $course = Course::factory()->create(['name' => 'Gabaritando Santos']);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'type' => 'basic',
+            'lessons' => [
+                ['name' => 'Classes de Palavras - Conjunção Subordinativa Adverbial', 'minutes' => 16],
+            ],
+            'workload_minutes' => 16,
+            'sort_order' => 1,
+            'is_active' => true,
+        ]);
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+        $video = Video::query()->create([
+            'title' => 'Aula 03 - Classes de Palavras - Conjunção Subordinativa Adverbial.mp4',
+            'slug' => 'aula-03-classes-de-palavras-conjuncao-subordinativa-adverbial',
+            'provider' => 'panda',
+            'provider_video_id' => 'panda-classes-palavras-video',
+            'embed_url' => 'https://player.example.com/classes-palavras-video',
+            'duration_seconds' => 960,
+            'source_status' => 'media_ready',
+        ]);
+        $readyLesson = Lesson::query()->create([
+            'video_id' => $video->id,
+            'title' => 'Conjunção',
+            'slug' => 'conjuncao',
+            'type' => 'video',
+            'duration_seconds' => 960,
+            'sort_order' => 99,
+            'status' => 'draft',
+            'source_status' => 'awaiting_media',
         ]);
 
         $stats = app(LessonCourseLinker::class)->sync($course);

@@ -1193,6 +1193,128 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('panda-video-canonico-portugues', $existingLesson->fresh()->video->provider_video_id);
     }
 
+    public function test_spreadsheet_import_matches_ready_media_by_linked_video_title(): void
+    {
+        $video = Video::query()->create([
+            'title' => 'Aula 03 - Classes de Palavras - Conjunção Subordinativa Adverbial.mp4',
+            'slug' => 'aula-03-classes-de-palavras-conjuncao-subordinativa-adverbial',
+            'provider' => 'panda',
+            'provider_video_id' => 'panda-conjuncao-subordinativa-adverbial',
+            'embed_url' => 'https://player.example.com/conjuncao-subordinativa-adverbial',
+            'duration_seconds' => 960,
+            'source_status' => 'media_ready',
+        ]);
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'video_id' => $video->id,
+            'title' => 'Conjunção',
+            'slug' => 'conjuncao',
+            'type' => 'video',
+            'duration_seconds' => 960,
+            'sort_order' => 1,
+            'source_status' => 'awaiting_media',
+            'status' => 'published',
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-linked-video-title-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Video Vinculado,Português,basic,1,Classe de palavras,Classes de Palavras - Conjunção Subordinativa Adverbial,16',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Português')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Classe de palavras')->firstOrFail();
+
+        $this->assertSame(1, Lesson::query()->where('video_id', $video->id)->count());
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+        $this->assertSame('panda-conjuncao-subordinativa-adverbial', $existingLesson->fresh()->video->provider_video_id);
+    }
+
+    public function test_spreadsheet_import_creates_lesson_from_matching_ready_video_without_lesson(): void
+    {
+        $video = Video::query()->create([
+            'title' => '01 - Classes de Palavras - Conjunção Subordinativa Adverbial',
+            'slug' => 'classes-de-palavras-conjuncao-subordinativa-adverbial',
+            'provider' => 'panda',
+            'provider_video_id' => 'panda-video-sem-aula',
+            'embed_url' => 'https://player.example.com/video-sem-aula',
+            'duration_seconds' => 960,
+            'source_status' => 'media_ready',
+            'metadata' => [
+                'library_folder_path' => 'Português',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-video-without-lesson-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Video Sem Aula,Português,basic,1,Classe de palavras,Classes de Palavras - Conjunção Subordinativa Adverbial,16',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $lesson = Lesson::query()->where('video_id', $video->id)->firstOrFail();
+        $module = $course->modules()->where('name', 'Português')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Classe de palavras')->firstOrFail();
+
+        $this->assertSame('panda-video-sem-aula', $lesson->panda_video_id);
+        $this->assertTrue($module->onlineLessons()->whereKey($lesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($lesson->id)->exists());
+    }
+
+    public function test_spreadsheet_import_does_not_drop_good_title_match_by_duration_or_missing_search_token(): void
+    {
+        $existingLesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Palavras - Conjunção Subordinativa Adverbial',
+            'slug' => 'palavras-conjuncao-subordinativa-adverbial',
+            'type' => 'video',
+            'duration_seconds' => 3600,
+            'sort_order' => 1,
+            'panda_video_id' => 'panda-conjuncao-duration-different',
+            'panda_embed_url' => 'https://player.example.com/conjuncao-duration-different',
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => [
+                'library_folder_path' => 'Português',
+            ],
+        ]);
+
+        $path = tempnam(sys_get_temp_dir(), 'course-import-relaxed-match-').'.csv';
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Match Relaxado,Português,basic,1,Classe de palavras,Classes de Palavras - Conjunção Subordinativa Adverbial,16',
+        ]));
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $module = $course->modules()->where('name', 'Português')->firstOrFail();
+        $track = $module->tracks()->where('name', 'Classe de palavras')->firstOrFail();
+
+        $this->assertSame(1, Lesson::query()->where('panda_video_id', 'panda-conjuncao-duration-different')->count());
+        $this->assertTrue($module->onlineLessons()->whereKey($existingLesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($existingLesson->id)->exists());
+    }
+
     public function test_spreadsheet_import_keeps_lesson_published_when_media_is_missing(): void
     {
         $existingLesson = Lesson::query()->create([

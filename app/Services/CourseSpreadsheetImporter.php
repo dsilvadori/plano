@@ -1117,7 +1117,7 @@ class CourseSpreadsheetImporter
             $fallbackLesson ??= $lesson;
         }
 
-        return $this->reusableLessonCandidatesFor($title, $module, $track, $lessonData)
+        $matchedLesson = $this->reusableLessonCandidatesFor($title, $module, $track, $lessonData)
             ->when($excludeLessonIds !== [], fn (Collection $lessons) => $lessons->whereNotIn('id', $excludeLessonIds))
             ->map(fn (Lesson $lesson): array => [
                 'lesson' => $lesson,
@@ -1129,7 +1129,60 @@ class CourseSpreadsheetImporter
                 return [$right['media_priority'], $right['score'], -$right['lesson']->id]
                     <=> [$left['media_priority'], $left['score'], -$left['lesson']->id];
             })
-            ->first()['lesson'] ?? $fallbackLesson;
+            ->first()['lesson'] ?? null;
+
+        return $matchedLesson
+            ?? $this->resolveReusableVideoLesson($title, $module, $track, $lessonData, $excludeLessonIds)
+            ?? $fallbackLesson;
+    }
+
+    protected function resolveReusableVideoLesson(string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $lessonData = [], array $excludeLessonIds = []): ?Lesson
+    {
+        $candidate = $this->reusableVideoCandidatesFor($title, $module, $track)
+            ->map(function (Video $video) use ($title, $module, $track, $lessonData, $excludeLessonIds): array {
+                $lesson = $video->lessons()
+                    ->with('video')
+                    ->orderBy('id')
+                    ->first();
+
+                if ($lesson && in_array((int) $lesson->id, array_map('intval', $excludeLessonIds), true)) {
+                    return ['video' => $video, 'lesson' => null, 'score' => 0.0];
+                }
+
+                return [
+                    'video' => $video,
+                    'lesson' => $lesson,
+                    'score' => $this->videoMatchScore($video, $title, $module, $track, $lessonData),
+                ];
+            })
+            ->filter(fn (array $candidate): bool => $candidate['score'] >= 72)
+            ->sortByDesc('score')
+            ->first();
+
+        if (! $candidate) {
+            return null;
+        }
+
+        if ($candidate['lesson'] instanceof Lesson) {
+            return $candidate['lesson'];
+        }
+
+        /** @var Video $video */
+        $video = $candidate['video'];
+
+        return new Lesson([
+            'lesson_folder_id' => $video->lesson_folder_id,
+            'video_id' => $video->id,
+            'title' => $video->title,
+            'slug' => $video->slug ?: (Str::slug($video->title) ?: 'video-'.$video->id),
+            'description' => $video->description,
+            'thumbnail_url' => $video->thumbnail_url,
+            'duration_seconds' => (int) $video->duration_seconds,
+            'panda_video_id' => $video->provider_video_id,
+            'panda_embed_url' => $video->embed_url,
+            'panda_player_url' => $video->player_url,
+            'source_status' => $video->source_status ?: 'media_ready',
+        ]);
     }
 
     protected function firstLessonOrNewForPandaVideo(string $pandaVideoId): Lesson
@@ -1199,11 +1252,8 @@ class CourseSpreadsheetImporter
 
     protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $lessonData = []): float
     {
-        $lessonKey = $this->matchKey($lesson->title, 'lesson-title-'.$lesson->id);
         $titleKey = $this->matchKey($title);
-        $titleScore = $this->matchScoreForKeys($lessonKey, $titleKey);
-        $directionalTitleScore = $this->directionalTokenMatchPercent($titleKey, $lessonKey);
-        $score = max($titleScore, $directionalTitleScore >= 80 ? min(98, $directionalTitleScore + 8) : $titleScore);
+        [$lessonKey, $score] = $this->bestLessonTitleMatch($lesson, $titleKey);
 
         if ($score <= 0) {
             return 0;
@@ -1250,27 +1300,18 @@ class CourseSpreadsheetImporter
         }
 
         if ($this->isGenericLessonTitle($title) && $path !== '' && $trackKey !== '' && ! $this->pathMatchesContext($path, $trackKey)) {
-            $score -= 35;
+            return 0;
         }
 
         $durationScore = $this->lessonDurationMatchPercent($lesson, $lessonData);
 
         if ($durationScore !== null) {
-            if ($score < 96 && $durationScore < 75) {
-                return 0;
-            }
-
-            if ($score < 98 && $durationScore < 50) {
-                return 0;
-            }
-
-            $contextualScore = $score;
-            $score = ($score * 0.82) + ($durationScore * 0.18);
-
             if ($durationScore >= 90) {
                 $score += 6;
-            } elseif ($durationScore < 60 && $contextualScore < 100) {
-                $score -= 20;
+            } elseif ($durationScore < 50 && $score < 90) {
+                $score -= 8;
+            } elseif ($durationScore < 75 && $score < 82) {
+                $score -= 5;
             }
         }
 
@@ -1390,8 +1431,6 @@ class CourseSpreadsheetImporter
             return $this->reusableLessonCandidateCache[$cacheKey] = collect();
         }
 
-        $expectedSeconds = max(0, (int) ($lessonData['minutes'] ?? 0)) * 60;
-
         return $this->reusableLessonCandidateCache[$cacheKey] = Lesson::query()
             ->select([
                 'id',
@@ -1416,22 +1455,67 @@ class CourseSpreadsheetImporter
                 'metadata',
             ])
             ->with('video')
-            ->when($expectedSeconds > 0, function ($query) use ($expectedSeconds): void {
-                $minimumSeconds = (int) floor($expectedSeconds * 0.33);
-                $maximumSeconds = (int) ceil($expectedSeconds * 1.5);
-
-                $query->where(function ($query) use ($minimumSeconds, $maximumSeconds): void {
-                    $query->where('duration_seconds', 0)
-                        ->orWhereBetween('duration_seconds', [$minimumSeconds, $maximumSeconds]);
+            ->when($titleTokens !== [], function ($query) use ($titleTokens): void {
+                $query->where(function ($query) use ($titleTokens): void {
+                    foreach ($titleTokens as $token) {
+                        $query->orWhere('title', 'like', '%'.$token.'%')
+                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
+                            ->orWhereHas('video', function ($query) use ($token): void {
+                                $query->where('title', 'like', '%'.$token.'%')
+                                    ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
+                                    ->orWhere('provider_video_id', 'like', '%'.$token.'%');
+                            });
+                    }
                 });
             })
+            ->when($titleTokens === [] && $contextTokens !== [], function ($query) use ($contextTokens): void {
+                $query->where(function ($query) use ($contextTokens): void {
+                    foreach ($contextTokens as $token) {
+                        $query->orWhere('title', 'like', '%'.$token.'%')
+                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
+                            ->orWhere('metadata->drive_source_folder_path', 'like', '%'.$token.'%')
+                            ->orWhere('metadata->library_folder_path', 'like', '%'.$token.'%')
+                            ->orWhereHas('folder', fn ($query) => $query->where('path', 'like', '%'.$token.'%'))
+                            ->orWhereHas('video', function ($query) use ($token): void {
+                                $query->where('title', 'like', '%'.$token.'%')
+                                    ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
+                                    ->orWhere('metadata->drive_source_folder_path', 'like', '%'.$token.'%')
+                                    ->orWhere('metadata->library_folder_path', 'like', '%'.$token.'%');
+                            });
+                    }
+                });
+            })
+            ->orderByRaw("(case when panda_video_id is not null or panda_embed_url is not null or panda_player_url is not null or exists (select 1 from videos where videos.id = lessons.video_id and (videos.provider_video_id is not null or videos.embed_url is not null or videos.player_url is not null)) then 0 when source_status = 'media_ready' then 1 else 2 end)")
+            ->orderBy('id')
+            ->limit(250)
+            ->get();
+    }
+
+    protected function reusableVideoCandidatesFor(string $title, CourseModule $module, ?CourseModuleTrack $track = null): Collection
+    {
+        $titleTokens = $this->candidateTitleSearchTokens($title);
+        $contextTokens = count($titleTokens) < 2 ? $this->candidateContextSearchTokens($module, $track) : [];
+
+        if ($titleTokens === [] && $contextTokens === []) {
+            return collect();
+        }
+
+        return Video::query()
+            ->with(['folder', 'lessons'])
+            ->where(function ($query): void {
+                $query->whereNotNull('provider_video_id')
+                    ->orWhereNotNull('embed_url')
+                    ->orWhereNotNull('player_url')
+                    ->orWhere('source_status', 'media_ready');
+            })
             ->when($titleTokens !== [], function ($query) use ($titleTokens): void {
-                foreach ($titleTokens as $token) {
-                    $query->where(function ($query) use ($token): void {
-                        $query->where('title', 'like', '%'.$token.'%')
-                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%');
-                    });
-                }
+                $query->where(function ($query) use ($titleTokens): void {
+                    foreach ($titleTokens as $token) {
+                        $query->orWhere('title', 'like', '%'.$token.'%')
+                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
+                            ->orWhere('provider_video_id', 'like', '%'.$token.'%');
+                    }
+                });
             })
             ->when($titleTokens === [] && $contextTokens !== [], function ($query) use ($contextTokens): void {
                 $query->where(function ($query) use ($contextTokens): void {
@@ -1444,10 +1528,105 @@ class CourseSpreadsheetImporter
                     }
                 });
             })
-            ->orderByRaw("(case when panda_video_id is not null or panda_embed_url is not null or panda_player_url is not null or exists (select 1 from videos where videos.id = lessons.video_id and (videos.provider_video_id is not null or videos.embed_url is not null or videos.player_url is not null)) then 0 when source_status = 'media_ready' then 1 else 2 end)")
+            ->orderByRaw('(case when provider_video_id is not null or embed_url is not null or player_url is not null then 0 when source_status = ? then 1 else 2 end)', ['media_ready'])
             ->orderBy('id')
-            ->limit(80)
+            ->limit(250)
             ->get();
+    }
+
+    protected function videoMatchScore(Video $video, string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $lessonData = []): float
+    {
+        $titleKey = $this->matchKey($title);
+        [$videoKey, $score] = $this->bestVideoTitleMatch($video, $titleKey);
+
+        if ($score <= 0) {
+            return 0.0;
+        }
+
+        $metadata = is_array($video->metadata) ? $video->metadata : [];
+        $rawPath = (string) ($metadata['library_folder_path'] ?? $metadata['drive_source_folder_path'] ?? $video->folder?->path ?? '');
+        $path = $this->matchKey($rawPath, 'video-path-'.$video->id);
+        $trackKey = $track ? $this->matchKey($track->name, 'track-'.$track->id) : '';
+        $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
+        $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
+        $pathMatchesModule = $moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey);
+        $videoProduct = $this->contentProduct($path) ?? $this->contentProduct($videoKey);
+        $trackProduct = $this->contentProduct($trackKey);
+
+        if (! $this->mediaPathMatchesImportContext($rawPath, $path, $moduleKey, $trackKey)) {
+            return 0.0;
+        }
+
+        if ($videoProduct && $trackProduct && $videoProduct !== $trackProduct) {
+            return 0.0;
+        }
+
+        if ($this->romanSuffix($videoKey) !== $this->romanSuffix($titleKey)) {
+            return 0.0;
+        }
+
+        if ($this->isGenericLessonTitle($title) && $path !== '' && $trackKey !== '' && ! $pathMatchesTrack) {
+            return 0.0;
+        }
+
+        if ($pathMatchesTrack) {
+            $score += 12;
+        }
+
+        if ($pathMatchesModule) {
+            $score += 4;
+        }
+
+        $durationScore = $this->videoDurationMatchPercent($video, $lessonData);
+
+        if ($durationScore !== null) {
+            if ($durationScore >= 90) {
+                $score += 6;
+            } elseif ($durationScore < 50 && $score < 90) {
+                $score -= 8;
+            } elseif ($durationScore < 75 && $score < 82) {
+                $score -= 5;
+            }
+        }
+
+        return round($score, 4);
+    }
+
+    protected function bestVideoTitleMatch(Video $video, string $titleKey): array
+    {
+        return collect([
+            $video->title,
+            $video->provider_video_id,
+        ])
+            ->filter(fn ($value): bool => filled($value))
+            ->map(function (string $value) use ($titleKey): array {
+                $videoKey = $this->matchKey($value);
+                $titleScore = $this->matchScoreForKeys($videoKey, $titleKey);
+                $directionalTitleScore = $this->directionalTokenMatchPercent($titleKey, $videoKey);
+
+                return [
+                    $videoKey,
+                    max($titleScore, $directionalTitleScore >= 80 ? min(98, $directionalTitleScore + 8) : $titleScore),
+                ];
+            })
+            ->sortByDesc(fn (array $match): float => $match[1])
+            ->first() ?? ['', 0.0];
+    }
+
+    protected function videoDurationMatchPercent(Video $video, array $lessonData): ?float
+    {
+        $expectedMinutes = max(0, (int) ($lessonData['minutes'] ?? 0));
+        $actualSeconds = max(0, (int) $video->duration_seconds);
+
+        if ($expectedMinutes <= 0 || $actualSeconds <= 0) {
+            return null;
+        }
+
+        $expectedSeconds = $expectedMinutes * 60;
+        $shorter = min($expectedSeconds, $actualSeconds);
+        $longer = max($expectedSeconds, $actualSeconds);
+
+        return round(($shorter / $longer) * 100, 4);
     }
 
     protected function candidateTitleSearchTokens(string $title): array
@@ -1536,6 +1715,30 @@ class CourseSpreadsheetImporter
         similar_text($leftKey, $rightKey, $percent);
 
         return max($this->tokenOverlapPercent($leftKey, $rightKey), $percent);
+    }
+
+    protected function bestLessonTitleMatch(Lesson $lesson, string $titleKey): array
+    {
+        $lesson->loadMissing('video');
+
+        return collect([
+            $lesson->title,
+            $lesson->video?->title,
+            $lesson->video?->provider_video_id,
+        ])
+            ->filter(fn ($value): bool => filled($value))
+            ->map(function (string $value) use ($titleKey): array {
+                $lessonKey = $this->matchKey($value);
+                $titleScore = $this->matchScoreForKeys($lessonKey, $titleKey);
+                $directionalTitleScore = $this->directionalTokenMatchPercent($titleKey, $lessonKey);
+
+                return [
+                    $lessonKey,
+                    max($titleScore, $directionalTitleScore >= 80 ? min(98, $directionalTitleScore + 8) : $titleScore),
+                ];
+            })
+            ->sortByDesc(fn (array $match): float => $match[1])
+            ->first() ?? ['', 0.0];
     }
 
     protected function tokenOverlapPercent(string $leftKey, string $rightKey): float
@@ -1646,18 +1849,20 @@ class CourseSpreadsheetImporter
         $trackKey = $this->matchKey($track->name, 'track-'.$track->id);
         $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
 
+        return $this->mediaPathMatchesImportContext($rawPath, $path, $moduleKey, $trackKey);
+    }
+
+    protected function mediaPathMatchesImportContext(string $rawPath, string $path, string $moduleKey, string $trackKey): bool
+    {
+        if ($path === '') {
+            return true;
+        }
+
         $hasHierarchicalPath = str_contains($rawPath, '/') || str_contains($rawPath, ' / ');
 
         if ($hasHierarchicalPath) {
-            if ($trackKey !== '' && ! $this->pathMatchesContext($path, $trackKey)) {
-                return false;
-            }
-
-            if ($moduleKey !== '' && ! $this->pathMatchesContext($path, $moduleKey)) {
-                return false;
-            }
-
-            return true;
+            return ($trackKey !== '' && $this->pathMatchesContext($path, $trackKey))
+                || ($moduleKey === '' || $this->pathMatchesContext($path, $moduleKey));
         }
 
         return ($trackKey !== '' && $this->pathMatchesContext($path, $trackKey))
