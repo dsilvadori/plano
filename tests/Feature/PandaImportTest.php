@@ -49,6 +49,42 @@ class PandaImportTest extends TestCase
         $this->assertSame(['ok' => true], $response);
     }
 
+    public function test_panda_client_reads_language_specific_ai_package(): void
+    {
+        config([
+            'services.panda.ai_config_base_url' => 'https://config.panda.test',
+            'services.panda.ai_from_lang' => 'pt-BR',
+        ]);
+
+        Http::fake([
+            'https://config.panda.test/vz-abc/external-123-ai.pt-BR.json' => Http::response(['lang' => 'pt-BR', 'abstract' => 'Resumo'], 200),
+            '*' => Http::response('Not Found', 404),
+        ]);
+
+        $this->assertSame(
+            ['lang' => 'pt-BR', 'abstract' => 'Resumo'],
+            app(PandaVideoClient::class)->aiPackage('vz-abc', 'external-123'),
+        );
+    }
+
+    public function test_panda_client_falls_back_to_legacy_ai_package(): void
+    {
+        config([
+            'services.panda.ai_config_base_url' => 'https://config.panda.test',
+            'services.panda.ai_from_lang' => 'pt-BR',
+        ]);
+
+        Http::fake([
+            'https://config.panda.test/vz-abc/external-123-ai.json' => Http::response(['abstract' => 'Resumo antigo'], 200),
+            '*' => Http::response('Not Found', 404),
+        ]);
+
+        $client = app(PandaVideoClient::class);
+
+        $this->assertSame(['abstract' => 'Resumo antigo'], $client->aiPackage('vz-abc', 'external-123'));
+        $this->assertNull($client->aiPackage('vz-abc', 'missing'));
+    }
+
     public function test_panda_client_creates_tutor_with_default_lilia_message(): void
     {
         config([

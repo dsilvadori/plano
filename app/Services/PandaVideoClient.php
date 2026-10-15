@@ -648,19 +648,27 @@ class PandaVideoClient
         ]);
     }
 
-    public function aiPackage(string $pullzoneName, string $videoExternalId): ?array
+    public function aiPackage(string $pullzoneName, string $videoExternalId, ?string $lang = null): ?array
     {
-        $response = Http::baseUrl(rtrim((string) config('services.panda.ai_config_base_url'), '/'))
-            ->acceptJson()
-            ->get('/'.trim($pullzoneName, '/').'/'.$videoExternalId.'-ai.json');
+        $lang = $lang ?: (string) config('services.panda.ai_from_lang', 'pt-BR');
+        $basePath = '/'.trim($pullzoneName, '/').'/'.$videoExternalId;
 
-        if ($response->status() === 404) {
-            return null;
+        // O Panda publica pacotes novos por idioma (`-ai.pt-BR.json`); pacotes antigos usam `-ai.json`.
+        foreach (array_filter([$lang !== '' ? "{$basePath}-ai.{$lang}.json" : null, "{$basePath}-ai.json"]) as $path) {
+            $response = Http::baseUrl(rtrim((string) config('services.panda.ai_config_base_url'), '/'))
+                ->acceptJson()
+                ->get($path);
+
+            if ($response->status() === 404) {
+                continue;
+            }
+
+            $response->throw();
+
+            return $response->json() ?? [];
         }
 
-        $response->throw();
-
-        return $response->json() ?? [];
+        return null;
     }
 
     public function playerConfig(string $pullzoneName, string $videoExternalId): ?array
