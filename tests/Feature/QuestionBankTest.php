@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\QuestionBanks\QuestionBankResource;
+use App\Filament\Resources\Questions\Pages\EditQuestion;
 use App\Jobs\GenerateQuestionCommentary;
 use App\Models\Course;
 use App\Models\CourseModule;
@@ -19,6 +20,7 @@ use App\Support\QuestionTextRenderer;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Livewire\Livewire;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -427,6 +429,59 @@ TXT;
         $this->assertStringContainsString('<p>C - Está correta porque é <strong>substantivo</strong>.</p>', $html);
         $this->assertStringContainsString('<p>D - Está incorreta.</p>', $html);
         $this->assertStringContainsString('<p>E - Está incorreta.</p>', $html);
+    }
+
+    public function test_question_renderer_keeps_editor_formatting_and_strips_unsafe_html(): void
+    {
+        $html = (string) QuestionTextRenderer::render(
+            '<p>O <u>verbo sublinhado</u> e a <mark data-color="#ff0">palavra destacada</mark> em <strong>negrito</strong>.</p><p onclick="x()">Segundo<script>alert(1)</script></p>'
+        );
+
+        $this->assertSame('<p>O <u>verbo sublinhado</u> e a <mark>palavra destacada</mark> em <strong>negrito</strong>.</p><p>Segundo</p>', $html);
+        $this->assertSame('Alternativa <u>um</u><br>linha dois', (string) QuestionTextRenderer::renderInline('<p>Alternativa <u>um</u></p><p>linha dois</p>'));
+        $this->assertSame('<p>Texto <strong>antigo</strong> com <mark>destaque</mark></p>', (string) QuestionTextRenderer::render('Texto **antigo** com ==destaque=='));
+        $this->assertSame("O <u>verbo</u> &\n\nFim", QuestionTextRenderer::toPromptText('<p>O <u>verbo</u> &amp;</p><p>Fim</p>'));
+    }
+
+    public function test_admin_question_editor_loads_legacy_text_and_saves_underlined_words(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Português - Sujeito',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => "Primeiro parágrafo com **negrito**.\n\nO verbo destacado é chegaram.",
+            'type' => 'multiple_choice',
+            'status' => 'published',
+        ]);
+
+        $this->actingAs(User::factory()->admin()->create());
+
+        $component = Livewire::test(EditQuestion::class, ['record' => $question->getRouteKey()]);
+        $statement = $component->get('data.statement');
+        $loaded = is_array($statement) ? json_encode($statement) : (string) $statement;
+
+        $this->assertStringContainsString('Primeiro par', $loaded);
+        $this->assertStringContainsString('chegaram', $loaded);
+        $this->assertStringNotContainsString('**', $loaded);
+
+        $component
+            ->fillForm([
+                'statement' => '<p>O verbo <u>chegaram</u> concorda com o <mark>sujeito</mark>.</p>',
+                'metadata.image_position' => 'after_statement',
+            ])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $saved = $question->fresh()->statement;
+
+        $this->assertStringContainsString('<u>chegaram</u>', $saved);
+        $this->assertStringContainsString('<mark>sujeito</mark>', $saved);
+        $this->assertStringContainsString('<u>chegaram</u>', (string) QuestionTextRenderer::render($saved));
     }
 
     public function test_pdf_importer_uses_gemini_fallback_when_local_text_extraction_fails(): void

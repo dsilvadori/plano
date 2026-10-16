@@ -8,6 +8,7 @@ use App\Filament\Resources\Questions\Pages\ListQuestions;
 use App\Jobs\GenerateQuestionCommentary;
 use App\Models\Question;
 use App\Models\QuestionBank;
+use App\Support\QuestionTextRenderer;
 use BackedEnum;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
@@ -15,6 +16,7 @@ use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Repeater;
+use Filament\Forms\Components\RichEditor;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -80,9 +82,9 @@ class QuestionResource extends Resource
             TextInput::make('source_reference')
                 ->label('Origem/referência')
                 ->columnSpanFull(),
-            Textarea::make('statement')
+            self::textEditor('statement')
                 ->label('Enunciado')
-                ->rows(8)
+                ->helperText('Use sublinhado ou destaque nas palavras que o enunciado mandar observar.')
                 ->required()
                 ->columnSpanFull(),
             FileUpload::make('metadata.image_urls')
@@ -146,10 +148,9 @@ class QuestionResource extends Resource
                     'errado' => 'Errado',
                 ])
                 ->searchable(),
-            Textarea::make('commentary')
+            self::textEditor('commentary')
                 ->label('Comentário')
                 ->helperText('Pode ser preenchido manualmente ou editado após geração por IA.')
-                ->rows(6)
                 ->columnSpanFull(),
             TextInput::make('commentary_provider')
                 ->label('Origem do comentário')
@@ -163,20 +164,29 @@ class QuestionResource extends Resource
                         ->label('Letra')
                         ->required()
                         ->maxLength(5),
-                    Textarea::make('text')
+                    self::textEditor('text')
                         ->label('Texto')
-                        ->rows(2)
                         ->required(),
                     TextInput::make('sort_order')
                         ->label('Ordem')
                         ->numeric()
                         ->default(0),
                 ])
+                ->mutateRelationshipDataBeforeFillUsing(fn (array $data): array => array_replace($data, ['text' => QuestionTextRenderer::toEditorHtml($data['text'] ?? null)]))
                 ->mutateRelationshipDataBeforeCreateUsing(fn (array $data): array => array_replace($data, ['is_correct' => false]))
                 ->mutateRelationshipDataBeforeSaveUsing(fn (array $data): array => array_replace($data, ['is_correct' => false]))
                 ->columns(3)
                 ->columnSpanFull(),
         ]);
+    }
+
+    protected static function textEditor(string $name): RichEditor
+    {
+        return RichEditor::make($name)
+            ->toolbarButtons([
+                ['bold', 'italic', 'underline', 'highlight'],
+                ['clearFormatting', 'undo', 'redo'],
+            ]);
     }
 
     public static function table(Table $table): Table
@@ -186,7 +196,11 @@ class QuestionResource extends Resource
                 TextColumn::make('number')->label('Nº')->sortable(),
                 TextColumn::make('bank.title')->label('Banco')->searchable()->sortable(),
                 TextColumn::make('topic')->label('Assunto')->searchable()->toggleable(),
-                TextColumn::make('statement')->label('Enunciado')->limit(80)->searchable(),
+                TextColumn::make('statement')
+                    ->label('Enunciado')
+                    ->formatStateUsing(fn (?string $state): string => QuestionTextRenderer::toPlainText($state))
+                    ->limit(80)
+                    ->searchable(),
                 TextColumn::make('answer_key')->label('Gabarito')->badge(),
                 TextColumn::make('status')
                     ->label('Status')

@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Questions\Pages;
 
 use App\Filament\Resources\Questions\QuestionResource;
 use App\Services\GeminiQuestionCommentaryGenerator;
+use App\Support\QuestionTextRenderer;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Notifications\Notification;
@@ -13,6 +14,14 @@ use Throwable;
 class EditQuestion extends EditRecord
 {
     protected static string $resource = QuestionResource::class;
+
+    protected function mutateFormDataBeforeFill(array $data): array
+    {
+        $data['statement'] = QuestionTextRenderer::toEditorHtml($data['statement'] ?? null);
+        $data['commentary'] = QuestionTextRenderer::toEditorHtml($data['commentary'] ?? null, commentary: true);
+
+        return $data;
+    }
 
     protected function getHeaderActions(): array
     {

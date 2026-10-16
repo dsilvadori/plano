@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Question;
+use App\Support\QuestionTextRenderer;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -27,7 +28,7 @@ class GeminiQuestionCommentaryGenerator
         $question->loadMissing('options');
 
         $alternatives = $question->options
-            ->map(fn ($option): string => strtoupper($option->label).') '.$option->text)
+            ->map(fn ($option): string => strtoupper($option->label).') '.QuestionTextRenderer::toPromptText($option->text))
             ->join("\n");
 
         $prompt = implode("\n\n", [
@@ -40,8 +41,9 @@ class GeminiQuestionCommentaryGenerator
             'Use no máximo 3 parágrafos curtos.',
             'Pode usar Markdown para destacar termos importantes com **negrito**.',
             'Se a questão estiver incompleta ou o gabarito não estiver claro, diga que é necessário revisar o gabarito antes de comentar.',
+            'Trechos marcados com <strong> estão em negrito, com <u> estão sublinhados e com <mark> estão destacados; considere essas marcações quando o enunciado mencionar palavras destacadas ou sublinhadas.',
             'Enunciado:',
-            $question->statement,
+            QuestionTextRenderer::toPromptText($question->statement),
             'Alternativas:',
             $alternatives,
             'Gabarito informado: '.($question->answer_key ? strtoupper($question->answer_key) : 'não informado'),

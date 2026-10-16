@@ -1245,6 +1245,18 @@ html[data-theme="light"] .lesson-ai-panel details {
     padding: .05rem .22rem;
 }
 
+.question-rich-text u,
+[data-question-card] button u {
+    text-decoration-line: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+}
+
+.question-rich-text em,
+[data-question-card] button em {
+    font-style: italic;
+}
+
 html[data-theme="light"] .question-rich-text strong,
 html[data-theme="light"] [data-question-card] button strong {
     color: var(--vc-heading);
