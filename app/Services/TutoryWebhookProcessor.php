@@ -9,6 +9,7 @@ use App\Models\WebhookEvent;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
+use Throwable;
 
 class TutoryWebhookProcessor
 {
@@ -18,7 +19,9 @@ class TutoryWebhookProcessor
 
     public function process(array $payload): WebhookEvent
     {
-        return DB::transaction(function () use ($payload) {
+        $sendAccessNotification = null;
+
+        $event = DB::transaction(function () use ($payload, &$sendAccessNotification) {
             $eventId = $payload['event_id'] ?? $payload['id'] ?? $payload['sessao'] ?? null;
             $eventType = $payload['event_type'] ?? $payload['type'] ?? $payload['evento'] ?? ($payload['purchase']['status'] ?? null);
 
@@ -79,10 +82,11 @@ class TutoryWebhookProcessor
             }
 
             if (($user->isStudent() || $user->isSubscriber()) && ! $existingUser) {
-                $token = Password::broker('first_access')->createToken($user);
-                $user->sendSetPasswordNotification($token);
+                $sendAccessNotification = fn () => $user->sendSetPasswordNotification(
+                    Password::broker('first_access')->createToken($user),
+                );
             } elseif ($user->isStudent() && $linkedCourses->isNotEmpty()) {
-                $user->sendCourseAccessGrantedNotification($linkedCourses);
+                $sendAccessNotification = fn () => $user->sendCourseAccessGrantedNotification($linkedCourses);
             }
 
             $event->update([
@@ -94,6 +98,26 @@ class TutoryWebhookProcessor
 
             return $event;
         });
+
+        if ($sendAccessNotification !== null) {
+            $this->sendAccessNotification($event, $sendAccessNotification);
+        }
+
+        return $event;
+    }
+
+    /**
+     * Roda fora da transação: uma falha de SMTP não pode desfazer a compra já registrada.
+     */
+    protected function sendAccessNotification(WebhookEvent $event, callable $send): void
+    {
+        try {
+            $send();
+        } catch (Throwable $exception) {
+            report($exception);
+
+            $event->update(['error_message' => 'Falha ao enviar e-mail de acesso: '.Str::limit($exception->getMessage(), 200)]);
+        }
     }
 
     public function isApproved(array $payload): bool

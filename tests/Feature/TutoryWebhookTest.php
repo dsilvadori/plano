@@ -10,6 +10,7 @@ use App\Notifications\SetPasswordNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Notification;
+use RuntimeException;
 use Tests\TestCase;
 
 class TutoryWebhookTest extends TestCase
@@ -81,6 +82,28 @@ class TutoryWebhookTest extends TestCase
         $this->assertSame('student', $user->role);
         $this->assertTrue($user->courses()->whereKey($course)->wherePivot('source', 'tutory')->exists());
         Notification::assertSentTo($user, SetPasswordNotification::class);
+    }
+
+    public function test_email_failure_keeps_student_course_and_event_registered(): void
+    {
+        Notification::shouldReceive('send')->once()->andThrow(new RuntimeException('SMTP indisponível'));
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'tutory_product_id' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload(), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'joao@email.com')->first();
+        $event = WebhookEvent::where('event_id', 'evt_123')->first();
+
+        $this->assertNotNull($user);
+        $this->assertTrue($user->courses()->whereKey($course)->exists());
+        $this->assertSame('processed', $event->status);
+        $this->assertStringContainsString('SMTP indisponível', $event->error_message);
     }
 
     public function test_webhook_links_existing_student_to_new_course_and_sends_course_access_email(): void
