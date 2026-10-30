@@ -1,0 +1,2101 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\AiArtifact;
+use App\Models\Course;
+use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
+use App\Models\CourseSphere;
+use App\Models\EducationLevel;
+use App\Models\Lesson;
+use App\Models\LessonComment;
+use App\Models\LessonProgress;
+use App\Models\QuestionBank;
+use App\Models\StudyPlan;
+use App\Models\StudyPlanItem;
+use App\Models\User;
+use App\Notifications\LessonCommentSubmittedNotification;
+use App\Services\LessonCommentGuard;
+use App\Services\LessonSummaryPdfGenerator;
+use App\Services\PandaAiResourceActivator;
+use App\Services\PandaTutorActivator;
+use App\Services\PandaVideoClient;
+use App\Support\LessonTitleNormalizer;
+use Illuminate\Contracts\View\View;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Throwable;
+use Illuminate\Support\Facades\Notification as MailNotification;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+
+class CourseCatalogController extends Controller
+{
+    protected const LESSON_AI_ARTIFACT_TYPES = ['summary', 'quiz', 'mindmap'];
+
+    protected const PANDA_AI_REQUEST_RETRY_MINUTES = 60;
+
+    protected const COURSE_CATALOG_CACHE_SECONDS = 600;
+
+    public function index(): View
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+
+        $accessibleCourseIds = $user->availableCoursesQuery()->pluck('courses.id');
+
+        $featuredCourses = $this->publishedCourses()
+            ->where('is_featured', true)
+            ->with(['sphere', 'educationLevel'])
+            ->withCount(['modules', 'lessons'])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->limit(8)
+            ->get();
+
+        $catalogCourses = $this->publishedCourses()
+            ->with(['sphere', 'educationLevel'])
+            ->withCount(['modules', 'lessons'])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+
+        $coursesBySphere = CourseSphere::query()
+            ->where('is_active', true)
+            ->whereHas('courses', fn (Builder $query) => $this->publishedCourses($query))
+            ->with(['courses' => fn ($query) => $this->publishedCourses($query)
+                ->with(['sphere', 'educationLevel'])
+                ->withCount(['modules', 'lessons'])
+                ->orderBy('sort_order')
+                ->orderBy('name')
+            ])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+
+        $coursesByEducationLevel = EducationLevel::query()
+            ->where('is_active', true)
+            ->whereHas('courses', fn (Builder $query) => $this->publishedCourses($query))
+            ->with(['courses' => fn ($query) => $this->publishedCourses($query)
+                ->with(['sphere', 'educationLevel'])
+                ->withCount(['modules', 'lessons'])
+                ->orderBy('sort_order')
+                ->orderBy('name')
+            ])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+
+        $courseProgress = $this->progressForCourses(
+            $featuredCourses
+                ->concat($catalogCourses)
+                ->concat($coursesBySphere->flatMap->courses)
+                ->concat($coursesByEducationLevel->flatMap->courses),
+            $user,
+        );
+
+        return view('dashboard.courses.index', [
+            'user' => $user,
+            'accessibleCourseIds' => $accessibleCourseIds,
+            'featuredCourses' => $featuredCourses,
+            'catalogCourses' => $catalogCourses,
+            'coursesBySphere' => $coursesBySphere,
+            'coursesByEducationLevel' => $coursesByEducationLevel,
+            'courseProgress' => $courseProgress,
+            'activePlansByCourse' => $this->activePlansByCourse($user),
+        ]);
+    }
+
+    public function mine(): View
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+
+        $courses = $user->availableCoursesQuery()
+            ->where('status', 'published')
+            ->with(['sphere', 'educationLevel'])
+            ->withCount(['modules', 'lessons'])
+            ->orderBy('name')
+            ->get();
+
+        return view('dashboard.courses.mine', [
+            'courses' => $courses,
+            'courseProgress' => $this->progressForCourses($courses, $user),
+            'activePlansByCourse' => $this->activePlansByCourse($user),
+        ]);
+    }
+
+    public function show(Course $course): View
+    {
+        return $this->modules($course);
+    }
+
+    public function modules(Course $course): View
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+
+        $hasAccess = $user->availableCoursesQuery()
+            ->whereKey($course->getKey())
+            ->exists();
+
+        $course->load([
+            'sphere',
+            'educationLevel',
+        ])->loadCount(['lessons']);
+
+        $modules = $this->cachedModulesForCourse($course);
+        $course->setRelation('modules', $modules);
+        $course->setAttribute('modules_count', $modules->count());
+        $course->setAttribute('lessons_count', $this->cachedPublishedLessonsCountForCourse($course));
+
+        return view('dashboard.courses.show', [
+            'course' => $course,
+            'hasAccess' => $hasAccess,
+            'progressSummary' => $this->progressForCourse($course, $user),
+            'completedLessonIds' => $this->completedLessonIdsForCourse($course, $user),
+            'inProgressLessonIds' => $this->inProgressLessonIdsForCourse($course, $user),
+            'continueLesson' => $hasAccess ? $this->continueLessonForCourse($course, $user) : null,
+            'trackEntryLessons' => $hasAccess ? $this->trackEntryLessonsForCourse($course, $user) : collect(),
+            'activePlan' => $hasAccess ? $this->activePlanForCourse($user, $course) : null,
+        ]);
+    }
+
+    public function moduleTracks(Course $course, CourseModule $module): View
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($this->moduleBelongsToCourse($module, $course), 404);
+
+        $hasAccess = $this->userCanAccessCourse($user, $course);
+
+        $module->load(['tracks' => fn ($trackQuery) => $trackQuery
+            ->where('status', 'published')
+            ->where(function (Builder $query) use ($course): void {
+                $query
+                    ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                    ->orWhereHas('module', fn (Builder $query) => $query
+                        ->where('course_id', $course->id)
+                        ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                        ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
+            })
+            ->with([
+                'module.teacher',
+                'teacher',
+            ])
+            ->orderBy('sort_order')
+            ->orderBy('name'),
+        ]);
+        $module->tracks->each(fn (CourseModuleTrack $track) => $track->setRelation(
+            'lessons',
+            $this->publishedLessonsForTrackAndCourse($track, $course)
+        ));
+
+        return view('dashboard.courses.module-tracks', [
+            'course' => $course,
+            'module' => $module,
+            'hasAccess' => $hasAccess,
+            'completedLessonIds' => $this->completedLessonIdsForCourse($course, $user),
+            'inProgressLessonIds' => $this->inProgressLessonIdsForCourse($course, $user),
+            'trackEntryLessons' => $hasAccess ? $this->trackEntryLessonsForCourse($course, $user) : collect(),
+        ]);
+    }
+
+    public function trackLessons(Course $course, CourseModule $module, CourseModuleTrack $track): View
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($this->moduleBelongsToCourse($module, $course), 404);
+        abort_unless($this->trackBelongsToModuleAndCourse($track, $module, $course), 404);
+
+        $hasAccess = $this->userCanAccessCourse($user, $course);
+
+        $track->setRelation('lessons', $this->publishedLessonsForTrackAndCourse($track, $course));
+
+        return view('dashboard.courses.track-lessons', [
+            'course' => $course,
+            'module' => $module,
+            'track' => $track,
+            'hasAccess' => $hasAccess,
+            'completedLessonIds' => $this->completedLessonIdsForCourse($course, $user),
+            'inProgressLessonIds' => $this->inProgressLessonIdsForCourse($course, $user),
+        ]);
+    }
+
+    public function lesson(Course $course, Lesson $lesson, PandaVideoClient $panda, PandaTutorActivator $tutor): View
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+
+        $hasActivePlanLessonAccess = $this->userHasActivePlanLessonAccess($user, $course, $lesson);
+        $courseIsPublished = $course->is_active && $course->status === 'published';
+
+        abort_unless($courseIsPublished || $hasActivePlanLessonAccess, 404);
+
+        $lessonIsViewable = ($lesson->status !== 'archived' || $hasActivePlanLessonAccess)
+            && ($this->lessonBelongsToCourse($lesson, $course) || $hasActivePlanLessonAccess);
+
+        if (! $lessonIsViewable) {
+            Log::warning('course_lesson_not_found_for_student_area', [
+                'user_id' => $user->id,
+                'course_id' => $course->id,
+                'course_slug' => $course->slug,
+                'course_status' => $course->status,
+                'course_is_active' => $course->is_active,
+                'lesson_id' => $lesson->id,
+                'lesson_status' => $lesson->status,
+                'lesson_course_id' => $lesson->course_id,
+                'lesson_module_id' => $lesson->course_module_id,
+                'lesson_track_id' => $lesson->course_module_track_id,
+                'has_active_plan_lesson_access' => $hasActivePlanLessonAccess,
+                'belongs_to_course' => $this->lessonBelongsToCourse($lesson, $course),
+            ]);
+
+            abort(404);
+        }
+
+        abort_unless($this->userCanAccessCourse($user, $course) || $hasActivePlanLessonAccess, 403);
+
+        $lesson->load(['course', 'module', 'video']);
+
+        $this->ensureLessonAiArtifactsAreCached($lesson, $panda);
+        $this->ensurePandaTutorAvailabilityIsCached($lesson, $tutor);
+
+        $lesson->load(['aiArtifacts', 'video.aiArtifacts']);
+        $aiArtifacts = $lesson->video?->aiArtifacts
+            ? $lesson->video->aiArtifacts->concat($lesson->aiArtifacts)->unique('artifact_type')->values()
+            : $lesson->aiArtifacts;
+
+        $progress = LessonProgress::query()
+            ->firstOrCreate([
+                'user_id' => $user->id,
+                'lesson_id' => $lesson->id,
+            ], [
+                'course_id' => $course->id,
+                'status' => 'in_progress',
+                'progress_seconds' => 0,
+            ]);
+
+        if ($progress->status !== 'completed' && $progress->status !== 'in_progress') {
+            $progress->forceFill(['status' => 'in_progress'])->save();
+        }
+
+        $orderedLessons = $this->publishedLessonsForCourse($course)->get();
+        $currentIndex = $orderedLessons->search(fn (Lesson $orderedLesson) => $orderedLesson->is($lesson));
+
+        $planLessonContext = $this->planLessonContextForLesson($user, $course, $lesson);
+
+        return view('dashboard.courses.lesson', [
+            'course' => $course,
+            'lesson' => $lesson,
+            'progress' => $progress->fresh(),
+            'previousLesson' => $currentIndex === false ? null : $orderedLessons->get($currentIndex - 1),
+            'nextLesson' => $currentIndex === false ? null : $orderedLessons->get($currentIndex + 1),
+            'progressSummary' => $this->progressForCourse($course, $user),
+            'aiArtifacts' => $aiArtifacts,
+            'planLessonContext' => $planLessonContext,
+            'trackLessonContext' => $planLessonContext ? null : $this->trackLessonContextForLesson($course, $lesson),
+            'lessonQuestionLinks' => $this->questionLinksForLesson($user, $course, $lesson),
+            'lessonComments' => $this->commentsForLesson($lesson),
+            'pandaTutorUrl' => $this->pandaTutorUrlForLesson($lesson),
+            'pandaTutorCandidateUrl' => $this->pandaTutorCandidateUrlForLesson($lesson),
+            'pandaTutorConfigUrl' => $this->pandaTutorConfigUrlForLesson($lesson),
+            'digitalBookDownloadUrl' => $this->digitalBookPathExists($lesson)
+                ? route('courses.lessons.digital-book.download', [$course->slug, $lesson])
+                : null,
+            'lessonPdfEmbedUrl' => $this->lessonPdfEmbedUrl($course, $lesson),
+        ]);
+    }
+
+    public function storeComment(Course $course, Lesson $lesson, Request $request, LessonCommentGuard $guard): RedirectResponse
+    {
+        $user = $request->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
+        abort_unless($this->userCanAccessCourse($user, $course), 403);
+
+        $data = $request->validate([
+            'body' => ['required', 'string', 'min:8', 'max:2000'],
+        ], [
+            'body.required' => 'Escreva sua dúvida antes de enviar.',
+            'body.min' => 'Escreva uma dúvida um pouco mais detalhada.',
+            'body.max' => 'Sua dúvida ficou muito longa. Tente resumir em até 2000 caracteres.',
+        ]);
+
+        $body = trim((string) $data['body']);
+        $guard->validate($user, $body);
+
+        $comment = LessonComment::query()->create([
+            'user_id' => $user->id,
+            'course_id' => $course->id,
+            'lesson_id' => $lesson->id,
+            'body' => $body,
+            'status' => 'open',
+            'ip_address' => $request->ip(),
+            'user_agent' => substr((string) $request->userAgent(), 0, 512),
+        ]);
+        $comment->load(['user', 'course', 'lesson']);
+
+        MailNotification::route('mail', [
+            'danielsilva.it@gmail.com',
+            'cristianoconcursos@gmail.com',
+            'liliancarol93@gmail.com',
+        ])->notify(new LessonCommentSubmittedNotification($comment));
+
+        return back()->with('status', 'Comentário enviado. Nossa equipe vai responder por aqui.');
+    }
+
+    public function completeLesson(Course $course, Lesson $lesson): RedirectResponse|JsonResponse
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
+        abort_unless($this->userCanAccessCourse($user, $course), 403);
+
+        $completed = request()->boolean('completed', true);
+
+        $progress = LessonProgress::query()->updateOrCreate([
+            'user_id' => $user->id,
+            'lesson_id' => $lesson->id,
+        ], [
+            'course_id' => $course->id,
+            'status' => $completed ? 'completed' : 'in_progress',
+            'progress_seconds' => $completed ? max((int) $lesson->duration_seconds, 0) : 0,
+            'completed_at' => $completed ? now() : null,
+        ]);
+
+        if ($completed) {
+            $this->markLinkedPlanItemsIfReady($user, $lesson);
+        }
+
+        if (request()->expectsJson()) {
+            $progressSummary = $this->progressForCourse($course, $user);
+
+            return response()->json([
+                'completed' => $progress->status === 'completed',
+                'status' => $progress->status,
+                'label' => $progress->status === 'completed' ? 'Aula concluída' : 'Em andamento',
+                'button_label' => $progress->status === 'completed' ? 'Desmarcar como concluída' : 'Marcar como concluída',
+                'progress' => [
+                    'completed' => $progressSummary['completed'],
+                    'total' => $progressSummary['total'],
+                    'percentage' => $progressSummary['percentage'],
+                ],
+            ]);
+        }
+
+        return back()->with('status', $completed ? 'Aula marcada como concluída.' : 'Aula desmarcada como concluída.');
+    }
+
+    public function downloadLessonSummary(Course $course, Lesson $lesson, LessonSummaryPdfGenerator $pdf): Response
+    {
+        $user = request()->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
+        abort_unless($this->userCanAccessCourse($user, $course), 403);
+
+        $summary = $this->lessonSummaryText($lesson);
+
+        abort_if($summary === '', 404);
+
+        $filename = str($lesson->title)
+            ->ascii()
+            ->slug('-')
+            ->prepend('resumo-')
+            ->append('.pdf')
+            ->toString();
+
+        return response($pdf->generate($course, $lesson, $summary), 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="'.$filename.'"',
+        ]);
+    }
+
+    public function showLessonDigitalBook(Course $course, Lesson $lesson): BinaryFileResponse
+    {
+        $this->authorizeLessonDigitalBookAccess(request()->user(), $course, $lesson);
+
+        $path = (string) $lesson->digital_book_path;
+
+        abort_unless($this->safeLocalPdfPathExists($path), 404);
+
+        return response()->file(Storage::disk('local')->path($path), [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="'.$this->digitalBookFilename($lesson).'"',
+        ]);
+    }
+
+    public function downloadLessonDigitalBook(Course $course, Lesson $lesson): BinaryFileResponse
+    {
+        $this->authorizeLessonDigitalBookAccess(request()->user(), $course, $lesson);
+
+        $path = (string) $lesson->digital_book_path;
+
+        abort_unless($this->safeLocalPdfPathExists($path), 404);
+
+        return response()->download(Storage::disk('local')->path($path), $this->digitalBookFilename($lesson), [
+            'Content-Type' => 'application/pdf',
+        ]);
+    }
+
+    public function syncPandaAi(Course $course, Lesson $lesson, PandaAiResourceActivator $activator): RedirectResponse
+    {
+        $user = request()->user();
+
+        abort_unless($user->isAdmin(), 403);
+        abort_unless($course->is_active && $course->status === 'published', 404);
+        abort_unless($lesson->status !== 'archived' && $this->lessonBelongsToCourse($lesson, $course), 404);
+
+        $pandaVideoId = $lesson->panda_video_id ?: (string) data_get($lesson->metadata, 'payload.id');
+
+        if (! $pandaVideoId) {
+            return back()->with('error', 'Esta aula não tem ID de vídeo para gerar IA.');
+        }
+
+        try {
+            $result = $activator->generate($lesson);
+            $createdArtifacts = (int) $result['created_artifacts'];
+
+            if ($createdArtifacts === 0) {
+                return back()->with('status', 'Pacote de IA em português solicitado. O resultado ainda não está disponível; tente sincronizar novamente em alguns minutos.');
+            }
+
+            return back()->with('status', $createdArtifacts > 0
+                ? 'IA da aula sincronizada com sucesso.'
+                : 'A IA retornou dados, mas ainda não encontrei resumo, questões ou mapa mental no payload.');
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return back()->with('error', 'Não foi possível sincronizar a IA da aula: '.$exception->getMessage());
+        }
+    }
+
+    protected function publishedCourses(Builder|Relation|null $query = null): Builder|Relation
+    {
+        return ($query ?? Course::query())
+            ->where('is_active', true)
+            ->where('status', 'published');
+    }
+
+    protected function userCanAccessCourse(User $user, Course $course): bool
+    {
+        return $user->availableCoursesQuery()
+            ->whereKey($course->getKey())
+            ->exists();
+    }
+
+    protected function progressForCourses(EloquentCollection|Collection $courses, User $user): array
+    {
+        $courseIds = $courses
+            ->pluck('id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($courseIds->isEmpty()) {
+            return [];
+        }
+
+        $completedTotals = LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->whereIn('course_id', $courseIds)
+            ->where('status', 'completed')
+            ->selectRaw('course_id, count(*) as completed')
+            ->groupBy('course_id')
+            ->pluck('completed', 'course_id');
+
+        $lessonTotals = $this->cachedPublishedLessonsCountsForCourses($courseIds);
+
+        return $courseIds
+            ->mapWithKeys(function (int $courseId) use ($completedTotals, $lessonTotals) {
+                $total = (int) ($lessonTotals[$courseId] ?? 0);
+                $completed = min((int) ($completedTotals[$courseId] ?? 0), $total);
+
+                return [$courseId => [
+                    'total' => $total,
+                    'completed' => $completed,
+                    'percentage' => $total > 0 ? (int) round(($completed / $total) * 100) : 0,
+                ]];
+            })
+            ->all();
+    }
+
+    protected function activePlansByCourse(User $user): Collection
+    {
+        return $user->studyPlans()
+            ->where('status', 'active')
+            ->latest('id')
+            ->get()
+            ->whereNotNull('course_id')
+            ->unique('course_id')
+            ->keyBy('course_id');
+    }
+
+    protected function activePlanForCourse(User $user, Course $course): ?StudyPlan
+    {
+        return $this->activePlansByCourse($user)->get($course->id);
+    }
+
+    protected function progressForCourse(Course $course, User $user): array
+    {
+        return $this->progressForCourses(collect([$course]), $user)[$course->id] ?? [
+            'total' => 0,
+            'completed' => 0,
+            'percentage' => 0,
+        ];
+    }
+
+    protected function completedLessonIdsForCourse(Course $course, User $user): Collection
+    {
+        return LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->where('course_id', $course->id)
+            ->where('status', 'completed')
+            ->pluck('lesson_id');
+    }
+
+    protected function inProgressLessonIdsForCourse(Course $course, User $user): Collection
+    {
+        return LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->where('course_id', $course->id)
+            ->where('status', 'in_progress')
+            ->whereNull('completed_at')
+            ->pluck('lesson_id');
+    }
+
+    protected function continueLessonForCourse(Course $course, User $user): ?Lesson
+    {
+        $completedLessonIds = $this->completedLessonIdsForCourse($course, $user);
+
+        return $this->publishedLessonsForCourse($course)
+            ->when($completedLessonIds->isNotEmpty(), fn (Builder $query) => $query->whereNotIn('lessons.id', $completedLessonIds))
+            ->first();
+    }
+
+    protected function trackEntryLessonsForCourse(Course $course, User $user): Collection
+    {
+        $trackIds = $course->modules
+            ->flatMap(fn (CourseModule $module) => $module->tracks)
+            ->pluck('id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($trackIds->isEmpty()) {
+            return collect();
+        }
+
+        $orderedLessonsByTrack = $this->courseTrackLessonsBaseQuery($course)
+            ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
+            ->whereIn('course_module_track_lessons.course_module_track_id', $trackIds)
+            ->where('lessons.status', '!=', 'archived')
+            ->select([
+                'course_module_track_lessons.course_module_track_id',
+                'lessons.id as lesson_id',
+                DB::raw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order) as sort_order'),
+                'lessons.sort_order as lesson_sort_order',
+                'lessons.title',
+            ])
+            ->orderBy('course_module_track_lessons.course_module_track_id')
+            ->orderByRaw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order)')
+            ->orderBy('lessons.sort_order')
+            ->orderBy('lessons.title')
+            ->get()
+            ->groupBy('course_module_track_id');
+
+        $lessonIds = $orderedLessonsByTrack
+            ->flatMap(fn (Collection $lessons) => $lessons->pluck('lesson_id'))
+            ->unique()
+            ->values();
+
+        if ($lessonIds->isEmpty()) {
+            return collect();
+        }
+
+        $lessonsById = Lesson::query()
+            ->whereIn('id', $lessonIds)
+            ->get()
+            ->keyBy('id');
+
+        $progressByLesson = LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->where('course_id', $course->id)
+            ->whereIn('lesson_id', $lessonIds)
+            ->orderByDesc('updated_at')
+            ->get()
+            ->keyBy('lesson_id');
+
+        return $orderedLessonsByTrack
+            ->mapWithKeys(function (Collection $trackLessons, int $trackId) use ($lessonsById, $progressByLesson): array {
+                $inProgressLessonId = $trackLessons
+                    ->pluck('lesson_id')
+                    ->filter(function (int $lessonId) use ($progressByLesson): bool {
+                        $progress = $progressByLesson->get($lessonId);
+
+                        return $progress
+                            && $progress->status === 'in_progress'
+                            && $progress->completed_at === null;
+                    })
+                    ->sortByDesc(fn (int $lessonId) => $progressByLesson->get($lessonId)?->updated_at?->timestamp ?? 0)
+                    ->first();
+
+                if ($inProgressLessonId) {
+                    $lesson = $lessonsById->get($inProgressLessonId);
+
+                    return $lesson ? [$trackId => $lesson] : [];
+                }
+
+                $nextLessonId = $trackLessons
+                    ->pluck('lesson_id')
+                    ->first(function (int $lessonId) use ($progressByLesson): bool {
+                        $progress = $progressByLesson->get($lessonId);
+
+                        return ! $progress || $progress->status !== 'completed';
+                    });
+
+                $lesson = $lessonsById->get($nextLessonId ?: (int) $trackLessons->first()->lesson_id);
+
+                return $lesson ? [$trackId => $lesson] : [];
+            });
+    }
+
+    protected function publishedLessonsForTrackAndCourse(CourseModuleTrack $track, Course $course): Collection
+    {
+        return $this->publishedLessonsByTrackForCourse(collect([(int) $track->id]), $course)
+            ->get((int) $track->id, collect())
+            ->values();
+    }
+
+    protected function publishedLessonsByTrackForCourse(Collection $trackIds, Course $course): Collection
+    {
+        $trackIds = $trackIds
+            ->map(fn ($trackId): int => (int) $trackId)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($trackIds->isEmpty()) {
+            return collect();
+        }
+
+        $orderedLessonsByTrack = $this->courseTrackLessonsBaseQuery($course)
+            ->whereIn('course_module_track_lessons.course_module_track_id', $trackIds)
+            ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
+            ->where('lessons.status', '!=', 'archived')
+            ->select([
+                'course_module_track_lessons.course_module_track_id',
+                'lessons.id as lesson_id',
+                DB::raw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order) as course_sort_order'),
+                'lessons.sort_order as lesson_sort_order',
+                'lessons.title',
+            ])
+            ->orderBy('course_module_track_lessons.course_module_track_id')
+            ->orderBy('course_sort_order')
+            ->orderBy('lesson_sort_order')
+            ->orderBy('lessons.title')
+            ->get()
+            ->groupBy('course_module_track_id');
+
+        $lessonIds = $orderedLessonsByTrack
+            ->flatMap(fn (Collection $lessons) => $lessons->pluck('lesson_id'))
+            ->unique()
+            ->values();
+
+        if ($lessonIds->isEmpty()) {
+            return collect();
+        }
+
+        $lessonsById = Lesson::query()
+            ->whereIn('id', $lessonIds)
+            ->get()
+            ->keyBy('id');
+
+        return $orderedLessonsByTrack
+            ->map(fn (Collection $trackLessons): Collection => $trackLessons
+                ->pluck('lesson_id')
+                ->map(fn (int $lessonId): ?Lesson => $lessonsById->get($lessonId))
+                ->filter()
+                ->values());
+    }
+
+    protected function courseTrackLessonsBaseQuery(Course $course)
+    {
+        return DB::table('course_module_track_lessons')
+            ->leftJoin('course_module_track_lesson_course', function ($join) use ($course): void {
+                $join->on('course_module_track_lesson_course.course_module_track_id', '=', 'course_module_track_lessons.course_module_track_id')
+                    ->on('course_module_track_lesson_course.lesson_id', '=', 'course_module_track_lessons.lesson_id')
+                    ->where('course_module_track_lesson_course.course_id', '=', $course->id);
+            })
+            ->where(function ($query) use ($course): void {
+                $query
+                    ->where('course_module_track_lesson_course.status', 'published')
+                    ->orWhereNotExists(function ($query) use ($course): void {
+                        $query->selectRaw('1')
+                            ->from('course_module_track_lesson_course as course_track_scope')
+                            ->whereColumn('course_track_scope.course_module_track_id', 'course_module_track_lessons.course_module_track_id')
+                            ->where('course_track_scope.course_id', $course->id);
+                    });
+            });
+    }
+
+    protected function publishedLessonsForCourse(Course $course): Builder
+    {
+        return Lesson::query()
+            ->select('lessons.*')
+            ->addSelect([
+                'course_module_course.sort_order as course_module_course_sort_order',
+                'course_modules.sort_order as course_module_sort_order',
+                'course_modules.name as course_module_order_name',
+                'course_module_tracks.sort_order as course_module_track_sort_order',
+            ])
+            ->selectRaw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order) as course_track_lesson_sort_order')
+            ->join('course_module_track_lessons', 'course_module_track_lessons.lesson_id', '=', 'lessons.id')
+            ->join('course_module_tracks', 'course_module_tracks.id', '=', 'course_module_track_lessons.course_module_track_id')
+            ->join('course_modules', 'course_modules.id', '=', 'course_module_tracks.course_module_id')
+            ->leftJoin('course_module_course', 'course_module_course.course_module_id', '=', 'course_modules.id')
+            ->leftJoin('course_module_track_course', 'course_module_track_course.course_module_track_id', '=', 'course_module_tracks.id')
+            ->leftJoin('course_module_track_lesson_course', function ($join) use ($course): void {
+                $join->on('course_module_track_lesson_course.course_module_track_id', '=', 'course_module_tracks.id')
+                    ->on('course_module_track_lesson_course.lesson_id', '=', 'lessons.id')
+                    ->where('course_module_track_lesson_course.course_id', '=', $course->id);
+            })
+            ->where(function (Builder $query) use ($course): void {
+                $query
+                    ->where('lessons.course_id', $course->id)
+                    ->orWhere('course_modules.course_id', $course->id)
+                    ->orWhere('course_module_course.course_id', $course->id)
+                    ->orWhere('course_module_track_course.course_id', $course->id)
+                    ->orWhereExists(function ($query) use ($course): void {
+                        $query->selectRaw('1')
+                            ->from('study_track_modules')
+                            ->join('study_tracks', 'study_tracks.id', '=', 'study_track_modules.study_track_id')
+                            ->whereColumn('study_track_modules.course_module_id', 'course_modules.id')
+                            ->where('study_tracks.course_id', $course->id);
+                    });
+            })
+            ->where('course_module_tracks.status', 'published')
+            ->where(function (Builder $query) use ($course): void {
+                $query
+                    ->where('course_module_track_lesson_course.status', 'published')
+                    ->orWhereNotExists(function ($query) use ($course): void {
+                        $query->selectRaw('1')
+                            ->from('course_module_track_lesson_course as course_track_scope')
+                            ->whereColumn('course_track_scope.course_module_track_id', 'course_module_tracks.id')
+                            ->where('course_track_scope.course_id', $course->id);
+                    });
+            })
+            ->where('lessons.status', '!=', 'archived')
+            ->distinct()
+            ->orderBy('course_module_course.sort_order')
+            ->orderBy('course_modules.sort_order')
+            ->orderBy('course_modules.name')
+            ->orderBy('course_module_tracks.sort_order')
+            ->orderByRaw('coalesce(course_module_track_lesson_course.sort_order, course_module_track_lessons.sort_order)')
+            ->orderBy('lessons.title');
+    }
+
+    protected function lessonBelongsToCourse(Lesson $lesson, Course $course): bool
+    {
+        if ((int) $lesson->course_id === (int) $course->id) {
+            return true;
+        }
+
+        $hasCourseTrackScope = DB::table('course_module_track_lesson_course')
+            ->where('course_id', $course->id)
+            ->whereIn('course_module_track_id', $lesson->tracks()->pluck('course_module_tracks.id'))
+            ->exists();
+
+        if ($hasCourseTrackScope) {
+            return DB::table('course_module_track_lesson_course')
+                ->where('course_id', $course->id)
+                ->where('lesson_id', $lesson->id)
+                ->where('status', 'published')
+                ->exists();
+        }
+
+        if ($lesson->module && $this->moduleBelongsToCourse($lesson->module, $course)) {
+            return true;
+        }
+
+        if ($lesson->modules()
+            ->get()
+            ->contains(fn (CourseModule $module): bool => $this->moduleBelongsToCourse($module, $course))) {
+            return true;
+        }
+
+        if ($lesson->studyPlanItems()
+            ->whereHas('studyPlan', fn (Builder $query) => $query->where('course_id', $course->id))
+            ->exists()) {
+            return true;
+        }
+
+        return $lesson->tracks()
+            ->where(function (Builder $query) use ($course): void {
+                $query
+                    ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                    ->orWhereHas('module.courses', fn (Builder $query) => $query->whereKey($course->id))
+                    ->orWhereHas('module', fn (Builder $query) => $query->where('course_id', $course->id));
+            })
+            ->where(function (Builder $query) use ($course, $lesson): void {
+                $query
+                    ->whereExists(function ($query) use ($course, $lesson): void {
+                        $query->selectRaw('1')
+                            ->from('course_module_track_lesson_course')
+                            ->whereColumn('course_module_track_lesson_course.course_module_track_id', 'course_module_tracks.id')
+                            ->where('course_module_track_lesson_course.course_id', $course->id)
+                            ->where('course_module_track_lesson_course.lesson_id', $lesson->id)
+                            ->where('course_module_track_lesson_course.status', 'published');
+                    })
+                    ->orWhereNotExists(function ($query) use ($course): void {
+                        $query->selectRaw('1')
+                            ->from('course_module_track_lesson_course as course_track_scope')
+                            ->whereColumn('course_track_scope.course_module_track_id', 'course_module_tracks.id')
+                            ->where('course_track_scope.course_id', $course->id);
+                    });
+            })
+            ->exists();
+    }
+
+    protected function authorizeLessonDigitalBookAccess(User $user, Course $course, Lesson $lesson): void
+    {
+        abort_unless($user->canAccessStudentArea(), 403);
+
+        $hasActivePlanLessonAccess = $this->userHasActivePlanLessonAccess($user, $course, $lesson);
+        $courseIsPublished = $course->is_active && $course->status === 'published';
+
+        abort_unless($courseIsPublished || $hasActivePlanLessonAccess, 404);
+        abort_unless($lesson->status !== 'archived' || $hasActivePlanLessonAccess, 404);
+        abort_unless($this->lessonBelongsToCourse($lesson, $course) || $hasActivePlanLessonAccess, 404);
+        abort_unless($this->userCanAccessCourse($user, $course) || $hasActivePlanLessonAccess, 403);
+    }
+
+    protected function lessonPdfEmbedUrl(Course $course, Lesson $lesson): ?string
+    {
+        if ($lesson->type !== 'pdf') {
+            return null;
+        }
+
+        if ($this->digitalBookPathExists($lesson)) {
+            return route('courses.lessons.digital-book.show', [$course->slug, $lesson]);
+        }
+
+        $driveFileId = (string) data_get($lesson->metadata, 'drive_file_id', '');
+
+        if ($driveFileId !== '') {
+            return 'https://drive.google.com/file/d/'.rawurlencode($driveFileId).'/preview';
+        }
+
+        return $this->googleDrivePreviewUrl((string) $lesson->google_doc_url) ?: $lesson->google_doc_url;
+    }
+
+    protected function googleDrivePreviewUrl(string $url): ?string
+    {
+        if ($url === '' || ! str_contains($url, 'drive.google.com')) {
+            return null;
+        }
+
+        if (preg_match('~/file/d/([^/]+)~', $url, $matches)) {
+            return 'https://drive.google.com/file/d/'.rawurlencode($matches[1]).'/preview';
+        }
+
+        if (preg_match('~[?&]id=([^&]+)~', $url, $matches)) {
+            return 'https://drive.google.com/file/d/'.rawurlencode($matches[1]).'/preview';
+        }
+
+        return null;
+    }
+
+    protected function digitalBookPathExists(Lesson $lesson): bool
+    {
+        return $this->safeLocalPdfPathExists((string) $lesson->digital_book_path);
+    }
+
+    protected function safeLocalPdfPathExists(string $path): bool
+    {
+        return $path !== ''
+            && ! str_starts_with($path, '/')
+            && ! str_contains($path, '..')
+            && str_ends_with(strtolower($path), '.pdf')
+            && Storage::disk('local')->exists($path);
+    }
+
+    protected function digitalBookFilename(Lesson $lesson): string
+    {
+        $pathFilename = basename((string) $lesson->digital_book_path);
+
+        if ($pathFilename !== '' && $pathFilename !== '.') {
+            return $pathFilename;
+        }
+
+        return str($lesson->title)
+            ->ascii()
+            ->slug('-')
+            ->append('.pdf')
+            ->toString();
+    }
+
+    protected function userHasActivePlanLessonAccess(User $user, Course $course, Lesson $lesson): bool
+    {
+        return $lesson->studyPlanItems()
+            ->whereHas('studyPlan', fn (Builder $query) => $query
+                ->where('user_id', $user->id)
+                ->where('course_id', $course->id)
+                ->where('status', 'active'))
+            ->exists();
+    }
+
+    protected function moduleBelongsToCourse(CourseModule $module, Course $course): bool
+    {
+        if ((int) $module->course_id === (int) $course->id) {
+            return true;
+        }
+
+        if ($module->courses()->whereKey($course->id)->exists()) {
+            return true;
+        }
+
+        if ($module->studyTracks()->where('course_id', $course->id)->exists()) {
+            return true;
+        }
+
+        return $module->tracks()
+            ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+            ->exists();
+    }
+
+    protected function trackBelongsToModuleAndCourse(CourseModuleTrack $track, CourseModule $module, Course $course): bool
+    {
+        if ((int) $track->course_module_id !== (int) $module->id) {
+            return false;
+        }
+
+        if ($track->courses()->whereKey($course->id)->exists()) {
+            return true;
+        }
+
+        return $this->moduleBelongsToCourse($module, $course);
+    }
+
+    protected function modulesForCourse(Course $course): EloquentCollection
+    {
+        $modules = CourseModule::query()
+            ->where('is_active', true)
+            ->where(function (Builder $query) use ($course): void {
+                $query
+                    ->where('course_id', $course->id)
+                    ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                    ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id))
+                    ->orWhereHas('tracks.courses', fn (Builder $query) => $query->whereKey($course->id));
+            })
+            ->with(['tracks' => fn ($trackQuery) => $trackQuery
+                ->where('status', 'published')
+                ->where(function (Builder $query) use ($course): void {
+                    $query
+                        ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                        ->orWhereHas('module', fn (Builder $query) => $query
+                            ->where('course_id', $course->id)
+                            ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                            ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
+                })
+                ->with([
+                    'module.teacher',
+                    'teacher',
+                ])
+                ->orderBy('sort_order')
+                ->orderBy('name'),
+            ])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+
+        return $this->setCourseScopedTrackLessons($modules, $course);
+    }
+
+    protected function setCourseScopedTrackLessons(EloquentCollection $modules, Course $course): EloquentCollection
+    {
+        $trackIds = $modules
+            ->flatMap(fn (CourseModule $module): Collection => $module->tracks)
+            ->pluck('id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        $lessonsByTrack = $this->publishedLessonsByTrackForCourse($trackIds, $course);
+
+        $modules->each(function (CourseModule $module) use ($lessonsByTrack): void {
+            $module->tracks->each(function (CourseModuleTrack $track) use ($lessonsByTrack): void {
+                $track->setRelation('lessons', $lessonsByTrack->get((int) $track->id, collect()));
+            });
+        });
+
+        return $modules;
+    }
+
+    protected function cachedModulesForCourse(Course $course): EloquentCollection
+    {
+        if (app()->environment('testing')) {
+            return $this->modulesForCourse($course);
+        }
+
+        $cacheKey = $this->catalogModulesCacheKey($course);
+        $cachedModules = Cache::get($cacheKey);
+
+        if ($cachedModules instanceof EloquentCollection) {
+            return $cachedModules;
+        }
+
+        if ($cachedModules !== null) {
+            Cache::forget($cacheKey);
+        }
+
+        $modules = $this->modulesForCourse($course);
+        Cache::put($cacheKey, $modules, self::COURSE_CATALOG_CACHE_SECONDS);
+
+        return $modules;
+    }
+
+    protected function cachedPublishedLessonsCountForCourse(Course $course): int
+    {
+        if (app()->environment('testing')) {
+            return (int) $this->publishedLessonsForCourse($course)->count('lessons.id');
+        }
+
+        return (int) Cache::remember(
+            $this->publishedLessonsCountCacheKey($course),
+            self::COURSE_CATALOG_CACHE_SECONDS,
+            fn (): int => (int) $this->publishedLessonsForCourse($course)->count('lessons.id'),
+        );
+    }
+
+    public static function forgetCourseCatalogCache(int $courseId): void
+    {
+        Cache::forget(self::catalogModulesCacheKeyForCourseId($courseId));
+        Cache::forget(self::publishedLessonsCountCacheKeyForCourseId($courseId));
+    }
+
+    protected function catalogModulesCacheKey(Course $course): string
+    {
+        return self::catalogModulesCacheKeyForCourseId((int) $course->id);
+    }
+
+    protected function publishedLessonsCountCacheKey(Course $course): string
+    {
+        return self::publishedLessonsCountCacheKeyForCourseId((int) $course->id);
+    }
+
+    protected static function catalogModulesCacheKeyForCourseId(int $courseId): string
+    {
+        return "course:{$courseId}:catalog-modules:v3";
+    }
+
+    protected static function publishedLessonsCountCacheKeyForCourseId(int $courseId): string
+    {
+        return "course:{$courseId}:published-lessons-count:v2";
+    }
+
+    protected function cachedPublishedLessonsCountsForCourses(Collection $courseIds): array
+    {
+        return $courseIds
+            ->mapWithKeys(function (int $courseId): array {
+                $course = Course::query()->find($courseId);
+
+                return [$courseId => $course instanceof Course
+                    ? $this->cachedPublishedLessonsCountForCourse($course)
+                    : 0];
+            })
+            ->all();
+    }
+
+    protected function planLessonContextForLesson(User $user, Course $course, Lesson $lesson): ?array
+    {
+        $currentItem = $this->planItemFromRequestContext($user, $course, $lesson) ?? StudyPlanItem::query()
+            ->whereHas('studyPlan', fn (Builder $query) => $query
+                ->where('user_id', $user->id)
+                ->where('course_id', $course->id)
+                ->where('status', 'active'))
+            ->whereHas('lessons', fn (Builder $query) => $query->whereKey($lesson->id))
+            ->with('studyPlan')
+            ->orderBy('scheduled_date')
+            ->orderBy('sort_order')
+            ->first();
+
+        if (! $currentItem || ! $currentItem->scheduled_date) {
+            return null;
+        }
+
+        $dayItems = StudyPlanItem::query()
+            ->where('study_plan_id', $currentItem->study_plan_id)
+            ->whereDate('scheduled_date', $currentItem->scheduled_date)
+            ->with(['courseModule', 'lessons'])
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        $lessonRowsByItemId = $this->planSidebarLessonRowsByItemId($currentItem->studyPlan, $dayItems, $course);
+
+        $completedLessonIds = LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->where('status', 'completed')
+            ->whereIn('lesson_id', collect($lessonRowsByItemId)->flatMap(fn (array $rows): array => collect($rows)->pluck('id')->filter()->all())->unique())
+            ->pluck('lesson_id')
+            ->all();
+
+        return [
+            'plan' => $currentItem->studyPlan,
+            'current_item_id' => $currentItem->id,
+            'date_label' => $currentItem->scheduled_date->translatedFormat('d/m/Y'),
+            'items' => $dayItems,
+            'lesson_rows_by_item_id' => $lessonRowsByItemId,
+            'completed_lesson_ids' => $completedLessonIds,
+        ];
+    }
+
+    protected function planItemFromRequestContext(User $user, Course $course, Lesson $lesson): ?StudyPlanItem
+    {
+        $planId = (int) request()->query('plan_id', 0);
+        $itemId = (int) request()->query('plan_item_id', 0);
+
+        if ($planId <= 0 || $itemId <= 0) {
+            return null;
+        }
+
+        $item = StudyPlanItem::query()
+            ->whereKey($itemId)
+            ->where('study_plan_id', $planId)
+            ->whereHas('studyPlan', fn (Builder $query) => $query
+                ->where('user_id', $user->id)
+                ->where('course_id', $course->id)
+                ->where('status', 'active'))
+            ->with('studyPlan')
+            ->first();
+
+        if (! $item) {
+            return null;
+        }
+
+        if ($item->lessons()->whereKey($lesson->id)->exists()) {
+            return $item;
+        }
+
+        if ((int) $lesson->course_module_id === (int) $item->course_module_id) {
+            return $item;
+        }
+
+        return $item->course_module_id && $lesson->modules()->whereKey($item->course_module_id)->exists()
+            ? $item
+            : null;
+    }
+
+    protected function planSidebarLessonRowsByItemId(StudyPlan $plan, Collection $dayItems, Course $course): array
+    {
+        $weekNumber = (int) ($dayItems->first()?->week_number ?? 0);
+
+        if ($weekNumber <= 0) {
+            return [];
+        }
+
+        $weekItems = StudyPlanItem::query()
+            ->where('study_plan_id', $plan->id)
+            ->where('week_number', $weekNumber)
+            ->with(['courseModule.onlineLessons', 'lessons'])
+            ->orderBy('scheduled_date')
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        $modules = $weekItems->pluck('courseModule')->filter()->unique('id')->values();
+        $this->loadSidebarPlanningRelations($modules, $course);
+
+        $lessonStates = [];
+        $rowsByItemId = [];
+        $dayItemIds = $dayItems->pluck('id')->flip();
+
+        foreach ($weekItems as $item) {
+            $module = $item->courseModule;
+            $isDayItem = $dayItemIds->has($item->id);
+            $linkedRows = $item->lessons->isNotEmpty()
+                ? $this->sidebarRowsFromLessons($item->orderedLessonsForDisplay(), $course)
+                : [];
+
+            if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
+                continue;
+            }
+
+            $moduleId = (int) $module->id;
+            $lessonStates[$moduleId] ??= [
+                'index' => 0,
+                'lessons' => $this->sidebarPlanningLessonsForModule($module),
+            ];
+            $selection = $this->buildSidebarLessonSelection($module, (int) $item->estimated_minutes, $lessonStates[$moduleId], $course);
+            $lessonStates[$moduleId] = $selection['state'];
+            $computedRows = $selection['lessons'];
+
+            if ($computedRows === []) {
+                $computedRows = $this->sidebarLessonRowsFromDescription($module, $item, $course);
+            }
+
+            if (! $isDayItem) {
+                continue;
+            }
+
+            $rows = count($linkedRows) >= count($computedRows) && $linkedRows !== []
+                ? $linkedRows
+                : $this->resolveSidebarRows($computedRows, $module, $course);
+
+            $rowsByItemId[$item->id] = $this->withPlanSidebarUrls($rows, $plan, $item);
+        }
+
+        return $rowsByItemId;
+    }
+
+    protected function withPlanSidebarUrls(array $rows, StudyPlan $plan, StudyPlanItem $item): array
+    {
+        return collect($rows)
+            ->map(function (array $row) use ($plan, $item): array {
+                $lessonId = (int) ($row['id'] ?? 0);
+
+                if ($lessonId <= 0) {
+                    return $row;
+                }
+
+                return array_merge($row, [
+                    'url' => route('study-plans.items.lessons.show', [$plan, $item, $lessonId]),
+                ]);
+            })
+            ->values()
+            ->all();
+    }
+
+    protected function loadSidebarPlanningRelations(Collection $modules, Course $course): void
+    {
+        $modules->each(function (CourseModule $module) use ($course): void {
+            $module->loadMissing(['onlineLessons' => fn ($query) => $query
+                ->select([
+                    'lessons.id',
+                    'lessons.course_id',
+                    'lessons.course_module_id',
+                    'lessons.course_module_track_id',
+                    'lessons.title',
+                    'lessons.duration_seconds',
+                    'lessons.status',
+                    'lessons.sort_order',
+                ])]);
+            $module->setRelation('tracks', $module->tracks()
+                ->where('status', 'published')
+                ->where(function (Builder $query) use ($course): void {
+                    $query
+                        ->whereDoesntHave('courses')
+                        ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id));
+                })
+                ->with(['lessons' => fn ($query) => $query
+                    ->select([
+                        'lessons.id',
+                        'lessons.course_id',
+                        'lessons.course_module_id',
+                        'lessons.course_module_track_id',
+                        'lessons.title',
+                        'lessons.duration_seconds',
+                        'lessons.status',
+                        'lessons.sort_order',
+                    ])
+                    ->where('lessons.status', '!=', 'archived')])
+                ->orderBy('sort_order')
+                ->orderBy('name')
+                ->get());
+        });
+    }
+
+    protected function sidebarPlanningLessonsForModule(CourseModule $module): array
+    {
+        $trackLessons = $module->tracks
+            ->sortBy([
+                ['sort_order', 'asc'],
+                ['name', 'asc'],
+            ])
+            ->flatMap(function (CourseModuleTrack $track): Collection {
+                return $track->lessons
+                    ->map(fn (Lesson $lesson, int $index): array => [
+                        'lesson_id' => $lesson->id,
+                        'name' => trim((string) $lesson->title) ?: ($track->name.' - Aula '.($index + 1)),
+                        'minutes' => max(1, (int) $lesson->duration_minutes),
+                        'track_name' => (string) $track->name,
+                    ])
+                    ->filter(fn (array $lesson): bool => $lesson['minutes'] > 0)
+                    ->values();
+            })
+            ->values()
+            ->all();
+
+        if ($trackLessons !== []) {
+            return $trackLessons;
+        }
+
+        $availableLessons = $this->sidebarAvailableLessonsForModule($module);
+
+        return collect($module->planning_lessons)
+            ->map(function (array $lesson) use ($availableLessons): array {
+                $matchedLesson = $availableLessons->first(fn (Lesson $candidate): bool => $this->sidebarLessonKey($candidate->title) === $this->sidebarLessonKey((string) ($lesson['name'] ?? '')));
+
+                return [
+                    'lesson_id' => $matchedLesson?->id,
+                    'name' => (string) ($lesson['name'] ?? ''),
+                    'minutes' => $matchedLesson ? max(1, (int) $matchedLesson->duration_minutes) : max(1, (int) ($lesson['minutes'] ?? 0)),
+                    'track_name' => '',
+                ];
+            })
+            ->filter(fn (array $lesson): bool => $lesson['name'] !== '' && $lesson['minutes'] > 0)
+            ->values()
+            ->all();
+    }
+
+    protected function buildSidebarLessonSelection(CourseModule $module, int $availableMinutes, array $state, Course $course): array
+    {
+        $lessons = $state['lessons'] ?? [];
+        $index = (int) ($state['index'] ?? 0);
+        $minutes = 0;
+        $itemLessons = [];
+        $currentTrackName = null;
+
+        while ($index < count($lessons)) {
+            $lesson = $lessons[$index];
+            $lessonMinutes = (int) ($lesson['minutes'] ?? 0);
+            $lessonTrackName = trim((string) ($lesson['track_name'] ?? ''));
+
+            if ($lessonMinutes <= 0) {
+                $index++;
+
+                continue;
+            }
+
+            if ($minutes > 0 && $currentTrackName !== null && $lessonTrackName !== '' && $lessonTrackName !== $currentTrackName) {
+                break;
+            }
+
+            if ($currentTrackName === null && $lessonTrackName !== '') {
+                $currentTrackName = $lessonTrackName;
+            }
+
+            $remainingBlockMinutes = max(0, $availableMinutes - $minutes);
+
+            if ($remainingBlockMinutes <= 0) {
+                break;
+            }
+
+            if ($lessonMinutes > $remainingBlockMinutes && $minutes > 0) {
+                break;
+            }
+
+            $displayMinutes = $lessonMinutes;
+            $lessonName = (string) ($lesson['name'] ?? $module->name);
+            $itemLessons[] = [
+                'id' => $lesson['lesson_id'] ?? null,
+                'name' => $lessonName,
+                'minutes' => $displayMinutes,
+                'url' => isset($lesson['lesson_id']) ? route('courses.lessons.show', [$course->slug, $lesson['lesson_id']]) : null,
+            ];
+
+            $minutes += $displayMinutes;
+            $index++;
+        }
+
+        $state['index'] = $index;
+
+        return [
+            'lessons' => $itemLessons,
+            'state' => $state,
+        ];
+    }
+
+    protected function sidebarLessonRowsFromDescription(CourseModule $module, StudyPlanItem $item, Course $course): array
+    {
+        if (! preg_match('/Aulas do bloco:\s*(.+)$/u', (string) $item->description, $matches)) {
+            return [];
+        }
+
+        $lessonNames = collect(preg_split('/,\s*|\s+e\s+(?=\d{1,3}\s+-)/u', $matches[1]) ?: [])
+            ->map(fn (string $name): string => trim($name, " \t\n\r\0\x0B."))
+            ->filter()
+            ->values();
+        $availableLessons = $this->sidebarAvailableLessonsForModule($module);
+        $matchedSplitLessonCount = $lessonNames
+            ->filter(fn (string $lessonName): bool => $availableLessons->contains(
+                fn (Lesson $lesson): bool => $this->sidebarLessonKey($lesson->title) === $this->sidebarLessonKey($lessonName)
+            ))
+            ->count();
+
+        if ($matchedSplitLessonCount === 0 && $availableLessons->isNotEmpty()) {
+            $descriptionLessonKey = $this->sidebarLessonKey($lessonNames->implode(' '));
+            $lessonNames = $availableLessons
+                ->filter(fn (Lesson $lesson): bool => $descriptionLessonKey !== ''
+                    && str_contains($descriptionLessonKey, $this->sidebarLessonKey($lesson->title)))
+                ->pluck('title')
+                ->values();
+        }
+
+        $usedMinutes = 0;
+
+        return $lessonNames
+            ->map(function (string $lessonName) use ($availableLessons, $course): array {
+                $matchedLesson = $availableLessons->first(fn (Lesson $lesson): bool => $this->sidebarLessonKey($lesson->title) === $this->sidebarLessonKey($lessonName));
+
+                return [
+                    'id' => $matchedLesson?->id,
+                    'name' => $matchedLesson?->title ?? $lessonName,
+                    'minutes' => $matchedLesson ? max(1, (int) $matchedLesson->duration_minutes) : 0,
+                    'url' => $matchedLesson ? route('courses.lessons.show', [$course->slug, $matchedLesson]) : null,
+                ];
+            })
+            ->filter(function (array $row) use (&$usedMinutes, $item): bool {
+                $minutes = max(0, (int) ($row['minutes'] ?? 0));
+
+                if ($minutes <= 0 || $usedMinutes + $minutes > (int) $item->estimated_minutes) {
+                    return false;
+                }
+
+                $usedMinutes += $minutes;
+
+                return true;
+            })
+            ->values()
+            ->all();
+    }
+
+    protected function resolveSidebarRows(array $rows, CourseModule $module, Course $course): array
+    {
+        $availableLessons = $this->sidebarAvailableLessonsForModule($module);
+
+        return collect($rows)
+            ->map(function (array $row) use ($availableLessons, $course): array {
+                $lessonId = (int) ($row['id'] ?? $row['lesson_id'] ?? 0);
+                $matchedLesson = $lessonId > 0
+                    ? $availableLessons->first(fn (Lesson $lesson): bool => (int) $lesson->id === $lessonId)
+                    : $availableLessons->first(fn (Lesson $lesson): bool => $this->sidebarLessonKey($lesson->title) === $this->sidebarLessonKey((string) ($row['name'] ?? '')));
+
+                return [
+                    'id' => $matchedLesson?->id,
+                    'name' => $matchedLesson?->title ?? (string) ($row['name'] ?? ''),
+                    'minutes' => $matchedLesson ? max(1, (int) $matchedLesson->duration_minutes) : max(0, (int) ($row['minutes'] ?? 0)),
+                    'url' => $matchedLesson ? route('courses.lessons.show', [$course->slug, $matchedLesson]) : null,
+                ];
+            })
+            ->filter(fn (array $row): bool => $row['name'] !== '')
+            ->values()
+            ->all();
+    }
+
+    protected function sidebarRowsFromLessons(Collection $lessons, Course $course): array
+    {
+        return $lessons
+            ->map(fn (Lesson $lesson): array => [
+                'id' => $lesson->id,
+                'name' => $lesson->title,
+                'minutes' => max(1, (int) $lesson->duration_minutes),
+                'url' => route('courses.lessons.show', [$course->slug, $lesson]),
+            ])
+            ->values()
+            ->all();
+    }
+
+    protected function sidebarAvailableLessonsForModule(CourseModule $module): Collection
+    {
+        return ($module->relationLoaded('onlineLessons') ? $module->onlineLessons : collect())
+            ->merge($module->relationLoaded('tracks') ? $module->tracks->flatMap->lessons : collect())
+            ->unique('id')
+            ->filter(fn (Lesson $lesson): bool => $lesson->status !== 'archived')
+            ->values();
+    }
+
+    protected function sidebarLessonKey(string $name): string
+    {
+        return LessonTitleNormalizer::matchKey(preg_replace('/^Continuação:\s*/u', '', $name) ?: $name);
+    }
+
+    protected function trackLessonContextForLesson(Course $course, Lesson $lesson): ?array
+    {
+        $trackIds = collect([$lesson->course_module_track_id])
+            ->merge($lesson->tracks()->pluck('course_module_tracks.id'))
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($trackIds->isEmpty()) {
+            return null;
+        }
+
+        $tracks = CourseModuleTrack::query()
+            ->whereIn('id', $trackIds)
+            ->where(function (Builder $query) use ($course): void {
+                $query
+                    ->whereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                    ->orWhereHas('module', fn (Builder $query) => $query
+                        ->where('course_id', $course->id)
+                        ->orWhereHas('courses', fn (Builder $query) => $query->whereKey($course->id))
+                        ->orWhereHas('studyTracks', fn (Builder $query) => $query->where('course_id', $course->id)));
+            })
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+
+        foreach ($tracks as $track) {
+            $lessons = $this->publishedLessonsForTrackAndCourse($track, $course);
+
+            if ($lessons->contains(fn (Lesson $trackLesson): bool => $trackLesson->is($lesson))) {
+                return [
+                    'track' => $track,
+                    'lessons' => $lessons,
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    protected function commentsForLesson(Lesson $lesson): Collection
+    {
+        return $lesson->comments()
+            ->with(['user', 'answeredBy'])
+            ->whereIn('status', ['open', 'answered'])
+            ->latest()
+            ->limit(20)
+            ->get();
+    }
+
+    protected function questionLinksForLesson(User $user, Course $course, Lesson $lesson): Collection
+    {
+        $moduleIds = collect([$lesson->course_module_id])
+            ->merge($lesson->modules()->pluck('course_modules.id'))
+            ->filter()
+            ->unique()
+            ->values();
+
+        $lessonBanks = $this->publishedQuestionBanks()
+            ->whereHas('lessons', fn (Builder $query) => $query->whereKey($lesson->id))
+            ->with(['lessons:id,title', 'tracks:id,name', 'modules:id,name'])
+            ->orderBy('title')
+            ->get();
+
+        $banks = $lessonBanks->isNotEmpty()
+            ? $lessonBanks
+            : ($moduleIds->isEmpty()
+                ? collect()
+                : $this->publishedQuestionBanks()
+                    ->whereHas('modules', fn (Builder $query) => $query->whereIn('course_modules.id', $moduleIds))
+                    ->with(['lessons:id,title', 'tracks:id,name', 'modules:id,name'])
+                    ->orderBy('title')
+                    ->get());
+
+        $plan = $user->studyPlans()
+            ->where('course_id', $course->id)
+            ->where('status', 'active')
+            ->latest('id')
+            ->first();
+
+        return $banks
+            ->map(function (QuestionBank $bank) use ($lesson, $moduleIds, $plan): array {
+                $bankModuleIds = $bank->modules->pluck('id');
+
+                $hasLessonMatch = $bank->lessons->contains(fn (Lesson $linkedLesson): bool => (int) $linkedLesson->id === (int) $lesson->id);
+                $matchedModuleId = $bankModuleIds->first(fn (int $moduleId): bool => $moduleIds->contains($moduleId));
+
+                $params = $hasLessonMatch
+                    ? ['lesson_id' => $lesson->id]
+                    : ['module_id' => $matchedModuleId];
+
+                if ($plan) {
+                    $params['plan_id'] = $plan->id;
+                }
+
+                $scope = $hasLessonMatch ? 'Aula atual' : 'Módulo';
+
+                return [
+                    'label' => 'Resolver questões: '.$bank->title,
+                    'scope' => $scope,
+                    'url' => route('questions.show', [$bank] + $params),
+                    'priority' => $hasLessonMatch ? 1 : 2,
+                ];
+            })
+            ->sortBy([
+                ['priority', 'asc'],
+                ['label', 'asc'],
+            ])
+            ->values();
+    }
+
+    protected function publishedQuestionBanks(): Builder
+    {
+        return QuestionBank::query()
+            ->where('status', 'published')
+            ->whereHas('questions', fn (Builder $query) => $query->where('status', 'published'));
+    }
+
+    protected function markLinkedPlanItemsIfReady(User $user, Lesson $lesson): void
+    {
+        $items = StudyPlanItem::query()
+            ->whereNull('completed_at')
+            ->whereHas('studyPlan', fn (Builder $query) => $query
+                ->where('user_id', $user->id)
+                ->where('status', 'active'))
+            ->whereHas('lessons', fn (Builder $query) => $query->whereKey($lesson->id))
+            ->with('lessons')
+            ->get();
+
+        if ($items->isEmpty()) {
+            return;
+        }
+
+        $completedLessonIds = LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->where('status', 'completed')
+            ->whereIn('lesson_id', $items->flatMap->lessons->pluck('id')->unique())
+            ->pluck('lesson_id');
+
+        foreach ($items as $item) {
+            $linkedLessonIds = $item->lessons->pluck('id');
+
+            if ($linkedLessonIds->isNotEmpty() && $linkedLessonIds->diff($completedLessonIds)->isEmpty()) {
+                $item->forceFill(['completed_at' => now()])->save();
+            }
+        }
+    }
+
+    protected function syncPandaAiArtifactsFromPayload(Lesson $lesson, array $payload): int
+    {
+        $artifacts = [
+            'summary' => $this->firstAiPayloadValue($payload, ['summary', 'abstract', 'ebook', 'eBook', 'data.summary', 'data.abstract']),
+            'quiz' => $this->firstAiPayloadValue($payload, ['quiz', 'questions', 'data.quiz', 'data.questions']),
+            'mindmap' => $this->firstAiPayloadValue($payload, ['mindmap', 'mind_map', 'mindMap', 'data.mindmap', 'data.mind_map', 'data.mindMap']),
+        ];
+
+        $created = 0;
+
+        foreach ($artifacts as $type => $content) {
+            if (blank($content)) {
+                continue;
+            }
+
+            AiArtifact::query()->updateOrCreate([
+                'source_type' => Lesson::class,
+                'source_id' => $lesson->id,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+            ], [
+                'status' => 'ready',
+                'content' => is_array($content) ? $content : ['text' => (string) $content],
+                'metadata' => [
+                    'panda_video_id' => $lesson->panda_video_id,
+                    'video_external_id' => $this->pandaVideoExternalId($lesson),
+                    'imported_at' => now()->toIso8601String(),
+                ],
+            ]);
+
+            $created++;
+        }
+
+        AiArtifact::query()->updateOrCreate([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'panda_payload',
+            'provider' => 'panda',
+        ], [
+            'status' => 'ready',
+            'content' => $payload,
+            'metadata' => [
+                'panda_video_id' => $lesson->panda_video_id,
+                'video_external_id' => $this->pandaVideoExternalId($lesson),
+                'imported_at' => now()->toIso8601String(),
+            ],
+        ]);
+
+        return $created;
+    }
+
+    protected function ensureLessonAiArtifactsAreCached(Lesson $lesson, PandaVideoClient $panda): void
+    {
+        if (! config('services.panda.ai_auto_sync', true) || ! $this->lessonAiAutoSyncEnabled($lesson) || blank(config('services.panda.api_key'))) {
+            return;
+        }
+
+        if ($this->missingLessonAiArtifactTypes($lesson) === []) {
+            return;
+        }
+
+        $pandaVideoId = $lesson->panda_video_id ?: (string) data_get($lesson->metadata, 'payload.id');
+
+        if (! $pandaVideoId) {
+            return;
+        }
+
+        Cache::lock("lesson:{$lesson->id}:ai-sync", 30)->get(function () use ($lesson, $panda, $pandaVideoId): void {
+            $lesson->refresh();
+
+            if ($this->missingLessonAiArtifactTypes($lesson) === []) {
+                return;
+            }
+
+            try {
+                $this->syncMissingLessonAiArtifacts($lesson, $panda, $pandaVideoId);
+            } catch (Throwable $exception) {
+                report($exception);
+
+                $metadata = $lesson->metadata ?? [];
+                $metadata = array_replace_recursive($metadata, [
+                    'panda_ai' => [
+                        'last_auto_sync_attempt_at' => now()->toIso8601String(),
+                        'last_auto_sync_error' => $exception->getMessage(),
+                    ],
+                ]);
+
+                $lesson->forceFill(['metadata' => $metadata])->save();
+            }
+        });
+    }
+
+    protected function syncMissingLessonAiArtifacts(Lesson $lesson, PandaVideoClient $panda, string $pandaVideoId, bool $forceRequest = false): int
+    {
+        if ($this->missingLessonAiArtifactTypes($lesson) === []) {
+            return -1;
+        }
+
+        $metadata = $lesson->metadata ?? [];
+        $pullzoneName = $this->pandaPullzoneName($lesson);
+        $videoExternalId = $this->pandaVideoExternalId($lesson);
+        $createdArtifacts = 0;
+
+        if ($pullzoneName && $videoExternalId && $this->shouldPollLessonAiPackage($metadata)) {
+            $aiPayload = $panda->aiPackage($pullzoneName, $videoExternalId);
+
+            $metadata = array_replace_recursive($metadata, [
+                'panda_ai' => [
+                    'auto_sync_enabled' => true,
+                    'pullzone_name' => $pullzoneName,
+                    'video_external_id' => $videoExternalId,
+                    'last_auto_sync_attempt_at' => now()->toIso8601String(),
+                    'last_synced_at' => now()->toIso8601String(),
+                    'last_payload_status' => $aiPayload ? 'ready' : 'not_ready',
+                ],
+            ]);
+
+            if ($aiPayload) {
+                $createdArtifacts = $this->syncPandaAiArtifactsFromPayload($lesson, $aiPayload);
+                $lesson->refresh();
+            }
+        }
+
+        if ($this->missingLessonAiArtifactTypes($lesson) !== [] && $this->shouldRequestLessonAiPackage($metadata, $forceRequest)) {
+            $this->clearLessonPandaAiCache($lesson);
+
+            $metadata = array_replace_recursive($metadata, [
+                'panda_ai' => [
+                    'auto_sync_enabled' => true,
+                    'requested_at' => now()->toIso8601String(),
+                    'last_request_status' => 'requested',
+                    'last_request_language' => (string) config('services.panda.ai_from_lang', 'pt-BR'),
+                    'last_auto_sync_attempt_at' => now()->toIso8601String(),
+                    'last_payload_status' => 'regenerating',
+                    'workflow_response' => $panda->createAiPackage($pandaVideoId),
+                    'request_count' => ((int) data_get($metadata, 'panda_ai.request_count', 0)) + 1,
+                ],
+            ]);
+        }
+
+        $lesson->forceFill(['metadata' => $metadata])->save();
+
+        return $createdArtifacts;
+    }
+
+    protected function lessonAiAutoSyncEnabled(Lesson $lesson): bool
+    {
+        return (bool) data_get($lesson->metadata, 'panda_ai.auto_sync_enabled', true);
+    }
+
+    protected function missingLessonAiArtifactTypes(Lesson $lesson): array
+    {
+        $readyTypes = AiArtifact::query()
+            ->where('source_type', Lesson::class)
+            ->where('source_id', $lesson->id)
+            ->where('provider', 'panda')
+            ->where('status', 'ready')
+            ->whereIn('artifact_type', self::LESSON_AI_ARTIFACT_TYPES)
+            ->pluck('artifact_type')
+            ->all();
+
+        return array_values(array_diff(self::LESSON_AI_ARTIFACT_TYPES, $readyTypes));
+    }
+
+    protected function shouldPollLessonAiPackage(array $metadata): bool
+    {
+        $requestedAt = data_get($metadata, 'panda_ai.requested_at');
+        $requestStatus = data_get($metadata, 'panda_ai.last_request_status');
+
+        if ($requestStatus === 'requested' && filled($requestedAt)) {
+            return now()->diffInMinutes(Carbon::parse($requestedAt)) >= (int) config('services.panda.ai_regeneration_poll_delay_minutes', 10);
+        }
+
+        $lastAttempt = data_get($metadata, 'panda_ai.last_auto_sync_attempt_at');
+
+        if (blank($lastAttempt)) {
+            return true;
+        }
+
+        return now()->diffInMinutes(Carbon::parse($lastAttempt)) >= 1;
+    }
+
+    protected function shouldRequestLessonAiPackage(array $metadata, bool $forceRequest = false): bool
+    {
+        $requestedAt = data_get($metadata, 'panda_ai.requested_at');
+
+        if (blank($requestedAt)) {
+            return true;
+        }
+
+        if (! $forceRequest) {
+            return now()->diffInMinutes(Carbon::parse($requestedAt)) >= self::PANDA_AI_REQUEST_RETRY_MINUTES;
+        }
+
+        return now()->diffInMinutes(Carbon::parse($requestedAt)) >= 1;
+    }
+
+    protected function clearLessonPandaAiCache(Lesson $lesson): void
+    {
+        AiArtifact::query()
+            ->where('source_type', Lesson::class)
+            ->where('source_id', $lesson->id)
+            ->where('provider', 'panda')
+            ->whereIn('artifact_type', [...self::LESSON_AI_ARTIFACT_TYPES, 'panda_payload'])
+            ->delete();
+
+        Cache::forget("lesson:{$lesson->id}:ai-artifacts");
+        Cache::forget("lesson:{$lesson->id}:ai-payload");
+        $lesson->unsetRelation('aiArtifacts');
+    }
+
+    protected function ensurePandaTutorAvailabilityIsCached(Lesson $lesson, PandaTutorActivator $tutor): void
+    {
+        if (! config('services.panda.tutor_auto_detect', true)) {
+            return;
+        }
+
+        $pullzoneName = $this->pandaPullzoneName($lesson);
+        $videoExternalId = $this->pandaVideoExternalId($lesson);
+
+        if (! $pullzoneName || ! $videoExternalId) {
+            return;
+        }
+
+        $lastCheckedAt = data_get($lesson->metadata, 'panda_ai.tutor_checked_at');
+
+        $cacheMinutes = (bool) data_get($lesson->metadata, 'panda_ai.tutor_available', false) ? 10 : 1;
+
+        if (filled($lastCheckedAt) && now()->diffInMinutes(Carbon::parse($lastCheckedAt)) < $cacheMinutes) {
+            return;
+        }
+
+        Cache::lock("lesson:{$lesson->id}:panda-tutor-detect", 30)->get(function () use ($lesson, $tutor): void {
+            $lesson->refresh();
+
+            $lastCheckedAt = data_get($lesson->metadata, 'panda_ai.tutor_checked_at');
+            $cacheMinutes = (bool) data_get($lesson->metadata, 'panda_ai.tutor_available', false) ? 10 : 1;
+
+            if (filled($lastCheckedAt) && now()->diffInMinutes(Carbon::parse($lastCheckedAt)) < $cacheMinutes) {
+                return;
+            }
+
+            try {
+                $tutor->syncAvailability($lesson);
+            } catch (Throwable $exception) {
+                report($exception);
+
+                $metadata = $lesson->metadata ?? [];
+                $metadata = array_replace_recursive($metadata, [
+                    'panda_ai' => [
+                        'tutor_available' => (bool) data_get($metadata, 'panda_ai.tutor_available', false),
+                        'tutor_checked_at' => now()->toIso8601String(),
+                        'tutor_last_error' => $exception->getMessage(),
+                    ],
+                ]);
+
+                $lesson->forceFill(['metadata' => $metadata])->save();
+            }
+        });
+    }
+
+    protected function pandaTutorUrlForLesson(Lesson $lesson): ?string
+    {
+        if (! (bool) data_get($lesson->metadata, 'panda_ai.tutor_available', false)) {
+            return null;
+        }
+
+        return $this->pandaTutorCandidateUrlForLesson($lesson);
+    }
+
+    protected function pandaTutorCandidateUrlForLesson(Lesson $lesson): ?string
+    {
+        $playerUrl = $lesson->player_url;
+        $pullzoneName = $this->pandaPullzoneName($lesson);
+        $videoExternalId = $this->pandaVideoExternalId($lesson);
+
+        if (! $playerUrl || ! $pullzoneName || ! $videoExternalId) {
+            return null;
+        }
+
+        $playerEmbedBase = preg_replace('/\?.*$/', '', $playerUrl);
+        $playerEmbedBase = rtrim(str_ends_with($playerEmbedBase, '/embed/') ? $playerEmbedBase : dirname($playerEmbedBase), '/');
+
+        return $playerEmbedBase.'/assist_chat.html?'.http_build_query(['v' => $videoExternalId, 'l' => $pullzoneName]);
+    }
+
+    protected function pandaTutorConfigUrlForLesson(Lesson $lesson): ?string
+    {
+        $pullzoneName = $this->pandaPullzoneName($lesson);
+        $videoExternalId = $this->pandaVideoExternalId($lesson);
+
+        if (! $pullzoneName || ! $videoExternalId) {
+            return null;
+        }
+
+        return rtrim((string) config('services.panda.ai_config_base_url'), '/')
+            .'/'.trim($pullzoneName, '/')
+            .'/'.$videoExternalId
+            .'.json';
+    }
+
+    protected function lessonSummaryText(Lesson $lesson): string
+    {
+        $artifact = AiArtifact::query()
+            ->where('source_type', Lesson::class)
+            ->where('source_id', $lesson->id)
+            ->where('status', 'ready')
+            ->whereIn('artifact_type', ['summary', 'abstract'])
+            ->orderByRaw("case when provider = 'panda' then 0 else 1 end")
+            ->first();
+
+        return $artifact ? $this->aiContentToText($artifact->content) : '';
+    }
+
+    protected function aiContentToText(mixed $value): string
+    {
+        if (is_string($value)) {
+            return trim($value);
+        }
+
+        if (! is_array($value)) {
+            return '';
+        }
+
+        foreach (['text', 'content', 'summary', 'abstract', 'answer', 'description'] as $key) {
+            if (array_key_exists($key, $value)) {
+                $text = $this->aiContentToText($value[$key]);
+
+                if ($text !== '') {
+                    return $text;
+                }
+            }
+        }
+
+        return collect($value)
+            ->map(fn (mixed $item): string => $this->aiContentToText($item))
+            ->filter()
+            ->join("\n\n");
+    }
+
+    protected function firstAiPayloadValue(array $payload, array $paths): mixed
+    {
+        foreach ($paths as $path) {
+            $value = Arr::get($payload, $path);
+
+            if (filled($value)) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    protected function pandaVideoExternalId(Lesson $lesson): ?string
+    {
+        $payload = (array) data_get($lesson->metadata, 'payload', []);
+        $externalId = data_get($payload, 'video_external_id')
+            ?? data_get($payload, 'external_id');
+
+        if (filled($externalId)) {
+            return (string) $externalId;
+        }
+
+        foreach ([$lesson->panda_embed_url, $lesson->panda_player_url, data_get($payload, 'video_player')] as $url) {
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            $query = parse_url($url, PHP_URL_QUERY);
+            parse_str((string) $query, $params);
+
+            if (filled($params['v'] ?? null)) {
+                return (string) $params['v'];
+            }
+        }
+
+        return null;
+    }
+
+    protected function pandaPullzoneName(Lesson $lesson): ?string
+    {
+        $payload = (array) data_get($lesson->metadata, 'payload', []);
+
+        foreach ([
+            data_get($payload, 'pullzone_name'),
+            data_get($payload, 'pullzone'),
+        ] as $pullzoneName) {
+            if (filled($pullzoneName)) {
+                return (string) $pullzoneName;
+            }
+        }
+
+        foreach ([
+            data_get($payload, 'video_player'),
+            data_get($payload, 'video_hls'),
+            data_get($payload, 'thumbnail'),
+            data_get($payload, 'preview'),
+            $lesson->panda_embed_url,
+            $lesson->panda_player_url,
+            $lesson->thumbnail_url,
+        ] as $url) {
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            if (preg_match('/(?:^|[.\/-])(vz-[a-z0-9-]+)/i', $url, $matches)) {
+                return $matches[1];
+            }
+        }
+
+        return null;
+    }
+}

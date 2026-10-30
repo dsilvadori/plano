@@ -99,6 +99,12 @@ return [
             'expire' => (int) env('AUTH_PASSWORD_RESET_EXPIRE', 2880),
             'throttle' => 60,
         ],
+        'first_access' => [
+            'provider' => 'users',
+            'table' => env('AUTH_PASSWORD_RESET_TOKEN_TABLE', 'password_reset_tokens'),
+            'expire' => (int) env('AUTH_FIRST_ACCESS_PASSWORD_RESET_EXPIRE', 52560000),
+            'throttle' => 60,
+        ],
     ],
 
     /*

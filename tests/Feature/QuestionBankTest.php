@@ -1,0 +1,1446 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Filament\Resources\QuestionBanks\QuestionBankResource;
+use App\Filament\Resources\Questions\Pages\EditQuestion;
+use App\Jobs\GenerateQuestionCommentary;
+use App\Models\Course;
+use App\Models\CourseModule;
+use App\Models\Lesson;
+use App\Models\Question;
+use App\Models\QuestionBank;
+use App\Models\StudyPlan;
+use App\Models\StudyPlanItem;
+use App\Models\User;
+use App\Services\GeminiQuestionCommentaryGenerator;
+use App\Services\QuestionPdfImporter;
+use App\Services\QuestionSpreadsheetImporter;
+use App\Support\QuestionTextRenderer;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
+use Livewire\Livewire;
+use Tests\TestCase;
+use ZipArchive;
+
+class QuestionBankTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_pdf_parser_extracts_numbered_questions_and_trims_next_header_from_last_option(): void
+    {
+        $text = <<<'TXT'
+VUNESP - Cargo/Org/2026
+Língua Portuguesa (Português) - Substantivo
+1)
+Assinale a alternativa correta.
+a) primeira alternativa.
+b) segunda alternativa.
+c) terceira alternativa.
+d) quarta alternativa.
+
+VUNESP - Outro Cargo/Org/2026
+Língua Portuguesa (Português) - Adjetivo
+2)
+Assinale a alternativa incorreta.
+a) alfa.
+b) beta.
+c) gama.
+d) delta.
+TXT;
+
+        $questions = app(QuestionPdfImporter::class)->parseText($text);
+
+        $this->assertCount(2, $questions);
+        $this->assertSame(1, $questions[0]['number']);
+        $this->assertSame('Substantivo', $questions[0]['topic']);
+        $this->assertCount(4, $questions[0]['options']);
+        $this->assertSame('quarta alternativa.', $questions[0]['options'][3]['text']);
+    }
+
+    public function test_pdf_parser_splits_inline_options_out_of_statement(): void
+    {
+        $text = <<<'TXT'
+VUNESP - Cargo/Org/2026
+Língua Portuguesa (Português) - Interpretação de texto
+1)
+No trecho apresentado, assinale a alternativa correta. a) primeira alternativa. b) segunda alternativa. c) terceira alternativa. d) quarta alternativa.
+TXT;
+
+        $questions = app(QuestionPdfImporter::class)->parseText($text);
+
+        $this->assertCount(1, $questions);
+        $this->assertSame('No trecho apresentado, assinale a alternativa correta.', $questions[0]['statement']);
+        $this->assertCount(4, $questions[0]['options']);
+        $this->assertSame('primeira alternativa.', $questions[0]['options'][0]['text']);
+        $this->assertSame('quarta alternativa.', $questions[0]['options'][3]['text']);
+    }
+
+    public function test_answer_key_can_be_applied_after_pdf_import(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco importado',
+            'source_type' => 'pdf',
+            'status' => 'draft',
+        ]);
+
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => 'Assinale a correta.',
+            'type' => 'multiple_choice',
+            'status' => 'review',
+        ]);
+
+        $question->options()->create(['label' => 'a', 'text' => 'Errada', 'sort_order' => 1]);
+        $correct = $question->options()->create(['label' => 'c', 'text' => 'Correta', 'sort_order' => 2]);
+
+        $updated = app(QuestionPdfImporter::class)->applyAnswerKey($bank, '1:C');
+
+        $this->assertSame(1, $updated);
+        $this->assertSame('published', $bank->fresh()->status);
+        $this->assertSame('c', $question->fresh()->answer_key);
+        $this->assertTrue($correct->fresh()->is_correct);
+    }
+
+    public function test_xlsx_import_replaces_existing_questions_and_imports_commentary(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco XLSX',
+            'source_type' => 'xlsx',
+            'status' => 'draft',
+        ]);
+
+        $oldQuestion = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 99,
+            'statement' => 'Questão antiga.',
+            'type' => 'multiple_choice',
+            'status' => 'published',
+        ]);
+
+        $path = $this->createQuestionSpreadsheet([
+            [
+                'numero',
+                'disciplina',
+                'assunto',
+                'subassunto',
+                'enunciado',
+                'alternativa_a',
+                'alternativa_b',
+                'alternativa_c',
+                'alternativa_d',
+                'alternativa_e',
+                'gabarito',
+                'comentario',
+                'referencia_origem',
+                'observacoes_revisao',
+                'imagem_url',
+                'imagem_descricao',
+            ],
+            [
+                '1',
+                'Língua Portuguesa',
+                'Substantivo',
+                '',
+                'Qual alternativa apresenta um **substantivo**?',
+                'Rapidamente',
+                'Casa',
+                'Ontem',
+                'Muito',
+                '',
+                'B',
+                'Casa nomeia um ser, por isso é substantivo.',
+                'VUNESP - Cargo/2026',
+                '',
+                'question-images/substantivo.png',
+                'Imagem com uma casa usada como exemplo de substantivo.',
+            ],
+        ]);
+
+        $batch = app(QuestionSpreadsheetImporter::class)->import($bank, $path);
+
+        $this->assertSame('imported', $batch->status);
+        $this->assertSame(1, $batch->questions_imported);
+        $this->assertDatabaseMissing('questions', ['id' => $oldQuestion->id]);
+        $this->assertDatabaseHas('questions', [
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'subject' => 'Língua Portuguesa',
+            'topic' => 'Substantivo',
+            'statement' => 'Qual alternativa apresenta um **substantivo**?',
+            'answer_key' => 'b',
+            'commentary' => 'Casa nomeia um ser, por isso é substantivo.',
+            'commentary_provider' => 'xlsx',
+            'source_reference' => 'VUNESP - Cargo/2026',
+            'status' => 'published',
+        ]);
+        $question = $bank->questions()->firstOrFail();
+
+        $this->assertSame(['/storage/question-images/substantivo.png'], data_get($question->metadata, 'image_urls'));
+        $this->assertSame('Imagem com uma casa usada como exemplo de substantivo.', data_get($question->metadata, 'image_description'));
+        $this->assertDatabaseHas('question_options', [
+            'label' => 'b',
+            'text' => 'Casa',
+            'is_correct' => true,
+        ]);
+    }
+
+    public function test_question_import_relabels_duplicate_option_letters(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco com alternativa duplicada',
+            'source_type' => 'pdf',
+            'status' => 'draft',
+        ]);
+
+        app(QuestionSpreadsheetImporter::class)->importParsedQuestions($bank, [[
+            'number' => 1,
+            'subject' => null,
+            'topic' => null,
+            'subtopic' => null,
+            'statement' => 'Assinale a correta.',
+            'options' => [
+                ['label' => 'a', 'text' => 'Alternativa A'],
+                ['label' => 'b', 'text' => 'Alternativa B'],
+                ['label' => 'c', 'text' => 'Alternativa C'],
+                ['label' => 'd', 'text' => 'Alternativa D'],
+                ['label' => 'd', 'text' => 'Alternativa que deveria ser E'],
+            ],
+            'answer_key' => 'e',
+            'commentary' => null,
+            'source_reference' => null,
+            'review_notes' => null,
+        ]]);
+
+        $question = $bank->questions()->firstOrFail();
+
+        $this->assertSame(['a', 'b', 'c', 'd', 'e'], $question->options()->pluck('label')->all());
+        $this->assertDatabaseHas('question_options', [
+            'question_id' => $question->id,
+            'label' => 'e',
+            'text' => 'Alternativa que deveria ser E',
+        ]);
+    }
+
+    public function test_question_answer_key_marks_matching_option_as_correct_automatically(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco manual',
+            'source_type' => 'manual',
+            'status' => 'published',
+        ]);
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => 'Assinale a correta.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'b',
+            'status' => 'published',
+        ]);
+
+        $wrong = $question->options()->create([
+            'label' => 'a',
+            'text' => 'Alternativa A',
+            'is_correct' => true,
+            'sort_order' => 1,
+        ]);
+        $correct = $question->options()->create([
+            'label' => 'b',
+            'text' => 'Alternativa B',
+            'is_correct' => false,
+            'sort_order' => 2,
+        ]);
+
+        $this->assertFalse($wrong->fresh()->is_correct);
+        $this->assertTrue($correct->fresh()->is_correct);
+
+        $question->forceFill(['answer_key' => 'a'])->save();
+
+        $this->assertTrue($wrong->fresh()->is_correct);
+        $this->assertFalse($correct->fresh()->is_correct);
+    }
+
+    public function test_question_bank_does_not_auto_link_to_matching_module_track_or_lesson_when_saved(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Classe de Palavras',
+        ]);
+        $track = $module->tracks()->create([
+            'name' => 'Substantivo e Adjetivo',
+            'slug' => 'substantivo-e-adjetivo',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Classes de Palavras - Substantivo e Adjetivo',
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Classe de palavras - Substantivo e Adjetivo',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $this->assertFalse($bank->fresh()->modules()->whereKey($module->id)->exists());
+        $this->assertFalse($bank->fresh()->tracks()->whereKey($track->id)->exists());
+        $this->assertFalse($bank->fresh()->lessons()->whereKey($lesson->id)->exists());
+    }
+
+    public function test_question_bank_manual_links_to_module_track_and_lesson_are_kept(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Classe de Palavras',
+        ]);
+        $track = $module->tracks()->create([
+            'name' => 'Substantivo e Adjetivo',
+            'slug' => 'substantivo-e-adjetivo',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Classes de Palavras - Substantivo e Adjetivo',
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Classe de palavras - Substantivo e Adjetivo',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $bank->modules()->sync([$module->id]);
+        $bank->tracks()->sync([$track->id]);
+        $bank->lessons()->sync([$lesson->id]);
+
+        $this->assertTrue($bank->fresh()->modules()->whereKey($module->id)->exists());
+        $this->assertTrue($bank->fresh()->tracks()->whereKey($track->id)->exists());
+        $this->assertTrue($bank->fresh()->lessons()->whereKey($lesson->id)->exists());
+    }
+
+    public function test_question_bank_admin_sync_keeps_only_current_manual_links(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $oldModule = CourseModule::factory()->create(['course_id' => $course->id]);
+        $currentModule = CourseModule::factory()->create(['course_id' => $course->id]);
+        $oldTrack = $oldModule->tracks()->create([
+            'name' => 'Frações antigas',
+            'slug' => 'fracoes-antigas',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $currentTrack = $currentModule->tracks()->create([
+            'name' => 'Frações atuais',
+            'slug' => 'fracoes-atuais',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $oldLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $oldModule->id,
+            'course_module_track_id' => $oldTrack->id,
+        ]);
+        $currentLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $currentModule->id,
+            'course_module_track_id' => $currentTrack->id,
+        ]);
+        $bank = QuestionBank::query()->create([
+            'title' => 'Operações com Frações',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $bank->modules()->sync([$oldModule->id]);
+        $bank->tracks()->sync([$oldTrack->id]);
+        $bank->lessons()->sync([$oldLesson->id]);
+
+        QuestionBankResource::syncManualLinks($bank, [
+            'modules' => [$currentModule->id],
+            'tracks' => [$currentTrack->id],
+            'lessons' => [$currentLesson->id],
+        ]);
+
+        $bank = $bank->fresh();
+
+        $this->assertFalse($bank->modules()->whereKey($oldModule->id)->exists());
+        $this->assertFalse($bank->tracks()->whereKey($oldTrack->id)->exists());
+        $this->assertFalse($bank->lessons()->whereKey($oldLesson->id)->exists());
+        $this->assertTrue($bank->modules()->whereKey($currentModule->id)->exists());
+        $this->assertTrue($bank->tracks()->whereKey($currentTrack->id)->exists());
+        $this->assertTrue($bank->lessons()->whereKey($currentLesson->id)->exists());
+    }
+
+    public function test_question_bank_does_not_auto_link_lessons_with_similar_part_titles(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Matemática',
+        ]);
+        $track = $module->tracks()->create([
+            'name' => 'Frações',
+            'slug' => 'fracoes',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $partOne = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => 'Operações com Frações Parte I',
+        ]);
+        $partTwo = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => 'Operações com Frações Parte II',
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Operações com Frações Parte I',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $this->assertFalse($bank->fresh()->lessons()->whereKey($partOne->id)->exists());
+        $this->assertFalse($bank->fresh()->lessons()->whereKey($partTwo->id)->exists());
+    }
+
+    public function test_commentary_renderer_breaks_each_option_explanation_into_its_own_line(): void
+    {
+        $html = (string) QuestionTextRenderer::renderCommentary(
+            'A - Está incorreta. B - Está incorreta. C - Está correta porque é **substantivo**. D - Está incorreta. E - Está incorreta.'
+        );
+
+        $this->assertSame(5, substr_count($html, '<p>'));
+        $this->assertStringContainsString('<p>A - Está incorreta.</p>', $html);
+        $this->assertStringContainsString('<p>B - Está incorreta.</p>', $html);
+        $this->assertStringContainsString('<p>C - Está correta porque é <strong>substantivo</strong>.</p>', $html);
+        $this->assertStringContainsString('<p>D - Está incorreta.</p>', $html);
+        $this->assertStringContainsString('<p>E - Está incorreta.</p>', $html);
+    }
+
+    public function test_question_renderer_keeps_editor_formatting_and_strips_unsafe_html(): void
+    {
+        $html = (string) QuestionTextRenderer::render(
+            '<p>O <u>verbo sublinhado</u> e a <mark data-color="#ff0">palavra destacada</mark> em <strong>negrito</strong>.</p><p onclick="x()">Segundo<script>alert(1)</script></p>'
+        );
+
+        $this->assertSame('<p>O <u>verbo sublinhado</u> e a <mark>palavra destacada</mark> em <strong>negrito</strong>.</p><p>Segundo</p>', $html);
+        $this->assertSame('Alternativa <u>um</u><br>linha dois', (string) QuestionTextRenderer::renderInline('<p>Alternativa <u>um</u></p><p>linha dois</p>'));
+        $this->assertSame('<p>Texto <strong>antigo</strong> com <mark>destaque</mark></p>', (string) QuestionTextRenderer::render('Texto **antigo** com ==destaque=='));
+        $this->assertSame("O <u>verbo</u> &\n\nFim", QuestionTextRenderer::toPromptText('<p>O <u>verbo</u> &amp;</p><p>Fim</p>'));
+    }
+
+    public function test_admin_question_editor_loads_legacy_text_and_saves_underlined_words(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Português - Sujeito',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => "Primeiro parágrafo com **negrito**.\n\nO verbo destacado é chegaram.",
+            'type' => 'multiple_choice',
+            'status' => 'published',
+        ]);
+
+        $this->actingAs(User::factory()->admin()->create());
+
+        $component = Livewire::test(EditQuestion::class, ['record' => $question->getRouteKey()]);
+        $statement = $component->get('data.statement');
+        $loaded = is_array($statement) ? json_encode($statement) : (string) $statement;
+
+        $this->assertStringContainsString('Primeiro par', $loaded);
+        $this->assertStringContainsString('chegaram', $loaded);
+        $this->assertStringNotContainsString('**', $loaded);
+
+        $component
+            ->fillForm([
+                'statement' => '<p>O verbo <u>chegaram</u> concorda com o <mark>sujeito</mark>.</p>',
+                'metadata.image_position' => 'after_statement',
+            ])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $saved = $question->fresh()->statement;
+
+        $this->assertStringContainsString('<u>chegaram</u>', $saved);
+        $this->assertStringContainsString('<mark>sujeito</mark>', $saved);
+        $this->assertStringContainsString('<u>chegaram</u>', (string) QuestionTextRenderer::render($saved));
+    }
+
+    public function test_pdf_importer_uses_gemini_fallback_when_local_text_extraction_fails(): void
+    {
+        config([
+            'services.gemini.api_key' => 'testing-key',
+            'services.gemini.model' => 'gemini-2.5-flash-lite',
+        ]);
+
+        Storage::disk('local')->put('question-banks/scanned.pdf', 'not a text pdf');
+
+        Http::fake([
+            '*gemini-2.5-flash-lite*' => Http::response([
+                'candidates' => [[
+                    'content' => [
+                        'parts' => [[
+                            'text' => json_encode([
+                                'questions' => [[
+                                    'numero' => 1,
+                                    'disciplina' => 'Língua Portuguesa',
+                                    'assunto' => 'Substantivo',
+                                    'enunciado' => 'Assinale a alternativa correta.',
+                                    'alternativa_a' => 'primeira alternativa.',
+                                    'alternativa_b' => 'segunda alternativa.',
+                                    'alternativa_c' => 'terceira alternativa.',
+                                    'alternativa_d' => 'quarta alternativa.',
+                                    'gabarito' => 'C',
+                                    'comentario' => 'A alternativa C está correta.',
+                                ]],
+                            ]),
+                        ]],
+                    ],
+                ]],
+            ]),
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco escaneado',
+            'source_type' => 'pdf',
+            'source_file_path' => 'question-banks/scanned.pdf',
+            'status' => 'draft',
+        ]);
+
+        $batch = app(QuestionPdfImporter::class)->import($bank);
+
+        $this->assertSame('imported', $batch->status);
+        $this->assertSame(1, $batch->questions_imported);
+        $this->assertDatabaseHas('questions', [
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'answer_key' => 'c',
+        ]);
+    }
+
+    protected function createQuestionSpreadsheet(array $rows): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'questions-xlsx-');
+
+        $archive = new ZipArchive;
+        $archive->open($path, ZipArchive::OVERWRITE);
+        $archive->addFromString('[Content_Types].xml', <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+    <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+    <Default Extension="xml" ContentType="application/xml"/>
+    <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+    <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>
+XML);
+        $archive->addFromString('_rels/.rels', <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>
+XML);
+        $archive->addFromString('xl/workbook.xml', <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+    <sheets>
+        <sheet name="Questões" sheetId="1" r:id="rId1"/>
+    </sheets>
+</workbook>
+XML);
+        $archive->addFromString('xl/_rels/workbook.xml.rels', <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>
+XML);
+
+        $sheetRows = collect($rows)
+            ->map(function (array $row, int $rowIndex): string {
+                $rowNumber = $rowIndex + 1;
+                $cells = collect($row)
+                    ->map(function (string $value, int $columnIndex) use ($rowNumber): string {
+                        $column = chr(65 + $columnIndex);
+                        $escaped = htmlspecialchars($value, ENT_XML1);
+
+                        return "<c r=\"{$column}{$rowNumber}\" t=\"inlineStr\"><is><t>{$escaped}</t></is></c>";
+                    })
+                    ->implode('');
+
+                return "<row r=\"{$rowNumber}\">{$cells}</row>";
+            })
+            ->implode('');
+
+        $archive->addFromString('xl/worksheets/sheet1.xml', <<<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+    <sheetData>{$sheetRows}</sheetData>
+</worksheet>
+XML);
+        $archive->close();
+
+        return $path;
+    }
+
+    public function test_pdf_reimport_replaces_existing_questions_and_reads_answer_key_from_final_page(): void
+    {
+        config([
+            'services.gemini.api_key' => 'testing-key',
+            'services.gemini.model' => 'gemini-2.5-flash-lite',
+        ]);
+
+        Storage::disk('local')->put('question-banks/reimport.pdf', 'not a text pdf');
+
+        Http::fake([
+            '*gemini-2.5-flash-lite*' => Http::response([
+                'candidates' => [[
+                    'content' => [
+                        'parts' => [[
+                            'text' => json_encode([
+                                'questions' => [[
+                                    'numero' => 1,
+                                    'disciplina' => 'Língua Portuguesa',
+                                    'assunto' => 'Substantivo',
+                                    'enunciado' => 'Assinale a alternativa correta.',
+                                    'alternativa_a' => 'primeira alternativa.',
+                                    'alternativa_b' => 'segunda alternativa.',
+                                    'alternativa_c' => 'terceira alternativa.',
+                                    'alternativa_d' => 'quarta alternativa.',
+                                    'gabarito' => 'C',
+                                    'comentario' => 'A alternativa C está correta.',
+                                ]],
+                            ]),
+                        ]],
+                    ],
+                ]],
+            ]),
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco reimportado',
+            'source_type' => 'pdf',
+            'source_file_path' => 'question-banks/reimport.pdf',
+            'status' => 'published',
+        ]);
+
+        $staleQuestion = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 99,
+            'statement' => 'Questão antiga que deve sair.',
+            'type' => 'multiple_choice',
+            'status' => 'published',
+        ]);
+
+        $batch = app(QuestionPdfImporter::class)->import($bank);
+
+        $this->assertSame(1, $batch->questions_imported);
+        $this->assertSame(1, data_get($batch->summary, 'removed_questions'));
+        $this->assertDatabaseMissing('questions', [
+            'id' => $staleQuestion->id,
+        ]);
+        $this->assertDatabaseHas('questions', [
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'answer_key' => 'c',
+            'status' => 'published',
+        ]);
+    }
+
+    public function test_student_can_open_question_bank_answer_and_see_commentary(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Substantivo e adjetivo',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'course_id' => $course->id,
+            'number' => 1,
+            'subject' => 'Língua Portuguesa',
+            'topic' => 'Substantivo',
+            'statement' => 'Qual alternativa apresenta um substantivo?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'b',
+            'commentary' => 'Substantivo dá nome aos seres.',
+            'status' => 'published',
+        ]);
+
+        $question->options()->create([
+            'label' => 'a',
+            'text' => 'Rapidamente',
+            'is_correct' => false,
+            'sort_order' => 1,
+        ]);
+        $correct = $question->options()->create([
+            'label' => 'b',
+            'text' => 'Casa',
+            'is_correct' => true,
+            'sort_order' => 2,
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('questions.index'))
+            ->assertOk()
+            ->assertSee('Substantivo e adjetivo');
+
+        $this->actingAs($student)
+            ->post(route('questions.answer', $question), [
+                'question_option_id' => $correct->id,
+                'return_url' => route('questions.show', $bank),
+            ])
+            ->assertRedirect(route('questions.show', $bank));
+
+        $this->actingAs($student)
+            ->postJson(route('questions.answer', $question), [
+                'question_option_id' => $correct->id,
+                'return_url' => route('questions.show', $bank),
+            ])
+            ->assertOk()
+            ->assertJson([
+                'question_id' => $question->id,
+                'selected_option_id' => $correct->id,
+                'is_correct' => true,
+                'answer_key' => 'B',
+                'commentary' => 'Substantivo dá nome aos seres.',
+            ]);
+
+        $this->assertDatabaseHas('question_attempts', [
+            'user_id' => $student->id,
+            'question_id' => $question->id,
+            'question_option_id' => $correct->id,
+            'is_correct' => true,
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('questions.show', $bank))
+            ->assertOk()
+            ->assertSee('Gabarito: B')
+            ->assertSee('Substantivo dá nome aos seres.');
+    }
+
+    public function test_question_images_can_be_rendered_before_statement(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $bank = QuestionBank::query()->create([
+            'title' => 'Interpretação com imagem',
+            'source_type' => 'manual',
+            'status' => 'published',
+        ]);
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 5,
+            'topic' => 'Classes de palavras',
+            'statement' => 'Leia a tira para responder à questão.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+            'metadata' => [
+                'image_urls' => ['question-images/tirinha.png'],
+                'image_position' => 'before_statement',
+                'image_description' => 'Tirinha usada como texto-base da questão.',
+            ],
+        ]);
+        $question->options()->create([
+            'label' => 'a',
+            'text' => 'Alternativa correta',
+            'is_correct' => true,
+            'sort_order' => 1,
+        ]);
+
+        $response = $this->actingAs($student)
+            ->get(route('questions.show', $bank))
+            ->assertOk()
+            ->assertSee('/media/public/question-images/tirinha.png', false)
+            ->assertSee('Tirinha usada como texto-base da questão.');
+
+        $html = $response->getContent();
+
+        $this->assertLessThan(
+            strpos($html, 'Leia a tira para responder à questão.'),
+            strpos($html, '/media/public/question-images/tirinha.png')
+        );
+    }
+
+    public function test_question_normalizes_image_metadata_before_saving(): void
+    {
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco com imagem manual',
+            'source_type' => 'manual',
+            'status' => 'published',
+        ]);
+
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 6,
+            'statement' => 'Observe a imagem.',
+            'type' => 'multiple_choice',
+            'status' => 'published',
+            'metadata' => [
+                'image_urls' => [
+                    'upload-a' => ['path' => 'question-images/tirinha.png'],
+                    'upload-b' => 'livewire-file:temporary-preview',
+                    'upload-c' => '',
+                ],
+                'image_position' => 'invalid-position',
+            ],
+        ]);
+
+        $question->refresh();
+
+        $this->assertSame(['question-images/tirinha.png'], data_get($question->metadata, 'image_urls'));
+        $this->assertSame('after_statement', data_get($question->metadata, 'image_position'));
+        $this->assertSame(['/media/public/question-images/tirinha.png'], $question->imageUrls());
+
+        $question->forceFill([
+            'metadata' => [
+                'image_urls' => ['/storage/question-images/tirinha.png'],
+                'image_position' => 'after_statement',
+            ],
+        ])->save();
+
+        $this->assertSame(['/media/public/question-images/tirinha.png'], $question->fresh()->imageUrls());
+    }
+
+    public function test_public_storage_fallback_serves_question_images_for_authenticated_users(): void
+    {
+        Storage::fake('public');
+        Storage::disk('public')->put('question-images/tirinha.png', 'fake-image');
+
+        $student = User::factory()->create(['role' => 'student']);
+
+        $this->actingAs($student)
+            ->get('/media/public/question-images/tirinha.png')
+            ->assertOk();
+    }
+
+    public function test_gemini_commentary_generator_falls_back_when_configured_model_is_unavailable_or_busy(): void
+    {
+        config([
+            'services.gemini.api_key' => 'testing-key',
+            'services.gemini.model' => 'gemini-3.5-flash',
+        ]);
+
+        Http::fake([
+            '*gemini-3.5-flash*' => Http::response([
+                'error' => [
+                    'code' => 503,
+                    'message' => 'This model is currently experiencing high demand.',
+                ],
+            ], 503),
+            '*gemini-2.5-flash-lite*' => Http::response([
+                'candidates' => [[
+                    'content' => [
+                        'parts' => [[
+                            'text' => 'A alternativa correta é B porque substantivo nomeia seres.',
+                        ]],
+                    ],
+                ]],
+            ]),
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco importado',
+            'source_type' => 'pdf',
+            'status' => 'draft',
+        ]);
+
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => 'Qual alternativa apresenta um substantivo?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'b',
+            'status' => 'review',
+        ]);
+
+        $question->options()->create(['label' => 'a', 'text' => 'Rapidamente', 'sort_order' => 1]);
+        $question->options()->create(['label' => 'b', 'text' => 'Casa', 'sort_order' => 2]);
+
+        $generator = app(GeminiQuestionCommentaryGenerator::class);
+
+        $this->assertSame(
+            'A alternativa correta é B porque substantivo nomeia seres.',
+            $generator->generate($question)
+        );
+        $this->assertSame('gemini-2.5-flash-lite', $generator->lastModel());
+    }
+
+    public function test_question_commentary_job_generates_and_saves_commentary(): void
+    {
+        config([
+            'services.gemini.api_key' => 'testing-key',
+            'services.gemini.model' => 'gemini-2.5-flash-lite',
+        ]);
+
+        Http::fake([
+            '*gemini-2.5-flash-lite*' => Http::response([
+                'candidates' => [[
+                    'content' => [
+                        'parts' => [[
+                            'text' => 'A alternativa B está correta porque casa é um substantivo.',
+                        ]],
+                    ],
+                ]],
+            ]),
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Banco importado',
+            'source_type' => 'pdf',
+            'status' => 'draft',
+        ]);
+
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => 'Qual alternativa apresenta um substantivo?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'b',
+            'status' => 'review',
+        ]);
+
+        $question->options()->create(['label' => 'a', 'text' => 'Rapidamente', 'sort_order' => 1]);
+        $question->options()->create(['label' => 'b', 'text' => 'Casa', 'sort_order' => 2]);
+
+        app(GenerateQuestionCommentary::class, [
+            'questionId' => $question->id,
+        ])->handle(app(GeminiQuestionCommentaryGenerator::class));
+
+        $this->assertSame(
+            'A alternativa B está correta porque casa é um substantivo.',
+            $question->fresh()->commentary
+        );
+        $this->assertSame('gemini:gemini-2.5-flash-lite', $question->fresh()->commentary_provider);
+    }
+
+    public function test_question_bank_is_global_and_not_linked_to_course_lessons(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '01 - Classes de Palavras - Substantivo e Adjetivo',
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'course_id' => $course->id,
+            'title' => 'Classe de palavras - Substantivo e Adjetivo',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+
+        $question = Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'subject' => 'Português',
+            'topic' => 'Substantivo',
+            'statement' => 'Qual alternativa apresenta um substantivo?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'b',
+            'status' => 'published',
+        ]);
+
+        $this->assertNull($bank->fresh()->course_id);
+
+        $this->assertNull($question->fresh()->course_id);
+        $this->assertNull($question->fresh()->course_module_id);
+        $this->assertNull($question->fresh()->lesson_id);
+    }
+
+    public function test_study_plan_links_to_related_questions_and_question_page_links_back_to_plan(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '01 - Gramática',
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+        ]);
+        $theoryItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'basic',
+            'title' => 'Português',
+            'description' => 'Bloco de até 45 minutos para estudar Português. Aulas do bloco: 01 - Gramática.',
+        ]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'questions',
+            'title' => 'Resolução de Questões: Português',
+            'description' => 'Pratique o conteúdo estudado.',
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Português - Gramática',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $bank->lessons()->syncWithoutDetaching($lesson->id);
+        Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'topic' => 'Gramática',
+            'statement' => 'Qual alternativa apresenta um substantivo?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'b',
+            'status' => 'published',
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee('Resolver questões: Português - Gramática')
+            ->assertSee('plan_id='.$plan->id.'&amp;lesson_id='.$lesson->id, false);
+
+        $this->actingAs($student)
+            ->get(route('questions.show', [$bank, 'plan_id' => $plan->id, 'lesson_id' => $lesson->id]))
+            ->assertOk()
+            ->assertSee('Voltar para o plano')
+            ->assertSee('Qual alternativa apresenta um substantivo?');
+    }
+
+    public function test_question_plan_block_does_not_list_banks_linked_only_to_modules(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $portuguese = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $portugueseLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $portuguese->id,
+            'title' => '04 - Crase',
+        ]);
+        $administration = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Administração Geral',
+            'type' => 'specific',
+        ]);
+        $administrationLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $administration->id,
+            'title' => '25 - Princípios Arquivísticos',
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+        ]);
+        $portugueseItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $portuguese->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'basic',
+            'sort_order' => 1,
+        ]);
+        $portugueseItem->lessons()->attach($portugueseLesson->id, ['sort_order' => 1]);
+        $administrationItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $administration->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'specific',
+            'sort_order' => 2,
+        ]);
+        $administrationItem->lessons()->attach($administrationLesson->id, ['sort_order' => 1]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $administration->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'questions',
+            'title' => 'Bloco de questões',
+            'sort_order' => 3,
+        ]);
+
+        $portugueseBank = QuestionBank::query()->create([
+            'title' => 'Português - Gramática',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $portugueseBank->modules()->syncWithoutDetaching($portuguese->id);
+        $administrationBank = QuestionBank::query()->create([
+            'title' => 'Administração Geral',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $administrationBank->modules()->syncWithoutDetaching($administration->id);
+
+        Question::query()->create([
+            'question_bank_id' => $portugueseBank->id,
+            'number' => 1,
+            'statement' => 'Questão de português.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+        Question::query()->create([
+            'question_bank_id' => $administrationBank->id,
+            'number' => 1,
+            'statement' => 'Questão de administração.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertDontSee('Resolver questões: Português')
+            ->assertDontSee('Resolver questões: Administração Geral')
+            ->assertDontSee('module_id='.$portuguese->id, false)
+            ->assertDontSee('module_id='.$administration->id, false);
+    }
+
+    public function test_question_plan_block_lists_question_bank_linked_to_same_day_lesson(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '05 - Interpretação - Panorama Geral',
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+        ]);
+        $theoryItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'basic',
+            'title' => 'Bloco 1: Matéria Básica: Português',
+            'description' => 'Bloco de até 45 minutos para estudar Português. Aulas do bloco: 05 - Interpretação - Panorama Geral.',
+            'sort_order' => 1,
+        ]);
+        $theoryItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'questions',
+            'title' => 'Bloco 3 - Questões',
+            'sort_order' => 2,
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Interpretação - Panorama Geral',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $bank->lessons()->syncWithoutDetaching($lesson->id);
+        Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => 'Questão de interpretação.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee('Resolver questões: Interpretação - Panorama Geral')
+            ->assertSee('plan_id='.$plan->id.'&amp;lesson_id='.$lesson->id, false);
+    }
+
+    public function test_question_plan_blocks_do_not_repeat_same_lesson_links_later_in_the_day(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Matemática',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Operações com Frações - Parte I',
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+        ]);
+        $theoryItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'basic',
+            'title' => 'Bloco 1: Matéria Básica: Matemática',
+            'description' => 'Bloco de até 16 minutos para estudar Matemática. Aulas do bloco: Operações com Frações - Parte I.',
+            'sort_order' => 1,
+        ]);
+        $theoryItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'questions',
+            'title' => 'Bloco 2 - Questões',
+            'sort_order' => 2,
+        ]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'review',
+            'title' => 'Bloco 3 - Revisão',
+            'sort_order' => 3,
+        ]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'type' => 'questions',
+            'title' => 'Bloco 4 - Questões',
+            'sort_order' => 4,
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Operações com Frações - Parte I',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $bank->lessons()->syncWithoutDetaching($lesson->id);
+        Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'statement' => 'Questão de frações.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+
+        $response = $this->actingAs($student)->get(route('study-plans.show', $plan));
+
+        $response->assertOk();
+        $this->assertSame(1, substr_count($response->getContent(), 'Resolver questões: Operações com Frações - Parte I'));
+    }
+
+    public function test_lesson_page_shows_fixation_tab_and_related_question_links(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $track = $module->tracks()->create([
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Classes de Palavras - Substantivo e Adjetivo',
+        ]);
+        $otherLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Classes de Palavras - Advérbio',
+        ]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([$otherLesson->id => ['sort_order' => 2]]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+        ]);
+        $theoryItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'type' => 'basic',
+            'title' => 'Português',
+        ]);
+        $theoryItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
+        $theoryItem->lessons()->attach($otherLesson->id, ['sort_order' => 2]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'type' => 'questions',
+            'title' => 'Resolução de Questões: Português',
+        ]);
+
+        $bank = QuestionBank::query()->create([
+            'title' => 'Classe de palavras - Substantivo e Adjetivo',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $bank->lessons()->syncWithoutDetaching($lesson->id);
+        $trackBank = QuestionBank::query()->create([
+            'title' => 'Banco geral da trilha',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $trackBank->tracks()->syncWithoutDetaching($track->id);
+        $otherLessonBank = QuestionBank::query()->create([
+            'title' => 'Classes de Palavras - Advérbio',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        Question::query()->create([
+            'question_bank_id' => $bank->id,
+            'number' => 1,
+            'topic' => 'Substantivo',
+            'statement' => 'Qual alternativa apresenta um substantivo?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'b',
+            'status' => 'published',
+        ]);
+        Question::query()->create([
+            'question_bank_id' => $trackBank->id,
+            'number' => 1,
+            'topic' => 'Trilha',
+            'statement' => 'Qual alternativa apresenta um adjetivo?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+        Question::query()->create([
+            'question_bank_id' => $otherLessonBank->id,
+            'number' => 1,
+            'topic' => 'Advérbio',
+            'statement' => 'Qual alternativa apresenta um advérbio?',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Resolução de questões')
+            ->assertSee('Pratique com os bancos vinculados a este conteúdo.')
+            ->assertSee('abrir área de questões')
+            ->assertSee('Resolver questões: Classe de palavras - Substantivo e Adjetivo')
+            ->assertDontSee('Resolver questões: Banco geral da trilha')
+            ->assertDontSee('Resolver questões: Classes de Palavras - Advérbio')
+            ->assertSee('plan_id='.$plan->id, false)
+            ->assertSee('lesson_id='.$lesson->id, false)
+            ->assertDontSee('lesson_id='.$otherLesson->id, false)
+            ->assertDontSee('track_id='.$track->id, false);
+    }
+
+    public function test_lesson_page_falls_back_to_module_question_bank_when_lesson_has_no_bank(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $track = $module->tracks()->create([
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '03 - Pronome',
+        ]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+        ]);
+        $theoryItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'type' => 'basic',
+            'title' => 'Português',
+        ]);
+        $theoryItem->lessons()->attach($lesson->id, ['sort_order' => 1]);
+
+        $moduleBank = QuestionBank::query()->create([
+            'title' => 'Banco geral de Português',
+            'source_type' => 'pdf',
+            'status' => 'published',
+        ]);
+        $moduleBank->modules()->syncWithoutDetaching($module->id);
+        Question::query()->create([
+            'question_bank_id' => $moduleBank->id,
+            'number' => 1,
+            'topic' => 'Português',
+            'statement' => 'Questão geral de português.',
+            'type' => 'multiple_choice',
+            'answer_key' => 'a',
+            'status' => 'published',
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Resolver questões: Banco geral de Português')
+            ->assertSee('module_id='.$module->id, false)
+            ->assertDontSee('lesson_id='.$lesson->id, false);
+    }
+}

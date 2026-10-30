@@ -1,0 +1,2237 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Filament\Resources\Lessons\LessonResource;
+use App\Filament\Resources\CourseModules\Tables\CourseModulesTable;
+use App\Filament\Resources\CourseModuleTracks\CourseModuleTrackResource;
+use App\Filament\Resources\StudyTracks\Tables\StudyTracksTable;
+use App\Models\AiArtifact;
+use App\Models\Course;
+use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
+use App\Models\CourseSphere;
+use App\Models\EducationLevel;
+use App\Models\Lesson;
+use App\Models\LessonComment;
+use App\Models\LessonProgress;
+use App\Models\StudyPlan;
+use App\Models\StudyPlanItem;
+use App\Models\StudyTrack;
+use App\Models\Teacher;
+use App\Models\User;
+use App\Models\Video;
+use App\Notifications\LessonCommentSubmittedNotification;
+use App\Services\PandaVideoClient;
+use App\Services\StudyPlanGenerator;
+use Carbon\CarbonInterface;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Notifications\AnonymousNotifiable;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Storage;
+use Tests\TestCase;
+
+class CourseCatalogFoundationTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_course_catalog_relations_are_available(): void
+    {
+        $sphere = CourseSphere::factory()->create(['name' => 'Federal']);
+        $level = EducationLevel::factory()->create(['name' => 'Ensino Médio']);
+
+        $course = Course::factory()->create([
+            'sphere_id' => $sphere->id,
+            'education_level_id' => $level->id,
+            'status' => 'published',
+            'is_featured' => true,
+        ]);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'panda_folder_id' => 'folder_123',
+        ]);
+
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'panda_video_id' => 'video_123',
+            'duration_seconds' => 125,
+        ]);
+
+        $this->assertTrue($course->fresh()->sphere->is($sphere));
+        $this->assertTrue($course->fresh()->educationLevel->is($level));
+        $this->assertTrue($course->fresh()->lessons->contains($lesson));
+        $this->assertTrue($module->fresh()->onlineLessons->contains($lesson));
+        $this->assertSame(3, $lesson->duration_minutes);
+    }
+
+    public function test_admin_can_open_student_catalog_with_courses_grouped_by_sphere(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $sphere = CourseSphere::factory()->create([
+            'name' => 'Municipal',
+            'is_active' => true,
+        ]);
+
+        Course::factory()->create([
+            'name' => 'Curso Municipal',
+            'sphere_id' => $sphere->id,
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee('Municipal')
+            ->assertSee('Curso Municipal');
+    }
+
+    public function test_student_can_comment_on_lesson_and_notify_team(): void
+    {
+        Notification::fake();
+
+        [$student, $course, $lesson] = $this->studentCourseAndLesson();
+
+        $this->actingAs($student)
+            ->post(route('courses.lessons.comments.store', [$course->slug, $lesson]), [
+                'body' => 'Tenho uma dúvida sobre o exemplo apresentado na aula.',
+            ])
+            ->assertRedirect();
+
+        $comment = LessonComment::query()->firstOrFail();
+
+        $this->assertSame($student->id, $comment->user_id);
+        $this->assertSame($course->id, $comment->course_id);
+        $this->assertSame($lesson->id, $comment->lesson_id);
+        $this->assertSame('open', $comment->status);
+
+        Notification::assertSentTo(new AnonymousNotifiable, LessonCommentSubmittedNotification::class, function ($notification, array $channels, object $notifiable): bool {
+            return in_array('mail', $channels, true)
+                && $notifiable->routes['mail'] === [
+                    'danielsilva.it@gmail.com',
+                    'cristianoconcursos@gmail.com',
+                    'liliancarol93@gmail.com',
+                ];
+        });
+    }
+
+    public function test_student_comment_blocks_profanity(): void
+    {
+        Notification::fake();
+
+        [$student, $course, $lesson] = $this->studentCourseAndLesson();
+
+        $this->actingAs($student)
+            ->from(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->post(route('courses.lessons.comments.store', [$course->slug, $lesson]), [
+                'body' => 'Essa aula ficou uma merda e eu nao entendi.',
+            ])
+            ->assertRedirect(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertSessionHasErrors('body');
+
+        $this->assertSame(0, LessonComment::query()->count());
+        Notification::assertNothingSent();
+    }
+
+    public function test_student_comment_blocks_fast_duplicate_spam(): void
+    {
+        Notification::fake();
+
+        [$student, $course, $lesson] = $this->studentCourseAndLesson();
+
+        LessonComment::query()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'lesson_id' => $lesson->id,
+            'body' => 'Pode explicar melhor esta parte da aula?',
+            'status' => 'open',
+        ]);
+
+        $this->actingAs($student)
+            ->from(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->post(route('courses.lessons.comments.store', [$course->slug, $lesson]), [
+                'body' => 'Pode explicar melhor esta parte da aula?',
+            ])
+            ->assertRedirect(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertSessionHasErrors('body');
+
+        $this->assertSame(1, LessonComment::query()->count());
+        Notification::assertNothingSent();
+    }
+
+    public function test_new_courses_receive_start_here_module_and_instruction_track(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+
+        $module = CourseModule::query()->where('name', 'Comece por aqui')->firstOrFail();
+        $track = CourseModuleTrack::query()
+            ->where('course_module_id', $module->id)
+            ->where('slug', 'instrucoes')
+            ->firstOrFail();
+
+        $this->assertTrue($module->courses()->whereKey($course->id)->exists());
+        $this->assertTrue($track->courses()->whereKey($course->id)->exists());
+        $lesson = Lesson::query()->where('title', 'Comece por aqui')->firstOrFail();
+        $this->assertTrue($module->onlineLessons()->whereKey($lesson->id)->exists());
+        $this->assertTrue($track->lessons()->whereKey($lesson->id)->exists());
+    }
+
+    public function test_course_lists_all_linked_lessons_and_counts_media(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $otherCourse = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['name' => 'Português']);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de palavras',
+            'slug' => 'classes-de-palavras',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $directLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'title' => '01 - Aula direta',
+            'panda_video_id' => 'direct-video',
+            'source_status' => 'media_ready',
+        ]);
+        $moduleLesson = Lesson::factory()->create([
+            'title' => '02 - Aula do módulo',
+            'panda_embed_url' => 'https://player.test/module',
+        ]);
+        $moduleLesson->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 2]]);
+        $trackLesson = Lesson::factory()->create([
+            'title' => '03 - Aula da trilha',
+            'panda_player_url' => 'https://player.test/track',
+        ]);
+        $trackLesson->tracks()->syncWithoutDetaching([$track->id => ['sort_order' => 3]]);
+        $withoutMedia = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'title' => '04 - Sem mídia',
+            'source_status' => 'awaiting_media',
+        ]);
+        $otherLesson = Lesson::factory()->create([
+            'course_id' => $otherCourse->id,
+            'title' => '05 - Outro curso',
+            'panda_video_id' => 'other-video',
+        ]);
+
+        $lessons = $course->linkedLessons();
+
+        $this->assertCount(5, $lessons);
+        $this->assertTrue($lessons->contains($directLesson));
+        $this->assertTrue($lessons->contains($moduleLesson));
+        $this->assertTrue($lessons->contains($trackLesson));
+        $this->assertTrue($lessons->contains($withoutMedia));
+        $this->assertFalse($lessons->contains($otherLesson));
+        $this->assertSame(5, $course->linkedLessonsCount());
+        $this->assertSame(3, $course->linkedMediaLessonsCount());
+    }
+
+    public function test_single_lesson_can_be_linked_to_many_courses_through_many_modules_and_tracks(): void
+    {
+        $firstCourse = Course::factory()->create(['status' => 'published']);
+        $secondCourse = Course::factory()->create(['status' => 'published']);
+        $thirdCourse = Course::factory()->create(['status' => 'published']);
+
+        $firstModule = CourseModule::factory()->create(['name' => 'Português']);
+        $secondModule = CourseModule::factory()->create(['name' => 'Direito']);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $secondModule->id,
+            'name' => 'Lei seca',
+            'slug' => 'lei-seca',
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'title' => 'Aula compartilhada',
+            'status' => 'published',
+            'panda_video_id' => 'shared-video',
+        ]);
+
+        $firstModule->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondModule->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$thirdCourse->id => ['sort_order' => 1]]);
+        $lesson->modules()->syncWithoutDetaching([
+            $firstModule->id => ['sort_order' => 1],
+            $secondModule->id => ['sort_order' => 2],
+        ]);
+        $lesson->tracks()->syncWithoutDetaching([$track->id => ['sort_order' => 1]]);
+
+        $this->assertTrue($firstCourse->linkedLessons()->contains($lesson));
+        $this->assertTrue($secondCourse->linkedLessons()->contains($lesson));
+        $this->assertTrue($thirdCourse->linkedLessons()->contains($lesson));
+        $this->assertSame(2, $firstCourse->linkedLessonsCount());
+        $this->assertSame(2, $secondCourse->linkedLessonsCount());
+        $this->assertSame(2, $thirdCourse->linkedLessonsCount());
+    }
+
+    public function test_lesson_admin_module_and_track_filter_options_follow_selected_course(): void
+    {
+        $firstCourse = Course::factory()->create(['status' => 'published']);
+        $secondCourse = Course::factory()->create(['status' => 'published']);
+        $firstModule = CourseModule::factory()->create(['name' => 'Português']);
+        $secondModule = CourseModule::factory()->create(['name' => 'Matemática']);
+        $firstTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $firstModule->id,
+            'name' => 'Classes',
+            'slug' => 'classes',
+            'status' => 'published',
+        ]);
+        $secondTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $secondModule->id,
+            'name' => 'Frações',
+            'slug' => 'fracoes',
+            'status' => 'published',
+        ]);
+
+        $firstModule->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondModule->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+        $firstTrack->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondTrack->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+
+        $startHereModule = CourseModule::query()->where('name', 'Comece por aqui')->firstOrFail();
+        $instructionsTrack = CourseModuleTrack::query()->where('slug', 'instrucoes')->firstOrFail();
+
+        $this->assertSame(
+            [
+                $startHereModule->id => 'Comece por aqui',
+                $secondModule->id => 'Matemática',
+                $firstModule->id => 'Português',
+            ],
+            LessonResource::moduleFilterOptions(),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $firstModule->id => 'Português'],
+            LessonResource::moduleFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $secondModule->id => 'Matemática'],
+            LessonResource::moduleFilterOptions($secondCourse->id),
+        );
+
+        $allTrackOptions = LessonResource::trackFilterOptions();
+
+        $this->assertArrayHasKey($instructionsTrack->id, $allTrackOptions);
+        $this->assertArrayHasKey($firstTrack->id, $allTrackOptions);
+        $this->assertArrayHasKey($secondTrack->id, $allTrackOptions);
+        $this->assertSame(
+            [
+                $instructionsTrack->id => 'Comece por aqui / Instruções',
+                $firstTrack->id => 'Português / Classes',
+            ],
+            LessonResource::trackFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [
+                $instructionsTrack->id => 'Comece por aqui / Instruções',
+                $secondTrack->id => 'Matemática / Frações',
+            ],
+            LessonResource::trackFilterOptions($secondCourse->id),
+        );
+        $this->assertSame([$firstTrack->id => 'Português / Classes'], LessonResource::trackFilterOptions(null, $firstModule->id));
+    }
+
+    public function test_module_and_track_admin_filter_options_follow_selected_course(): void
+    {
+        $firstCourse = Course::factory()->create(['status' => 'published']);
+        $secondCourse = Course::factory()->create(['status' => 'published']);
+        $firstModule = CourseModule::factory()->create(['name' => 'Português']);
+        $secondModule = CourseModule::factory()->create(['name' => 'Matemática']);
+        $firstTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $firstModule->id,
+            'name' => 'Classes',
+            'slug' => 'classes',
+            'status' => 'published',
+        ]);
+        $secondTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $secondModule->id,
+            'name' => 'Frações',
+            'slug' => 'fracoes',
+            'status' => 'published',
+        ]);
+
+        $firstModule->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondModule->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+        $firstTrack->courses()->syncWithoutDetaching([$firstCourse->id => ['sort_order' => 1]]);
+        $secondTrack->courses()->syncWithoutDetaching([$secondCourse->id => ['sort_order' => 1]]);
+
+        $startHereModule = CourseModule::query()->where('name', 'Comece por aqui')->firstOrFail();
+        $instructionsTrack = CourseModuleTrack::query()->where('slug', 'instrucoes')->firstOrFail();
+
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $firstModule->id => 'Português'],
+            CourseModulesTable::moduleFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $secondModule->id => 'Matemática'],
+            CourseModulesTable::moduleFilterOptions($secondCourse->id),
+        );
+        $this->assertSame(
+            [
+                $instructionsTrack->id => 'Comece por aqui / Instruções',
+                $firstTrack->id => 'Português / Classes',
+            ],
+            CourseModulesTable::trackFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [
+                $instructionsTrack->id => 'Comece por aqui / Instruções',
+                $secondTrack->id => 'Matemática / Frações',
+            ],
+            CourseModulesTable::trackFilterOptions($secondCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $firstModule->id => 'Português'],
+            CourseModuleTrackResource::moduleFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $secondModule->id => 'Matemática'],
+            CourseModuleTrackResource::moduleFilterOptions($secondCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $firstModule->id => 'Português'],
+            StudyTracksTable::moduleFilterOptions($firstCourse->id),
+        );
+        $this->assertSame(
+            [$startHereModule->id => 'Comece por aqui', $secondModule->id => 'Matemática'],
+            StudyTracksTable::moduleFilterOptions($secondCourse->id),
+        );
+    }
+
+    public function test_course_lists_lessons_from_modules_linked_through_study_track(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $studyTrack = StudyTrack::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Trilha oficial',
+        ]);
+        $module = CourseModule::factory()->create(['name' => 'Português']);
+        $lesson = Lesson::factory()->create([
+            'title' => 'Aula pela trilha de estudo',
+            'status' => 'published',
+            'panda_embed_url' => 'https://player.test/aula',
+        ]);
+
+        $studyTrack->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 1, 'weight' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+
+        $this->assertTrue($course->linkedLessons()->contains($lesson));
+        $this->assertSame(2, $course->linkedLessonsCount());
+        $this->assertSame(1, $course->linkedMediaLessonsCount());
+    }
+
+    public function test_student_can_browse_catalog_and_only_sees_enrolled_courses_in_my_courses(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $enrolledCourse = Course::factory()->create([
+            'name' => 'Curso liberado',
+            'status' => 'published',
+            'is_featured' => true,
+        ]);
+        $lockedCourse = Course::factory()->create([
+            'name' => 'Curso bloqueado',
+            'status' => 'published',
+            'checkout_url' => 'https://checkout.example.com/curso',
+        ]);
+
+        $student->courses()->attach($enrolledCourse, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.index'))
+            ->assertOk()
+            ->assertSee('Curso liberado')
+            ->assertSee('Curso bloqueado')
+            ->assertSee('Comprar acesso');
+
+        $this->actingAs($student)
+            ->get(route('courses.mine'))
+            ->assertOk()
+            ->assertSee('Curso liberado')
+            ->assertDontSee('Curso bloqueado');
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $lockedCourse->slug))
+            ->assertOk()
+            ->assertSee('Acesso bloqueado')
+            ->assertSee('Comprar acesso');
+    }
+
+    public function test_module_refresh_forgets_student_catalog_cache(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+        ]);
+
+        Cache::put("course:{$course->id}:catalog-modules:v3", 'cache-antigo', 600);
+        Cache::put("course:{$course->id}:published-lessons-count:v2", 99, 600);
+
+        app(\App\Services\ActiveStudyPlanRefresher::class)->refreshCoursesForModule($module);
+
+        $this->assertNull(Cache::get("course:{$course->id}:catalog-modules:v3"));
+        $this->assertNull(Cache::get("course:{$course->id}:published-lessons-count:v2"));
+    }
+
+    public function test_course_page_shows_published_lessons_from_tracks_when_only_module_is_attached_to_course(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso Português',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Substantivo',
+            'status' => 'published',
+            'source_status' => 'media_ready',
+            'panda_embed_url' => 'https://player.test/substantivo',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->attach($course->id, ['sort_order' => 1]);
+        $track->lessons()->attach($lesson->id, ['sort_order' => 1]);
+        $lesson->modules()->attach($module->id, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Português')
+            ->assertSee('Fechar')
+            ->assertSee('Abrir')
+            ->assertSee('Ver aulas')
+            ->assertSee('Arraste para ver as próximas trilhas.')
+            ->assertSee('Trilhas anteriores')
+            ->assertSee('Próximas trilhas')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false)
+            ->assertSee('Classe de palavras')
+            ->assertDontSee('01 - Substantivo');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
+            ->assertOk()
+            ->assertSee('Classe de palavras')
+            ->assertSee('Ver aulas')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false)
+            ->assertDontSee('01 - Substantivo');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
+            ->assertSee('Classe de palavras')
+            ->assertSee('Arraste para ver as próximas aulas.')
+            ->assertSee('Aulas anteriores')
+            ->assertSee('Próximas aulas')
+            ->assertSee('01 - Substantivo');
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('01 - Substantivo')
+            ->assertSee('Aulas da trilha')
+            ->assertSee('Classe de palavras')
+            ->assertSee('https://player.test/substantivo', false);
+    }
+
+    public function test_student_sees_coming_soon_track_with_available_from_forecast(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com trilha futura',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Informática',
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Excel 2026',
+            'slug' => 'excel-2026',
+            'sort_order' => 1,
+            'status' => 'published',
+            'available_from' => '2026-11-20',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->attach($course->id, ['sort_order' => 1]);
+        $track->courses()->attach($course->id, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Excel 2026')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertSee('Previsão: 20/11/2026')
+            ->assertSee('Ver previsão');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
+            ->assertOk()
+            ->assertSee('Excel 2026')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertSee('Previsão: 20/11/2026')
+            ->assertSee('Ver previsão');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
+            ->assertSee('Excel 2026')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertSee('Previsão: 20/11/2026')
+            ->assertDontSee('Nenhuma aula publicada nesta trilha ainda.');
+    }
+
+    public function test_course_catalog_uses_uploaded_thumbnail_before_external_url(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com thumbnail enviada',
+            'status' => 'published',
+            'is_featured' => true,
+            'thumbnail_url' => 'https://example.com/external-thumbnail.jpg',
+            'thumbnail_path' => 'course-thumbnails/curso-upload.webp',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.index'))
+            ->assertOk()
+            ->assertSee(url('/media/thumbnails/course-thumbnails/curso-upload.webp'), false)
+            ->assertDontSee('https://example.com/external-thumbnail.jpg', false);
+    }
+
+    public function test_uploaded_thumbnail_is_served_by_application_route(): void
+    {
+        Storage::disk('public')->put('course-thumbnails/curso-upload.svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+        Storage::disk('public')->put('teacher-thumbnails/professor-upload.svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+
+        $student = User::factory()->create(['role' => 'student']);
+
+        $this->actingAs($student)
+            ->get('/media/thumbnails/course-thumbnails/curso-upload.svg')
+            ->assertOk()
+            ->assertHeader('cache-control', 'max-age=31536000, public');
+
+        $this->actingAs($student)
+            ->get('/media/thumbnails/teacher-thumbnails/professor-upload.svg')
+            ->assertOk()
+            ->assertHeader('cache-control', 'max-age=31536000, public');
+    }
+
+    public function test_enrolled_student_can_watch_and_complete_lesson(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com player',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Módulo inicial',
+            'sort_order' => 1,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Aula com Panda',
+            'panda_embed_url' => 'https://player.example.com/embed/video-123',
+            'duration_seconds' => 900,
+            'status' => 'published',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Aula com Panda')
+            ->assertSee('https://player.example.com/embed/video-123', false);
+
+        $this->assertDatabaseHas('lesson_progress', [
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'lesson_id' => $lesson->id,
+            'status' => 'in_progress',
+        ]);
+
+        $this->actingAs($student)
+            ->postJson(route('courses.lessons.complete', [$course->slug, $lesson]), [
+                'completed' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('completed', true)
+            ->assertJsonPath('button_label', 'Desmarcar como concluída');
+
+        $progress = LessonProgress::query()
+            ->where('user_id', $student->id)
+            ->where('lesson_id', $lesson->id)
+            ->firstOrFail();
+
+        $this->assertSame('completed', $progress->status);
+        $this->assertSame(900, $progress->progress_seconds);
+        $this->assertNotNull($progress->completed_at);
+
+        $this->actingAs($student)
+            ->postJson(route('courses.lessons.complete', [$course->slug, $lesson]), [
+                'completed' => false,
+            ])
+            ->assertOk()
+            ->assertJsonPath('completed', false)
+            ->assertJsonPath('button_label', 'Marcar como concluída');
+
+        $progress->refresh();
+
+        $this->assertSame('in_progress', $progress->status);
+        $this->assertSame(0, $progress->progress_seconds);
+        $this->assertNull($progress->completed_at);
+
+        $this->actingAs($student)
+            ->post(route('courses.lessons.complete', [$course->slug, $lesson]))
+            ->assertRedirect();
+
+        $track = $lesson->fresh()->track;
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('1 de 2 aula(s) concluída(s).')
+            ->assertSee('Ver aulas')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
+    }
+
+    public function test_pdf_lesson_embeds_digital_book_and_allows_download(): void
+    {
+        Storage::fake('local');
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com apostila',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Noções de Direito',
+        ]);
+
+        Storage::disk('local')->put('lesson-digital-books/apostila-direito.pdf', '%PDF-1.4 teste');
+
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Apostila de Direito',
+            'type' => 'pdf',
+            'digital_book_path' => 'lesson-digital-books/apostila-direito.pdf',
+            'status' => 'published',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Apostila de Direito')
+            ->assertSee('Baixar livro digital')
+            ->assertSee(route('courses.lessons.digital-book.show', [$course->slug, $lesson]), false)
+            ->assertSee(route('courses.lessons.digital-book.download', [$course->slug, $lesson]), false)
+            ->assertDontSee('A mídia desta aula entrará em breve');
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.digital-book.download', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+    }
+
+    public function test_course_track_card_links_to_in_progress_lesson_before_first_lesson(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com progresso por trilha',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Informática',
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Introdução',
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Configurações',
+            'status' => 'published',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+        $module->onlineLessons()->syncWithoutDetaching([
+            $firstLesson->id => ['sort_order' => 1],
+            $secondLesson->id => ['sort_order' => 2],
+        ]);
+        $track->lessons()->syncWithoutDetaching([
+            $firstLesson->id => ['sort_order' => 1],
+            $secondLesson->id => ['sort_order' => 2],
+        ]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        LessonProgress::query()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'lesson_id' => $secondLesson->id,
+            'status' => 'in_progress',
+            'progress_seconds' => 120,
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
+            ->assertOk()
+            ->assertSee('Ver aulas')
+            ->assertDontSee('Continuar trilha')
+            ->assertDontSee('Começar trilha')
+            ->assertDontSee('Rever trilha')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $secondLesson]), false)
+            ->assertDontSee('02 - Configurações');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
+            ->assertSee('02 - Configurações')
+            ->assertSee('Continuar')
+            ->assertSee('Assistir aula')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $secondLesson]), false);
+    }
+
+    public function test_course_track_card_ver_aulas_links_to_next_uncompleted_track_lesson(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com próxima aula',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Substantivo',
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Adjetivo',
+            'status' => 'published',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([
+            $firstLesson->id => ['sort_order' => 1],
+            $secondLesson->id => ['sort_order' => 2],
+        ]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        LessonProgress::query()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'lesson_id' => $firstLesson->id,
+            'status' => 'completed',
+            'progress_seconds' => 600,
+            'completed_at' => now(),
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Ver aulas')
+            ->assertDontSee('Continuar trilha')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $secondLesson]), false)
+            ->assertDontSee(route('courses.lessons.show', [$course->slug, $firstLesson]), false);
+    }
+
+    public function test_courses_show_published_tracks_from_attached_modules(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $firstCourse = Course::factory()->create([
+            'name' => 'Curso com trilha A',
+            'status' => 'published',
+        ]);
+        $secondCourse = Course::factory()->create([
+            'name' => 'Curso com trilha B',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $firstCourse->id,
+            'name' => 'Português',
+            'sort_order' => 1,
+        ]);
+        $module->courses()->syncWithoutDetaching([
+            $secondCourse->id => ['sort_order' => 1],
+        ]);
+
+        $firstTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classe de palavras',
+            'slug' => 'classe-de-palavras',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $secondTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Crase',
+            'slug' => 'crase',
+            'status' => 'published',
+            'sort_order' => 2,
+        ]);
+        $firstTrack->courses()->attach($firstCourse->id, ['sort_order' => 1]);
+        $secondTrack->courses()->attach($secondCourse->id, ['sort_order' => 1]);
+
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $firstCourse->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $firstTrack->id,
+            'title' => 'Aula da primeira trilha',
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $firstCourse->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $secondTrack->id,
+            'title' => 'Aula da segunda trilha',
+            'status' => 'published',
+        ]);
+
+        $student->courses()->attach($firstCourse, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $firstCourse->slug))
+            ->assertOk()
+            ->assertSee('Português')
+            ->assertSee('Ver aulas')
+            ->assertSee('Trilhas anteriores')
+            ->assertSee('Próximas trilhas')
+            ->assertSee('Classe de palavras')
+            ->assertDontSee('Aula da primeira trilha')
+            ->assertSee('Crase')
+            ->assertDontSee('Aula da segunda trilha');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$firstCourse->slug, $module]))
+            ->assertOk()
+            ->assertSee('Classe de palavras')
+            ->assertSee('Crase')
+            ->assertDontSee('Aula da primeira trilha')
+            ->assertDontSee('Aula da segunda trilha');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$firstCourse->slug, $module, $firstTrack]))
+            ->assertOk()
+            ->assertSee('Aula da primeira trilha')
+            ->assertDontSee('Aula da segunda trilha');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$firstCourse->slug, $module, $secondTrack]))
+            ->assertOk()
+            ->assertSee('Aula da segunda trilha');
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$firstCourse->slug, $firstLesson]))
+            ->assertOk();
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$firstCourse->slug, $secondLesson]))
+            ->assertOk();
+    }
+
+    public function test_course_track_without_published_lessons_shows_available_soon_placeholder(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com trilha futura',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Conhecimentos Específicos',
+            'is_active' => true,
+        ]);
+        $module->courses()->syncWithoutDetaching([
+            $course->id => ['sort_order' => 1],
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Teorias da Administração',
+            'slug' => 'teorias-da-administracao',
+            'status' => 'published',
+            'sort_order' => 1,
+            'metadata' => [
+                'thumbnail_aspect_ratio' => '300/580',
+            ],
+        ]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
+            ->assertOk()
+            ->assertSee('Teorias da Administração')
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertSee('Ver previsão')
+            ->assertDontSee('Começar');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
+            ->assertSee('Aulas disponíveis em breve')
+            ->assertDontSee('Nenhuma aula publicada nesta trilha ainda.')
+            ->assertDontSee('Começar');
+    }
+
+    public function test_course_track_with_lesson_without_media_is_available_and_lesson_page_shows_coming_soon(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com aulas futuras',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Conhecimentos Específicos',
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Teorias da Administração',
+            'slug' => 'teorias-da-administracao',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => '01 - Teorias da Administração - Teoria Científica',
+            'status' => 'published',
+            'source_status' => 'awaiting_media',
+            'panda_video_id' => null,
+            'panda_embed_url' => null,
+            'panda_player_url' => null,
+            'duration_seconds' => 23 * 60,
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
+            ->assertOk()
+            ->assertSee('Teorias da Administração')
+            ->assertSee('Ver aulas')
+            ->assertDontSee('Começar trilha')
+            ->assertDontSee('01 - Teorias da Administração - Teoria Científica');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.lessons.index', [$course->slug, $module, $track]))
+            ->assertOk()
+            ->assertSee('01 - Teorias da Administração - Teoria Científica')
+            ->assertSee('Em breve')
+            ->assertSee('Assistir aula')
+            ->assertSee(route('courses.lessons.show', [$course->slug, $lesson]), false);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('01 - Teorias da Administração - Teoria Científica')
+            ->assertSee('Entrará em breve')
+            ->assertSee('A mídia desta aula entrará em breve')
+            ->assertSee('Marcar como concluída');
+    }
+
+    public function test_lesson_page_embeds_video_from_library_when_lesson_only_has_video_id(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com vídeo da biblioteca',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'LGPD',
+            'slug' => 'lgpd',
+            'status' => 'published',
+            'sort_order' => 1,
+        ]);
+        $video = Video::query()->create([
+            'title' => '01 - LGPD',
+            'slug' => '01-lgpd',
+            'provider' => 'panda',
+            'provider_video_id' => '43094692-ea78-46b8-a4fc-5562e7cf9fe',
+            'provider_status' => 'CONVERTED',
+            'thumbnail_url' => 'https://cdn.pandavideo.com/vz-3aab6b05-dd1/c189011c-3a8e-460b-aa4e/thumbnail.jpg',
+            'duration_seconds' => 1560,
+            'source_status' => 'media_ready',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'video_id' => $video->id,
+            'title' => '01 - LGPD: Conceitos iniciais e objetivos da lei',
+            'type' => 'video',
+            'status' => 'published',
+            'source_status' => 'media_ready',
+            'panda_video_id' => null,
+            'panda_embed_url' => null,
+            'panda_player_url' => null,
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('https://player-vz-3aab6b05-dd1.tv.pandavideo.com.br/embed/?v=c189011c-3a8e-460b-aa4e', false)
+            ->assertDontSee('Entrará em breve');
+    }
+
+    public function test_course_tracks_render_as_filtered_track_cards_when_module_has_multiple_tracks(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com carrossel',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'is_active' => true,
+        ]);
+        $teacher = Teacher::factory()->create([
+            'name' => 'Professora Dorival Conte Jr.',
+            'thumbnail_path' => 'teacher-thumbnails/dorival.webp',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        foreach (['Classes de palavras', 'Pontuação'] as $index => $trackName) {
+            CourseModuleTrack::query()->create([
+                'course_module_id' => $module->id,
+                'teacher_id' => $index === 0 ? $teacher->id : null,
+                'name' => $trackName,
+                'slug' => str($trackName)->slug()->toString(),
+                'teacher_name' => $index === 0 ? 'Dorival Conte Jr.' : null,
+                'status' => 'published',
+                'sort_order' => $index + 1,
+            ]);
+        }
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.show', $course->slug))
+            ->assertOk()
+            ->assertSee('Português')
+            ->assertSee('2 trilha(s)')
+            ->assertSee('Ver aulas')
+            ->assertSee('Classes de palavras')
+            ->assertSee('Pontuação')
+            ->assertSee('Professora Dorival Conte Jr.')
+            ->assertSee(url('/media/thumbnails/teacher-thumbnails/dorival.webp'), false)
+            ->assertDontSee('Professor: Dorival Conte Jr.')
+            ->assertDontSee('Professor não informado')
+            ->assertDontSee('Acesse as aulas desta trilha.')
+            ->assertSee('course-carousel-track');
+
+        $this->actingAs($student)
+            ->get(route('courses.modules.tracks.index', [$course->slug, $module]))
+            ->assertOk()
+            ->assertSee('2 trilha(s)')
+            ->assertSee('Arraste para ver as próximas trilhas.')
+            ->assertSee('Trilhas anteriores')
+            ->assertSee('Próximas trilhas')
+            ->assertSee('course-carousel-track')
+            ->assertSee('Classes de palavras')
+            ->assertSee('Pontuação')
+            ->assertSee('Professora Dorival Conte Jr.')
+            ->assertSee(url('/media/thumbnails/teacher-thumbnails/dorival.webp'), false)
+            ->assertDontSee('Professor: Dorival Conte Jr.')
+            ->assertDontSee('Professor não informado')
+            ->assertDontSee('Acesse as aulas desta trilha.')
+            ->assertDontSee('Trilha 1')
+            ->assertDontSee('Trilha 2');
+    }
+
+    public function test_deleting_course_module_or_track_preserves_lessons(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Windows 10',
+            'status' => 'published',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+
+        $track->delete();
+
+        $lesson = $lesson->fresh();
+
+        $this->assertNotNull($lesson);
+        $this->assertNull($lesson->course_module_track_id);
+        $this->assertDatabaseMissing('course_module_track_lessons', [
+            'lesson_id' => $lesson->id,
+            'course_module_track_id' => $track->id,
+        ]);
+
+        $module->delete();
+
+        $lesson = $lesson->fresh();
+
+        $this->assertNotNull($lesson);
+        $this->assertNull($lesson->course_module_id);
+        $this->assertNull($lesson->course_module_track_id);
+        $this->assertSame($course->id, $lesson->course_id);
+        $this->assertDatabaseMissing('course_module_lessons', [
+            'lesson_id' => $lesson->id,
+            'course_module_id' => $module->id,
+        ]);
+
+        $course->delete();
+
+        $lesson = $lesson->fresh();
+
+        $this->assertNotNull($lesson);
+        $this->assertNull($lesson->course_id);
+    }
+
+    public function test_track_uses_registered_teacher_thumbnail_when_only_teacher_text_matches(): void
+    {
+        Teacher::factory()->create([
+            'name' => 'Professor Dorival Conte Jr.',
+            'thumbnail_path' => 'teacher-thumbnails/dorival.webp',
+        ]);
+
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => CourseModule::factory()->create()->id,
+            'name' => 'Análise sintática',
+            'slug' => 'analise-sintatica',
+            'teacher_name' => 'Prof. Dorival Conte Jr.',
+            'thumbnail_url' => null,
+            'status' => 'published',
+        ]);
+
+        $this->assertSame(
+            url('/media/thumbnails/teacher-thumbnails/dorival.webp'),
+            $track->thumbnail_display_url,
+        );
+        $this->assertSame('Professor Dorival Conte Jr.', $track->teacher_display_name);
+    }
+
+    public function test_track_uses_module_teacher_as_fallback(): void
+    {
+        $teacher = Teacher::factory()->create([
+            'name' => 'Dra. Ana Silva',
+            'thumbnail_path' => 'teacher-thumbnails/ana.webp',
+        ]);
+        $module = CourseModule::factory()->create([
+            'teacher_id' => $teacher->id,
+            'teacher_name' => 'Ana Silva',
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Semântica',
+            'slug' => 'semantica',
+            'status' => 'published',
+        ]);
+
+        $this->assertSame('Dra. Ana Silva', $track->teacher_display_name);
+        $this->assertSame(
+            url('/media/thumbnails/teacher-thumbnails/ana.webp'),
+            $track->thumbnail_display_url,
+        );
+    }
+
+    public function test_deleting_course_preserves_modules_tracks_and_lessons(): void
+    {
+        $course = Course::factory()->create(['status' => 'published']);
+        $otherCourse = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Windows 10',
+            'slug' => 'windows-10',
+            'status' => 'published',
+        ]);
+        $studyTrack = StudyTrack::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Trilha de estudos',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Windows 10',
+            'status' => 'published',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->courses()->syncWithoutDetaching([$otherCourse->id => ['sort_order' => 2]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$otherCourse->id => ['sort_order' => 2]]);
+        $track->lessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $studyTrack->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 1, 'weight' => 1]]);
+
+        $course->delete();
+
+        $this->assertDatabaseHas('course_modules', [
+            'id' => $module->id,
+            'course_id' => null,
+        ]);
+        $this->assertDatabaseHas('course_module_tracks', [
+            'id' => $track->id,
+            'course_module_id' => $module->id,
+        ]);
+        $this->assertDatabaseMissing('study_tracks', [
+            'id' => $studyTrack->id,
+        ]);
+        $this->assertDatabaseHas('lessons', [
+            'id' => $lesson->id,
+            'course_id' => null,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_course', [
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+        ]);
+        $this->assertDatabaseMissing('course_module_track_course', [
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+        ]);
+        $this->assertDatabaseHas('course_module_course', [
+            'course_id' => $otherCourse->id,
+            'course_module_id' => $module->id,
+        ]);
+        $this->assertDatabaseHas('course_module_track_course', [
+            'course_id' => $otherCourse->id,
+            'course_module_track_id' => $track->id,
+        ]);
+        $this->assertTrue($otherCourse->linkedLessons()->contains($lesson));
+    }
+
+    public function test_locked_student_cannot_open_lesson_player(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'status' => 'published',
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertForbidden();
+    }
+
+    public function test_generated_study_plan_links_real_online_lessons(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 30,
+            'sort_order' => 1,
+            'lessons' => [
+                ['name' => 'Classes de palavras', 'minutes' => 30],
+            ],
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'duration_seconds' => 1800,
+            'status' => 'published',
+        ]);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $startDate = now()->next(CarbonInterface::MONDAY)->toDateString();
+        $plan = app(StudyPlanGenerator::class)->generate(
+            $student,
+            $course,
+            null,
+            now()->next(CarbonInterface::MONDAY)->addWeek()->toDateString(),
+            $startDate,
+            ['monday'],
+            ['monday' => 60],
+            'balanced',
+        );
+
+        $item = $plan->items()->where('course_module_id', $module->id)->firstOrFail();
+
+        $this->assertTrue($item->lessons()->whereKey($lesson->id)->exists());
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee('Classes de palavras')
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lesson]), false);
+    }
+
+    public function test_completing_linked_lesson_marks_plan_item_when_all_lessons_are_done(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'status' => 'published',
+            'duration_seconds' => 600,
+        ]);
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'completed_at' => null,
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $item->lessons()->attach($lesson, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->post(route('courses.lessons.complete', [$course->slug, $lesson]))
+            ->assertRedirect();
+
+        $this->assertNotNull($item->fresh()->completed_at);
+    }
+
+    public function test_lesson_page_shows_active_plan_day_track_sidebar(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com plano',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Arquivologia',
+            'type' => 'specific',
+        ]);
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '01 - Conceitos Iniciais',
+            'duration_seconds' => 1200,
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '02 - Terminologias',
+            'duration_seconds' => 900,
+            'status' => 'published',
+        ]);
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-06-29',
+            'title' => 'Bloco 1: Arquivologia',
+            'estimated_minutes' => 35,
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $item->lessons()->attach($secondLesson, ['sort_order' => 1]);
+        $item->lessons()->attach($firstLesson, ['sort_order' => 2]);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $firstLesson]))
+            ->assertOk()
+            ->assertSee('Trilha do plano')
+            ->assertSee('Voltar ao plano')
+            ->assertSee(route('study-plans.show', $plan), false)
+            ->assertSee('01 - Conceitos Iniciais')
+            ->assertSee('02 - Terminologias')
+            ->assertSeeInOrder(['01 - Conceitos Iniciais', '02 - Terminologias']);
+    }
+
+    public function test_plan_lesson_link_opens_lesson_attached_only_through_module_and_plan(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com plano sem trilha',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::withoutEvents(fn () => Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Classe de palavras sem trilha',
+            'duration_seconds' => 900,
+            'status' => 'published',
+        ]));
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-06-29',
+            'title' => 'Bloco 1: Português',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $module->onlineLessons()->syncWithoutDetaching([$lesson->id => ['sort_order' => 1]]);
+        $item->lessons()->attach($lesson, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lesson]), false);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.items.lessons.show', [$plan, $item, $lesson]))
+            ->assertRedirect(route('courses.lessons.show', [
+                $course->slug,
+                $lesson,
+                'plan_id' => $plan->id,
+                'plan_item_id' => $item->id,
+            ]));
+
+        $this->actingAs($student)
+            ->followingRedirects()
+            ->get(route('study-plans.items.lessons.show', [$plan, $item, $lesson]))
+            ->assertOk()
+            ->assertSee('Classe de palavras sem trilha')
+            ->assertSee('Trilha do plano');
+    }
+
+    public function test_active_plan_lesson_link_opens_even_when_lesson_is_archived_in_catalog(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso com aula antiga no plano',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $lesson = Lesson::withoutEvents(fn () => Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Aula antiga ainda no plano',
+            'duration_seconds' => 900,
+            'status' => 'archived',
+        ]));
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-06-29',
+            'title' => 'Bloco 1: Português',
+        ]);
+
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $item->lessons()->attach($lesson, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Aula antiga ainda no plano')
+            ->assertSee('Trilha do plano');
+    }
+
+    public function test_plan_lesson_route_uses_plan_course_even_when_lesson_has_another_course(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $planCourse = Course::factory()->create([
+            'name' => 'Curso do plano',
+            'slug' => 'curso-do-plano',
+            'status' => 'published',
+        ]);
+        $otherCourse = Course::factory()->create([
+            'name' => 'Curso original da aula',
+            'slug' => 'curso-original-da-aula',
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $otherCourse->id,
+            'title' => 'Aula reaproveitada',
+            'status' => 'published',
+        ]);
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $planCourse->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'scheduled_date' => '2026-06-29',
+            'title' => 'Bloco 1: Aula reaproveitada',
+        ]);
+
+        $student->courses()->attach($planCourse, ['source' => 'manual']);
+        $item->lessons()->attach($lesson, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lesson]), false)
+            ->assertDontSee(route('courses.lessons.show', [$otherCourse->slug, $lesson]), false);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.items.lessons.show', [$plan, $item, $lesson]))
+            ->assertRedirect(route('courses.lessons.show', [
+                $planCourse->slug,
+                $lesson,
+                'plan_id' => $plan->id,
+                'plan_item_id' => $item->id,
+            ]));
+    }
+
+    public function test_lesson_page_shows_track_sidebar_without_plan_and_hides_spreadsheet_import_description(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Curso sem plano',
+            'status' => 'published',
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de palavras',
+            'slug' => 'classes-de-palavras',
+            'status' => 'published',
+        ]);
+        $firstLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '01 - Substantivo',
+            'description' => 'Aula importada por planilha.',
+            'duration_seconds' => 900,
+            'status' => 'published',
+        ]);
+        $secondLesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'title' => '02 - Adjetivo',
+            'duration_seconds' => 600,
+            'status' => 'published',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $firstLesson]))
+            ->assertOk()
+            ->assertSee('Aulas da trilha')
+            ->assertSee('Classes de palavras')
+            ->assertSee('01 - Substantivo')
+            ->assertSee('02 - Adjetivo')
+            ->assertDontSee('Aula importada por planilha.');
+    }
+
+    public function test_lesson_page_renders_interactive_ai_questions(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'status' => 'published',
+        ]);
+
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'summary',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'text' => "## Resumo da aula\n\n**Substantivo** e a classe que nomeia seres.",
+            ],
+        ]);
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'quiz',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'questions' => [[
+                    'enunciate' => 'Sobre classes de palavras, marque a alternativa correta.',
+                    'options' => [
+                        ['text' => 'Substantivo nomeia seres.', 'correct' => true],
+                        ['text' => 'Adjetivo sempre indica ação.', 'correct' => false],
+                    ],
+                    'explanation' => 'Substantivo e a classe que nomeia seres.',
+                ]],
+            ],
+        ]);
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'mindmap',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'theme' => 'Classes de palavras',
+                'children' => [[
+                    'text' => 'Substantivo',
+                    'time' => '00:02:48.075',
+                    'children' => [[
+                        'text' => 'Nomeia seres',
+                        'time' => '00:03:33.390',
+                    ]],
+                ]],
+            ],
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Sobre classes de palavras, marque a alternativa correta.')
+            ->assertSee('Baixar resumo em PDF')
+            ->assertSee(route('courses.lessons.summary.pdf', [$course->slug, $lesson]), false)
+            ->assertSee('activeTab: null', false)
+            ->assertSee('@click="selected = 0; revealed = true"', false)
+            ->assertSee('Gabarito: Substantivo nomeia seres.')
+            ->assertSee('<strong>Substantivo</strong>', false)
+            ->assertDontSee('**Substantivo**')
+            ->assertDontSee('Momentos da aula')
+            ->assertDontSee('lesson-summary-inline-time', false)
+            ->assertSee('tutorTabVisible: false', false)
+            ->assertDontSee('Sincronizar IA da aula');
+
+        $pdfResponse = $this->actingAs($student)
+            ->get(route('courses.lessons.summary.pdf', [$course->slug, $lesson]));
+
+        $pdfResponse
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+
+        $this->assertStringStartsWith('%PDF-', $pdfResponse->getContent());
+    }
+
+    public function test_cached_lesson_ai_artifacts_skip_provider_sync(): void
+    {
+        config([
+            'services.panda.ai_auto_sync' => true,
+            'services.panda.api_key' => 'testing-key',
+        ]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'panda_video_id' => 'video-123',
+            'status' => 'published',
+        ]);
+
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'summary',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => ['text' => 'Resumo em cache compartilhado.'],
+        ]);
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'quiz',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'questions' => [
+                    ['question' => 'Pergunta em cache?', 'answer' => true],
+                ],
+            ],
+        ]);
+        AiArtifact::query()->create([
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'artifact_type' => 'mindmap',
+            'provider' => 'panda',
+            'status' => 'ready',
+            'content' => [
+                'theme' => 'Mapa em cache',
+                'children' => [['text' => 'Topico em cache']],
+            ],
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldNotReceive('createAiPackage');
+            $mock->shouldNotReceive('aiPackage');
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Resumo em cache compartilhado.')
+            ->assertSee('Gerando resumo da aula...');
+    }
+
+    public function test_lesson_page_auto_syncs_missing_ai_artifacts_by_default(): void
+    {
+        config([
+            'services.panda.ai_auto_sync' => true,
+            'services.panda.api_key' => 'testing-key',
+        ]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'panda_video_id' => 'video-123',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-123',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-123',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-123',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldNotReceive('createAiPackage');
+
+            $mock->shouldReceive('aiPackage')
+                ->once()
+                ->with('vz-abc12345-abc', 'external-123')
+                ->andReturn([
+                    'summary' => 'Resumo compartilhado da aula.',
+                    'questions' => [
+                        ['question' => 'Classes de palavras nomeiam seres?', 'answer' => true],
+                    ],
+                    'mindmap' => [
+                        'theme' => 'Classes de palavras',
+                        'children' => [['text' => 'Substantivo']],
+                    ],
+                ]);
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Resumo compartilhado da aula.')
+            ->assertSee('Classes de palavras nomeiam seres?')
+            ->assertSee('Substantivo');
+
+        foreach (['summary', 'quiz', 'mindmap'] as $type) {
+            $this->assertDatabaseHas('ai_artifacts', [
+                'source_type' => Lesson::class,
+                'source_id' => $lesson->id,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+                'status' => 'ready',
+            ]);
+        }
+    }
+
+    public function test_lesson_page_requests_panda_ai_only_when_published_package_is_not_ready(): void
+    {
+        config([
+            'services.panda.ai_auto_sync' => true,
+            'services.panda.api_key' => 'testing-key',
+        ]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Administração geral',
+            'panda_video_id' => 'video-456',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-456',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldReceive('aiPackage')
+                ->once()
+                ->with('vz-abc12345-abc', 'external-456')
+                ->andReturn(null);
+
+            $mock->shouldReceive('createAiPackage')
+                ->once()
+                ->with('video-456')
+                ->andReturn(['status' => 'requested']);
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertDontSee('Assistente da aula')
+            ->assertDontSee('Estamos preparando o resumo desta aula.');
+
+        $lesson->refresh();
+
+        $this->assertNotNull(data_get($lesson->metadata, 'panda_ai.requested_at'));
+        $this->assertSame('regenerating', data_get($lesson->metadata, 'panda_ai.last_payload_status'));
+        $this->assertSame(1, data_get($lesson->metadata, 'panda_ai.request_count'));
+    }
+
+    public function test_lesson_page_does_not_reimport_stale_panda_ai_package_right_after_regeneration_request(): void
+    {
+        config([
+            'services.panda.ai_auto_sync' => true,
+            'services.panda.api_key' => 'testing-key',
+            'services.panda.ai_regeneration_poll_delay_minutes' => 10,
+            'services.panda.tutor_auto_detect' => false,
+        ]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Administração geral',
+            'panda_video_id' => 'video-456',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-456',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+                ],
+                'panda_ai' => [
+                    'requested_at' => now()->toIso8601String(),
+                    'last_request_status' => 'requested',
+                    'last_payload_status' => 'regenerating',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldNotReceive('aiPackage');
+            $mock->shouldNotReceive('createAiPackage');
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertDontSee('Assistente da aula')
+            ->assertDontSee('Estamos preparando o resumo desta aula.');
+
+        $this->assertDatabaseMissing('ai_artifacts', [
+            'source_type' => Lesson::class,
+            'source_id' => $lesson->id,
+            'provider' => 'panda',
+        ]);
+    }
+
+    public function test_lesson_page_embeds_panda_tutor_when_video_metadata_is_available(): void
+    {
+        config(['services.panda.tutor_auto_detect' => true]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras',
+            'panda_video_id' => 'video-123',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-123',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-123',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-123',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldReceive('playerConfig')
+                ->once()
+                ->with('vz-abc12345-abc', 'external-123')
+                ->andReturn(['assistant_id' => 'assistant-123']);
+            $mock->shouldReceive('tutorAssistant')
+                ->once()
+                ->with('assistant-123')
+                ->andReturn([
+                    'id' => 'assistant-123',
+                    'status' => 'ready',
+                    'videos' => [
+                        ['id' => 'video-123', 'video_external_id' => 'external-123'],
+                    ],
+                ]);
+            $mock->shouldReceive('updateTutorChatVisibility')
+                ->once()
+                ->with('assistant-123', 'video-123', true)
+                ->andReturn(['ok' => true]);
+            $mock->shouldNotReceive('updateTutorStatus');
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('assist_chat.html?v=external-123', false)
+            ->assertSee('tutorTabVisible: true', false)
+            ->assertSee('Tutor da aula');
+
+        $lesson->refresh();
+
+        $this->assertTrue((bool) data_get($lesson->metadata, 'panda_ai.tutor_available'));
+        $this->assertSame('assistant-123', data_get($lesson->metadata, 'panda_ai.tutor_assistant_id'));
+    }
+
+    public function test_lesson_page_hides_tutor_tab_when_tutor_is_not_enabled(): void
+    {
+        config(['services.panda.tutor_auto_detect' => true]);
+
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create(['status' => 'published']);
+        $module = CourseModule::factory()->create(['course_id' => $course->id]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras sem tutor',
+            'panda_video_id' => 'video-456',
+            'panda_embed_url' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+            'metadata' => [
+                'payload' => [
+                    'video_external_id' => 'external-456',
+                    'video_player' => 'https://player-vz-abc12345-abc.tv.pandavideo.com.br/embed/?v=external-456',
+                ],
+            ],
+            'status' => 'published',
+        ]);
+
+        $this->mock(PandaVideoClient::class, function ($mock): void {
+            $mock->shouldReceive('playerConfig')
+                ->once()
+                ->with('vz-abc12345-abc', 'external-456')
+                ->andReturn(['ai' => ['questions' => true, 'mindmap' => true]]);
+        });
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertDontSee('Assistente da aula')
+            ->assertDontSee('Estude este conteúdo com IA')
+            ->assertDontSee('tutorTabVisible:', false)
+            ->assertDontSee('tutorConfigUrl:', false)
+            ->assertDontSee('tutorCandidateUrl:', false);
+
+        $lesson->refresh();
+
+        $this->assertFalse((bool) data_get($lesson->metadata, 'panda_ai.tutor_available'));
+        $this->assertNotEmpty(data_get($lesson->metadata, 'panda_ai.tutor_checked_at'));
+    }
+
+    public function test_lesson_admin_ai_and_tutor_flags_reflect_ready_resources(): void
+    {
+        $lesson = Lesson::factory()->create([
+            'metadata' => [
+                'panda_ai' => [
+                    'tutor_available' => true,
+                    'tutor_status' => 'active',
+                ],
+            ],
+        ]);
+
+        foreach (['summary', 'quiz', 'mindmap'] as $type) {
+            AiArtifact::query()->create([
+                'source_type' => Lesson::class,
+                'source_id' => $lesson->id,
+                'artifact_type' => $type,
+                'provider' => 'panda',
+                'status' => 'ready',
+                'content' => ['text' => "Conteúdo {$type}"],
+            ]);
+        }
+
+        $this->assertSame('Completa', LessonResource::aiResourcesStatus($lesson));
+        $this->assertSame('Ativo', LessonResource::tutorStatusFlag($lesson));
+    }
+
+    protected function studentCourseAndLesson(): array
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'is_active' => true,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Dúvidas da aula',
+            'slug' => 'duvidas-da-aula',
+            'status' => 'published',
+        ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'course_module_track_id' => $track->id,
+            'status' => 'published',
+            'source_status' => 'media_ready',
+            'panda_video_id' => 'video-comment-test',
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $module->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $lesson->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 1]]);
+        $lesson->tracks()->syncWithoutDetaching([$track->id => ['sort_order' => 1]]);
+
+        return [$student, $course, $lesson];
+    }
+}

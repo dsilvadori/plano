@@ -4,6 +4,123 @@ import Alpine from 'alpinejs';
 
 window.Alpine = Alpine;
 
+Alpine.data('lessonCarousel', () => ({
+    atStart: true,
+    atEnd: false,
+    activeIndex: 0,
+    itemCount: 0,
+
+    init() {
+        this.itemCount = this.$refs.track?.querySelectorAll('[data-carousel-item]').length ?? 0;
+        this.$nextTick(() => this.update());
+    },
+
+    scroll(direction) {
+        const track = this.$refs.track;
+
+        if (!track) {
+            return;
+        }
+
+        const firstItem = track.querySelector('[data-carousel-item]');
+        const gap = 16;
+        const distance = firstItem ? firstItem.getBoundingClientRect().width + gap : track.clientWidth;
+
+        track.scrollBy({
+            left: direction * distance,
+            behavior: 'smooth',
+        });
+    },
+
+    goTo(index) {
+        const track = this.$refs.track;
+        const item = track?.querySelectorAll('[data-carousel-item]')[index];
+
+        item?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'nearest',
+            inline: 'start',
+        });
+    },
+
+    update() {
+        const track = this.$refs.track;
+
+        if (!track) {
+            return;
+        }
+
+        const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
+
+        this.atStart = track.scrollLeft <= 4;
+        this.atEnd = track.scrollLeft >= maxScroll - 4;
+
+        const items = Array.from(track.querySelectorAll('[data-carousel-item]'));
+        const trackLeft = track.getBoundingClientRect().left;
+        const nearest = items
+            .map((item, index) => ({
+                index,
+                distance: Math.abs(item.getBoundingClientRect().left - trackLeft),
+            }))
+            .sort((left, right) => left.distance - right.distance)[0];
+
+        this.activeIndex = nearest?.index ?? 0;
+    },
+}));
+
+Alpine.data('lessonCompletion', (initialCompleted = false) => ({
+    completed: initialCompleted,
+    loading: false,
+    error: '',
+
+    get statusLabel() {
+        return this.completed ? 'Concluída' : 'Em andamento';
+    },
+
+    get buttonLabel() {
+        return this.completed ? 'Desmarcar como concluída' : 'Marcar como concluída';
+    },
+
+    async toggle(event) {
+        if (this.loading) {
+            return;
+        }
+
+        this.loading = true;
+        this.error = '';
+
+        const form = event.target;
+        const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
+
+        try {
+            const response = await fetch(form.action, {
+                method: 'POST',
+                headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': token,
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({
+                    completed: ! this.completed,
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error('Não foi possível atualizar a aula.');
+            }
+
+            const data = await response.json();
+
+            this.completed = Boolean(data.completed);
+        } catch (error) {
+            this.error = error.message || 'Não foi possível atualizar a aula.';
+        } finally {
+            this.loading = false;
+        }
+    },
+}));
+
 Alpine.start();
 
 const themeColorMeta = document.querySelector('meta[name="theme-color"]');
@@ -31,7 +148,6 @@ applyTheme(document.documentElement.dataset.theme || 'dark');
 const disabledServiceWorkerHosts = [
     'localhost',
     '127.0.0.1',
-    'dev.vencendoconcursos.com.br',
 ];
 
 const isServiceWorkerDisabled = disabledServiceWorkerHosts.includes(window.location.hostname);
@@ -57,14 +173,44 @@ if ('serviceWorker' in navigator && isServiceWorkerDisabled) {
 
 let deferredInstallPrompt = null;
 
-window.addEventListener('beforeinstallprompt', (event) => {
-    event.preventDefault();
-    deferredInstallPrompt = event;
+const installButtons = () => Array.from(document.querySelectorAll('[data-install-app-button]'));
+const iosInstallHints = () => Array.from(document.querySelectorAll('[data-ios-install-hint]'));
+const isIosDevice = () => /iphone|ipad|ipod/i.test(window.navigator.userAgent)
+    || (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1);
 
-    const installButton = document.getElementById('install-app-button');
+const isRunningAsInstalledApp = () => {
+    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+};
 
-    if (installButton) {
+const updateInstallButtons = () => {
+    installButtons().forEach((installButton) => {
+        if (isRunningAsInstalledApp()) {
+            installButton.classList.add('hidden');
+            installButton.onclick = null;
+            return;
+        }
+
+        if (isIosDevice()) {
+            installButton.classList.remove('hidden');
+            installButton.textContent = 'Instalar no iPhone';
+            installButton.onclick = () => {
+                iosInstallHints().forEach((iosHint) => {
+                    iosHint.classList.toggle('hidden');
+                });
+            };
+
+            return;
+        }
+
+        if (!deferredInstallPrompt) {
+            installButton.classList.add('hidden');
+            installButton.onclick = null;
+            return;
+        }
+
         installButton.classList.remove('hidden');
+        installButton.textContent = 'Instalar aplicativo';
+
         installButton.onclick = async () => {
             if (!deferredInstallPrompt) {
                 return;
@@ -73,17 +219,31 @@ window.addEventListener('beforeinstallprompt', (event) => {
             deferredInstallPrompt.prompt();
             await deferredInstallPrompt.userChoice;
             deferredInstallPrompt = null;
-            installButton.classList.add('hidden');
+            updateInstallButtons();
         };
-    }
+    });
+};
+
+updateInstallButtons();
+
+window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+
+    updateInstallButtons();
+});
+
+window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    updateInstallButtons();
 });
 
 window.addEventListener('load', () => {
-    const isIos = /iphone|ipad|ipod/i.test(window.navigator.userAgent);
     const isInStandaloneMode = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
-    const iosHint = document.getElementById('ios-install-hint');
 
-    if (isIos && !isInStandaloneMode && iosHint) {
-        iosHint.classList.remove('hidden');
+    if (isIosDevice() && !isInStandaloneMode) {
+        iosInstallHints().forEach((iosHint) => {
+            iosHint.classList.remove('hidden');
+        });
     }
 });

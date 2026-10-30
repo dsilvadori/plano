@@ -9,6 +9,7 @@ use App\Models\WebhookEvent;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
+use Throwable;
 
 class TutoryWebhookProcessor
 {
@@ -18,7 +19,9 @@ class TutoryWebhookProcessor
 
     public function process(array $payload): WebhookEvent
     {
-        return DB::transaction(function () use ($payload) {
+        $sendAccessNotification = null;
+
+        $event = DB::transaction(function () use ($payload, &$sendAccessNotification) {
             $eventId = $payload['event_id'] ?? $payload['id'] ?? $payload['sessao'] ?? null;
             $eventType = $payload['event_type'] ?? $payload['type'] ?? $payload['evento'] ?? ($payload['purchase']['status'] ?? null);
 
@@ -51,6 +54,7 @@ class TutoryWebhookProcessor
             $purchaseData = $payload['purchase'] ?? [];
             $productId = $purchaseData['product_id'] ?? data_get($payload, 'product.id') ?? data_get($payload, 'produto.id');
             $purchaseId = $purchaseData['id'] ?? $payload['id'] ?? null;
+            $existingUser = User::findByEmail($studentData['email'] ?? null) !== null;
 
             $user = $this->upsertUser(
                 studentData: $studentData,
@@ -58,18 +62,31 @@ class TutoryWebhookProcessor
                 tutoryCustomerId: $this->customerId($payload),
             );
 
+            $linkedCourses = collect();
+
             if ($user->isStudent()) {
-                foreach ($this->coursesForPurchase($payload, $productId) as $course) {
-                    StudentCourse::firstOrCreate(
+                $courses = $this->coursesForPurchase($payload, $productId);
+
+                foreach ($courses as $course) {
+                    $studentCourse = StudentCourse::firstOrCreate(
                         ['user_id' => $user->id, 'course_id' => $course->id],
                         ['source' => 'tutory', 'external_purchase_id' => $purchaseId],
                     );
+
+                    if ($studentCourse->wasRecentlyCreated) {
+                        $linkedCourses->push($course);
+                    }
                 }
+
+                $this->removeStaleProvisionalCourses($user, $courses, $purchaseId);
             }
 
-            if ($user->isStudent() || $user->isSubscriber()) {
-                $token = Password::broker()->createToken($user);
-                $user->sendSetPasswordNotification($token);
+            if (($user->isStudent() || $user->isSubscriber()) && ! $existingUser) {
+                $sendAccessNotification = fn () => $user->sendSetPasswordNotification(
+                    Password::broker('first_access')->createToken($user),
+                );
+            } elseif ($user->isStudent() && $linkedCourses->isNotEmpty()) {
+                $sendAccessNotification = fn () => $user->sendCourseAccessGrantedNotification($linkedCourses);
             }
 
             $event->update([
@@ -81,6 +98,26 @@ class TutoryWebhookProcessor
 
             return $event;
         });
+
+        if ($sendAccessNotification !== null) {
+            $this->sendAccessNotification($event, $sendAccessNotification);
+        }
+
+        return $event;
+    }
+
+    /**
+     * Roda fora da transação: uma falha de SMTP não pode desfazer a compra já registrada.
+     */
+    protected function sendAccessNotification(WebhookEvent $event, callable $send): void
+    {
+        try {
+            $send();
+        } catch (Throwable $exception) {
+            report($exception);
+
+            $event->update(['error_message' => 'Falha ao enviar e-mail de acesso: '.Str::limit($exception->getMessage(), 200)]);
+        }
     }
 
     public function isApproved(array $payload): bool
@@ -128,9 +165,16 @@ class TutoryWebhookProcessor
     {
         $courses = $this->courseAccessResolver->coursesForProduct($productId, $this->productName($payload));
 
-        return $courses->isNotEmpty()
-            ? $courses
-            : collect(array_filter([$this->createPlaceholderCourseForPurchase($payload, $productId)]));
+        if ($courses->isNotEmpty()) {
+            return $courses->map(function (Course $course) use ($productId): Course {
+                $course = $this->courseAccessResolver->publishedEquivalentFor($course) ?? $course;
+                $this->courseAccessResolver->rememberProductId($course, $productId);
+
+                return $course;
+            });
+        }
+
+        return collect(array_filter([$this->createPlaceholderCourseForPurchase($payload, $productId)]));
     }
 
     protected function createPlaceholderCourseForPurchase(array $payload, ?string $productId): ?Course
@@ -149,6 +193,35 @@ class TutoryWebhookProcessor
             'combo_name' => null,
             'is_active' => false,
         ]);
+    }
+
+    protected function removeStaleProvisionalCourses(User $user, $courses, ?string $purchaseId): void
+    {
+        if (blank($purchaseId)) {
+            return;
+        }
+
+        $courseIds = $courses
+            ->pluck('id')
+            ->filter()
+            ->values()
+            ->all();
+
+        $hasPublishedCourse = $courses->contains(fn (Course $course): bool => $course->is_active && $course->status === 'published');
+
+        if (! $hasPublishedCourse) {
+            return;
+        }
+
+        StudentCourse::query()
+            ->where('user_id', $user->id)
+            ->where('source', 'tutory')
+            ->where('external_purchase_id', $purchaseId)
+            ->when($courseIds !== [], fn ($query) => $query->whereNotIn('course_id', $courseIds))
+            ->whereHas('course', fn ($query) => $query
+                ->where('is_active', false)
+                ->orWhere('status', '!=', 'published'))
+            ->delete();
     }
 
     protected function productName(array $payload): string
@@ -177,8 +250,7 @@ class TutoryWebhookProcessor
 
     protected function upsertUser(array $studentData, string $role, ?string $tutoryCustomerId): User
     {
-        $email = strtolower((string) ($studentData['email'] ?? ''));
-        $user = User::firstOrNew(['email' => $email]);
+        $user = User::firstOrNewByEmail($studentData['email'] ?? null);
 
         if (! $user->exists) {
             $user->password = Str::password(24);

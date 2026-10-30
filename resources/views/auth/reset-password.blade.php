@@ -2,13 +2,14 @@
     <div class="mb-6">
         <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Primeiro acesso</p>
         <h1 class="mt-3 text-2xl font-semibold text-white">Crie sua senha para entrar na área do aluno.</h1>
-        <p class="mt-2 text-sm text-slate-300">Use o e-mail que recebeu o convite e defina uma senha segura para acessar seu Plano de Estudos.</p>
+        <p class="mt-2 text-sm text-slate-300">Use o e-mail que recebeu o convite e defina uma senha segura para acessar a Plataforma Vencendo Concursos.</p>
     </div>
 
     <form method="POST" action="{{ route('password.store') }}">
         @csrf
 
         <input type="hidden" name="token" value="{{ $request->route('token') }}">
+        <input type="hidden" name="first_access" value="{{ $request->boolean('first_access') ? '1' : '0' }}">
 
         <div>
             <x-input-label for="email" :value="'E-mail'" />

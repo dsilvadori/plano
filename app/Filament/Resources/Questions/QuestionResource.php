@@ -1,0 +1,287 @@
+<?php
+
+namespace App\Filament\Resources\Questions;
+
+use App\Filament\Resources\Questions\Pages\CreateQuestion;
+use App\Filament\Resources\Questions\Pages\EditQuestion;
+use App\Filament\Resources\Questions\Pages\ListQuestions;
+use App\Jobs\GenerateQuestionCommentary;
+use App\Models\Question;
+use App\Models\QuestionBank;
+use App\Support\QuestionTextRenderer;
+use BackedEnum;
+use Filament\Actions\BulkAction;
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\EditAction;
+use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\Repeater;
+use Filament\Forms\Components\RichEditor;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
+use Filament\Notifications\Notification;
+use Filament\Resources\Resource;
+use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
+use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\SelectFilter;
+use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\Storage;
+
+class QuestionResource extends Resource
+{
+    protected static ?string $model = Question::class;
+
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedAcademicCap;
+
+    protected static string|\UnitEnum|null $navigationGroup = 'Acadêmico';
+
+    protected static ?string $modelLabel = 'Questão';
+
+    protected static ?string $pluralModelLabel = 'Questões';
+
+    public static function form(Schema $schema): Schema
+    {
+        return $schema->components([
+            Select::make('question_bank_id')
+                ->label('Banco')
+                ->options(QuestionBank::query()->orderBy('title')->pluck('title', 'id'))
+                ->searchable()
+                ->preload()
+                ->required(),
+            TextInput::make('number')
+                ->label('Número')
+                ->numeric(),
+            Select::make('status')
+                ->label('Status')
+                ->options([
+                    'review' => 'Em revisão',
+                    'published' => 'Publicada',
+                    'draft' => 'Rascunho',
+                    'archived' => 'Arquivada',
+                ])
+                ->default('review')
+                ->required(),
+            Select::make('type')
+                ->label('Tipo')
+                ->options([
+                    'multiple_choice' => 'Múltipla escolha',
+                    'true_false' => 'Certo/Errado',
+                    'discursive' => 'Discursiva',
+                ])
+                ->default('multiple_choice')
+                ->required(),
+            TextInput::make('subject')
+                ->label('Disciplina'),
+            TextInput::make('topic')
+                ->label('Assunto'),
+            TextInput::make('subtopic')
+                ->label('Subassunto'),
+            TextInput::make('source_reference')
+                ->label('Origem/referência')
+                ->columnSpanFull(),
+            self::textEditor('statement')
+                ->label('Enunciado')
+                ->helperText('Use sublinhado ou destaque nas palavras que o enunciado mandar observar.')
+                ->required()
+                ->columnSpanFull(),
+            FileUpload::make('metadata.image_urls')
+                ->label('Imagens da questão')
+                ->disk('public')
+                ->directory('question-images')
+                ->visibility('public')
+                ->multiple()
+                ->image()
+                ->imageEditor()
+                ->reorderable()
+                ->getUploadedFileUsing(function (string $file, string|array|null $storedFileNames): ?array {
+                    if (str_starts_with($file, 'http://') || str_starts_with($file, 'https://') || str_starts_with($file, '//')) {
+                        return [
+                            'name' => basename(parse_url($file, PHP_URL_PATH) ?: $file),
+                            'size' => 0,
+                            'type' => null,
+                            'url' => $file,
+                        ];
+                    }
+
+                    $path = str_starts_with($file, '/storage/')
+                        ? substr($file, strlen('/storage/'))
+                        : ltrim($file, '/');
+
+                    if (! Storage::disk('public')->exists($path)) {
+                        return null;
+                    }
+
+                    return [
+                        'name' => (is_array($storedFileNames) ? ($storedFileNames[$file] ?? $storedFileNames[$path] ?? null) : $storedFileNames) ?? basename($path),
+                        'size' => Storage::disk('public')->size($path),
+                        'type' => Storage::disk('public')->mimeType($path),
+                        'url' => url('/media/public/'.$path),
+                    ];
+                })
+                ->helperText('Use para tirinhas, mapas, tabelas em imagem ou qualquer figura necessária para interpretar a questão.')
+                ->columnSpanFull(),
+            Select::make('metadata.image_position')
+                ->label('Posição da imagem')
+                ->options([
+                    'after_statement' => 'Depois do enunciado',
+                    'before_statement' => 'Antes do enunciado',
+                ])
+                ->default('after_statement')
+                ->required(),
+            Textarea::make('metadata.image_description')
+                ->label('Descrição da imagem')
+                ->helperText('Opcional. Use para observações, legenda ou acessibilidade.')
+                ->rows(3)
+                ->columnSpanFull(),
+            Select::make('answer_key')
+                ->label('Gabarito')
+                ->options([
+                    'a' => 'A',
+                    'b' => 'B',
+                    'c' => 'C',
+                    'd' => 'D',
+                    'e' => 'E',
+                    'certo' => 'Certo',
+                    'errado' => 'Errado',
+                ])
+                ->searchable(),
+            self::textEditor('commentary')
+                ->label('Comentário')
+                ->helperText('Pode ser preenchido manualmente ou editado após geração por IA.')
+                ->columnSpanFull(),
+            TextInput::make('commentary_provider')
+                ->label('Origem do comentário')
+                ->helperText('Ex.: manual, gemini.')
+                ->maxLength(255),
+            Repeater::make('options')
+                ->label('Alternativas')
+                ->relationship()
+                ->schema([
+                    TextInput::make('label')
+                        ->label('Letra')
+                        ->required()
+                        ->maxLength(5),
+                    self::textEditor('text')
+                        ->label('Texto')
+                        ->required(),
+                    TextInput::make('sort_order')
+                        ->label('Ordem')
+                        ->numeric()
+                        ->default(0),
+                ])
+                ->mutateRelationshipDataBeforeFillUsing(fn (array $data): array => array_replace($data, ['text' => QuestionTextRenderer::toEditorHtml($data['text'] ?? null)]))
+                ->mutateRelationshipDataBeforeCreateUsing(fn (array $data): array => array_replace($data, ['is_correct' => false]))
+                ->mutateRelationshipDataBeforeSaveUsing(fn (array $data): array => array_replace($data, ['is_correct' => false]))
+                ->columns(3)
+                ->columnSpanFull(),
+        ]);
+    }
+
+    protected static function textEditor(string $name): RichEditor
+    {
+        return RichEditor::make($name)
+            ->toolbarButtons([
+                ['bold', 'italic', 'underline', 'highlight'],
+                ['clearFormatting', 'undo', 'redo'],
+            ]);
+    }
+
+    public static function table(Table $table): Table
+    {
+        return $table
+            ->columns([
+                TextColumn::make('number')->label('Nº')->sortable(),
+                TextColumn::make('bank.title')->label('Banco')->searchable()->sortable(),
+                TextColumn::make('topic')->label('Assunto')->searchable()->toggleable(),
+                TextColumn::make('statement')
+                    ->label('Enunciado')
+                    ->formatStateUsing(fn (?string $state): string => QuestionTextRenderer::toPlainText($state))
+                    ->limit(80)
+                    ->searchable(),
+                TextColumn::make('answer_key')->label('Gabarito')->badge(),
+                TextColumn::make('status')
+                    ->label('Status')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state): string => match ($state) {
+                        'review' => 'Revisão',
+                        'published' => 'Publicada',
+                        'draft' => 'Rascunho',
+                        'archived' => 'Arquivada',
+                        default => $state,
+                    }),
+            ])
+            ->filters([
+                SelectFilter::make('question_bank_id')
+                    ->label('Banco')
+                    ->options(QuestionBank::query()->orderBy('title')->pluck('title', 'id')),
+                SelectFilter::make('status')
+                    ->options([
+                        'review' => 'Em revisão',
+                        'published' => 'Publicada',
+                        'draft' => 'Rascunho',
+                        'archived' => 'Arquivada',
+                    ]),
+            ])
+            ->recordActions([
+                EditAction::make(),
+            ])
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    BulkAction::make('generateCommentaries')
+                        ->label('Gerar comentários com IA')
+                        ->icon('heroicon-o-sparkles')
+                        ->requiresConfirmation()
+                        ->modalHeading('Gerar comentários em massa')
+                        ->modalDescription('As questões selecionadas serão enviadas para a fila. Os comentários continuarão editáveis pelo admin após a geração.')
+                        ->action(function (Collection $records): void {
+                            $queued = 0;
+                            $skipped = 0;
+
+                            foreach ($records as $question) {
+                                if (blank($question->answer_key)) {
+                                    $skipped++;
+
+                                    continue;
+                                }
+
+                                GenerateQuestionCommentary::dispatch($question->id);
+
+                                $queued++;
+                            }
+
+                            $notification = Notification::make()
+                                ->title($queued > 0 ? 'Comentários enviados para geração.' : 'Nenhuma questão foi enviada.')
+                                ->body("Enfileiradas: {$queued}. Sem gabarito: {$skipped}.");
+
+                            ($queued > 0 ? $notification->success() : $notification->warning())->send();
+                        })
+                        ->deselectRecordsAfterCompletion(),
+                    BulkAction::make('publish')
+                        ->label('Publicar selecionadas')
+                        ->icon('heroicon-o-eye')
+                        ->requiresConfirmation()
+                        ->action(fn (Collection $records) => $records->each->update(['status' => 'published']))
+                        ->deselectRecordsAfterCompletion(),
+                    BulkAction::make('review')
+                        ->label('Enviar para revisão')
+                        ->icon('heroicon-o-pencil-square')
+                        ->requiresConfirmation()
+                        ->action(fn (Collection $records) => $records->each->update(['status' => 'review']))
+                        ->deselectRecordsAfterCompletion(),
+                    DeleteBulkAction::make(),
+                ]),
+            ]);
+    }
+
+    public static function getPages(): array
+    {
+        return [
+            'index' => ListQuestions::route('/'),
+            'create' => CreateQuestion::route('/create'),
+            'edit' => EditQuestion::route('/{record}/edit'),
+        ];
+    }
+}

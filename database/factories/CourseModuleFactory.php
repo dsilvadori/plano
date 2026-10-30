@@ -21,9 +21,11 @@ class CourseModuleFactory extends Factory
         return [
             'course_id' => Course::factory(),
             'name' => fake()->sentence(2),
+            'description' => fake()->sentence(),
             'type' => fake()->randomElement(['basic', 'specific', 'review', 'questions']),
             'workload_minutes' => fake()->numberBetween(120, 900),
             'sort_order' => fake()->numberBetween(1, 10),
+            'panda_folder_id' => null,
             'is_active' => true,
         ];
     }

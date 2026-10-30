@@ -1,8 +1,8 @@
-const CACHE_NAME = 'plano-vc-v2';
+const CACHE_NAME = 'plano-vc-v4';
 const ASSETS = [
-    '/',
     '/manifest.webmanifest',
     '/images/vencendo-concursos-logo-white.webp',
+    '/favicon.svg',
 ];
 
 const isLocalhost = self.location.hostname === 'localhost' || self.location.hostname === '127.0.0.1';
@@ -14,7 +14,8 @@ const disabledHosts = new Set([
 const isServiceWorkerDisabled = disabledHosts.has(self.location.hostname);
 
 const isStaticAssetRequest = (requestUrl) => {
-    return requestUrl.origin === self.location.origin && !requestUrl.pathname.startsWith('/login') &&
+    return requestUrl.origin === self.location.origin && requestUrl.pathname !== '/' &&
+        !requestUrl.pathname.startsWith('/login') &&
         !requestUrl.pathname.startsWith('/dashboard') &&
         !requestUrl.pathname.startsWith('/admin') &&
         !requestUrl.pathname.startsWith('/livewire') &&

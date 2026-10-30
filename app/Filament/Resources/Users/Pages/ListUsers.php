@@ -33,7 +33,7 @@ class ListUsers extends ListRecords
                 ->color('primary')
                 ->button()
                 ->openUrlInNewTab()
-                ->url(route('dashboard')),
+                ->url(route('dashboard', absolute: false)),
             Action::make('importStudents')
                 ->label('Importar alunos')
                 ->icon('heroicon-o-arrow-up-tray')

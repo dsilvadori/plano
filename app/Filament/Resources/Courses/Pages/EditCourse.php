@@ -3,8 +3,12 @@
 namespace App\Filament\Resources\Courses\Pages;
 
 use App\Filament\Resources\Courses\CourseResource;
+use App\Filament\Resources\Courses\Widgets\CourseSpreadsheetImportStatus;
+use App\Models\CourseSpreadsheetImportRun;
 use App\Services\CourseSpreadsheetImporter;
-use App\Services\CourseSpreadsheetParser;
+use App\Services\LessonCourseLinker;
+use App\Support\CourseSpreadsheetUpload;
+use App\Support\FilamentThumbnailUpload;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Forms\Components\FileUpload;
@@ -15,17 +19,83 @@ use Filament\Resources\Pages\EditRecord;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\HtmlString;
-use Throwable;
 
 class EditCourse extends EditRecord
 {
     protected static string $resource = CourseResource::class;
 
+    protected function getHeaderWidgets(): array
+    {
+        return [
+            CourseSpreadsheetImportStatus::class,
+        ];
+    }
+
+    public function getHeaderWidgetsColumns(): int|array
+    {
+        return 1;
+    }
+
+    protected function mutateFormDataBeforeSave(array $data): array
+    {
+        $previousPath = $this->record->thumbnail_path;
+        $hiddenPath = $data['thumbnail_path'] ?? null;
+        $uploadState = $data['thumbnail_upload'] ?? null;
+
+        try {
+            $data['thumbnail_path'] = self::resolveUploadedPath($uploadState, $hiddenPath ?: $previousPath, 'course-thumbnails');
+        } catch (Throwable $exception) {
+            self::logCourseDebug('edit.thumbnail_failed', [
+                'course_id' => $this->record->id,
+                'course_name' => $this->record->name,
+                'previous_path' => $previousPath,
+                'hidden_path' => $hiddenPath,
+                'error' => $exception->getMessage(),
+            ]);
+
+            throw $exception;
+        }
+
+        unset($data['thumbnail_upload']);
+
+        self::logCourseDebug('edit.thumbnail_resolved', [
+            'course_id' => $this->record->id,
+            'course_name' => $this->record->name,
+            'previous_path' => $previousPath,
+            'hidden_path' => $hiddenPath,
+            'resolved_path' => $data['thumbnail_path'] ?? null,
+            'has_upload_state' => filled($uploadState),
+        ]);
+
+        return $data;
+    }
+
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('syncLessonLinks')
+                ->label('Atualizar vínculos')
+                ->icon('heroicon-o-arrow-path')
+                ->color('gray')
+                ->action(function (LessonCourseLinker $linker): void {
+                    try {
+                        $stats = $linker->sync($this->record);
+
+                        Notification::make()
+                            ->title('Vínculos do curso atualizados.')
+                            ->body(self::formatSyncStats($stats))
+                            ->success()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->title('Não foi possível atualizar os vínculos.')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
+                }),
             Action::make('importStructure')
                 ->label('Importar estrutura')
                 ->icon('heroicon-o-arrow-up-tray')
@@ -36,38 +106,73 @@ class EditCourse extends EditRecord
                         ->label('Planilha do curso')
                         ->acceptedFileTypes([
                             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            'text/csv',
+                            'text/plain',
                         ])
                         ->disk('local')
                         ->directory('imports/courses')
                         ->preserveFilenames()
                         ->live()
-                        ->afterStateUpdated(function (mixed $state, Set $set, CourseSpreadsheetParser $parser): void {
+                        ->afterStateUpdated(function (mixed $state, Set $set, CourseSpreadsheetImporter $importer): void {
                             $set('preview_error', null);
                             $set('preview_course_name', null);
                             $set('preview_module_count', null);
+                            $set('preview_module_create_count', null);
+                            $set('preview_module_update_count', null);
+                            $set('preview_lesson_count', null);
+                            $set('preview_lesson_create_count', null);
+                            $set('preview_lesson_update_count', null);
                             $set('preview_track_count', null);
                             $set('preview_total_minutes', null);
 
-                            $path = self::resolveUploadedSpreadsheetPath($state);
+                            $absolutePath = self::resolveUploadedSpreadsheetPreviewPath($state);
 
-                            if ($path === null) {
+                            if ($absolutePath === null) {
                                 return;
                             }
 
                             try {
-                                $payload = $parser->parse(Storage::disk('local')->path($path));
+                                $preview = $importer->preview($absolutePath, $this->record);
 
-                                $set('preview_course_name', $payload['course_name']);
-                                $set('preview_module_count', count($payload['modules']));
+                                self::logCourseDebug('import.preview_success', [
+                                    'course_id' => $this->record->id,
+                                    'course_name' => $this->record->name,
+                                    'spreadsheet_path' => $absolutePath,
+                                    'payload_course_name' => $preview['payload']['course_name'] ?? null,
+                                    'module_total' => $preview['modules']['total'] ?? null,
+                                    'module_create' => $preview['modules']['create'] ?? null,
+                                    'module_update' => $preview['modules']['update'] ?? null,
+                                    'lesson_total' => $preview['lessons']['total'] ?? null,
+                                ]);
+
+                                $set('preview_course_name', $preview['payload']['course_name']);
+                                $set('preview_module_count', $preview['modules']['total']);
+                                $set('preview_module_create_count', $preview['modules']['create']);
+                                $set('preview_module_update_count', $preview['modules']['update']);
+                                $set('preview_lesson_count', $preview['lessons']['total']);
+                                $set('preview_lesson_create_count', $preview['lessons']['create']);
+                                $set('preview_lesson_update_count', $preview['lessons']['update']);
                                 $set('preview_track_count', 1);
-                                $set('preview_total_minutes', array_sum(array_column($payload['modules'], 'workload_minutes')));
+                                $set('preview_total_minutes', $preview['total_minutes']);
                             } catch (Throwable $exception) {
+                                self::logCourseDebug('import.preview_failed', [
+                                    'course_id' => $this->record->id,
+                                    'course_name' => $this->record->name,
+                                    'spreadsheet_path' => $absolutePath,
+                                    'error' => $exception->getMessage(),
+                                ]);
+
                                 $set('preview_error', $exception->getMessage());
                             }
                         })
                         ->required(),
                     Hidden::make('preview_course_name'),
                     Hidden::make('preview_module_count'),
+                    Hidden::make('preview_module_create_count'),
+                    Hidden::make('preview_module_update_count'),
+                    Hidden::make('preview_lesson_count'),
+                    Hidden::make('preview_lesson_create_count'),
+                    Hidden::make('preview_lesson_update_count'),
                     Hidden::make('preview_track_count'),
                     Hidden::make('preview_total_minutes'),
                     Hidden::make('preview_error'),
@@ -76,21 +181,27 @@ class EditCourse extends EditRecord
                         ->hidden(fn (Get $get): bool => blank($get('preview_course_name')) && blank($get('preview_error')))
                         ->content(function (Get $get): HtmlString {
                             if (filled($get('preview_error'))) {
-                                return new HtmlString('<div class="text-sm text-danger-600">Não foi possível ler a planilha: ' . e((string) $get('preview_error')) . '</div>');
+                                return new HtmlString('<div class="text-sm text-danger-600">Não foi possível ler a planilha: '.e((string) $get('preview_error')).'</div>');
                             }
 
                             $courseName = (string) ($get('preview_course_name') ?? '');
                             $moduleCount = (int) ($get('preview_module_count') ?? 0);
+                            $moduleCreateCount = (int) ($get('preview_module_create_count') ?? 0);
+                            $moduleUpdateCount = (int) ($get('preview_module_update_count') ?? 0);
+                            $lessonCount = (int) ($get('preview_lesson_count') ?? 0);
+                            $lessonCreateCount = (int) ($get('preview_lesson_create_count') ?? 0);
+                            $lessonUpdateCount = (int) ($get('preview_lesson_update_count') ?? 0);
                             $trackCount = (int) ($get('preview_track_count') ?? 0);
                             $totalMinutes = (int) ($get('preview_total_minutes') ?? 0);
 
                             return new HtmlString(implode('', [
                                 '<div class="space-y-1 text-sm">',
-                                '<div><strong>Curso na planilha:</strong> ' . e($courseName) . '</div>',
-                                '<div><strong>Curso destino:</strong> ' . e($this->record->name) . '</div>',
-                                '<div><strong>Módulos importáveis:</strong> ' . e((string) $moduleCount) . '</div>',
-                                '<div><strong>Trilhas oficiais atualizadas:</strong> ' . e((string) $trackCount) . '</div>',
-                                '<div><strong>Carga total:</strong> ' . e(self::formatPreviewMinutes($totalMinutes)) . '</div>',
+                                '<div><strong>Curso na planilha:</strong> '.e($courseName).'</div>',
+                                '<div><strong>Curso destino:</strong> '.e($this->record->name).'</div>',
+                                '<div><strong>Módulos importáveis:</strong> '.e((string) $moduleCount).' ('.e((string) $moduleCreateCount).' novos, '.e((string) $moduleUpdateCount).' atualizados)</div>',
+                                '<div><strong>Aulas importáveis:</strong> '.e((string) $lessonCount).' ('.e((string) $lessonCreateCount).' novas, '.e((string) $lessonUpdateCount).' atualizadas)</div>',
+                                '<div><strong>Trilhas oficiais atualizadas:</strong> '.e((string) $trackCount).'</div>',
+                                '<div><strong>Carga total:</strong> '.e(self::formatPreviewMinutes($totalMinutes)).'</div>',
                                 '</div>',
                             ]));
                         }),
@@ -100,30 +211,56 @@ class EditCourse extends EditRecord
 
                     if ($path === null) {
                         Notification::make()
-                            ->title('Selecione uma planilha válida.')
+                            ->title('Não foi possível preservar a planilha.')
+                            ->body('Reenvie o arquivo e tente novamente. A importação só é enfileirada quando a planilha fica salva no storage local.')
                             ->danger()
                             ->send();
 
                         return;
                     }
 
-                    try {
-                        $course = $importer->importInto($this->record, Storage::disk('local')->path($path));
+                    $previewPath = self::resolveUploadedSpreadsheetPreviewPath($data['spreadsheet'] ?? null);
 
+                    if ($previewPath === null) {
                         Notification::make()
-                            ->title('Estrutura importada com sucesso.')
-                            ->body("Curso {$course->name} agora tem {$course->modules()->count()} módulos.")
-                            ->success()
-                            ->send();
-                    } catch (Throwable $exception) {
-                        Notification::make()
-                            ->title('Não foi possível importar a estrutura.')
-                            ->body($exception->getMessage())
+                            ->title('Não foi possível ler a planilha salva.')
+                            ->body('Reenvie o arquivo e tente novamente.')
                             ->danger()
                             ->send();
-                    } finally {
-                        Storage::disk('local')->delete($path);
+
+                        return;
                     }
+
+                    $preview = $importer->preview($previewPath, $this->record);
+                    $run = CourseSpreadsheetImportRun::query()->create([
+                        'course_id' => $this->record->id,
+                        'course_name' => $preview['payload']['course_name'] ?? null,
+                        'file_name' => basename($path),
+                        'stored_path' => $path,
+                        'status' => 'queued',
+                        'total_modules' => (int) ($preview['modules']['total'] ?? 0),
+                        'processed_modules' => 0,
+                        'total_tracks' => self::countPreviewTracks($preview),
+                        'total_lessons' => (int) ($preview['lessons']['total'] ?? 0),
+                        'total_minutes' => (int) ($preview['total_minutes'] ?? 0),
+                        'latest_message' => 'Importação na fila.',
+                    ]);
+
+                    self::logCourseDebug('import.queued', [
+                        'course_id' => $this->record->id,
+                        'course_name' => $this->record->name,
+                        'spreadsheet_path' => $path,
+                        'modules_before' => $this->record->modules()->count(),
+                        'run_id' => $run->id,
+                    ]);
+
+                    Notification::make()
+                        ->title('Importação iniciada.')
+                        ->body('Ao finalizar, o curso será atualizado e as aulas serão revinculadas com a biblioteca. Planos de alunos continuam separados e precisam ser reprocessados pelo botão do plano.')
+                        ->success()
+                        ->send();
+
+                    $this->dispatch('course-spreadsheet-import-updated');
                 }),
             DeleteAction::make(),
         ];
@@ -147,16 +284,53 @@ class EditCourse extends EditRecord
 
     protected static function resolveUploadedSpreadsheetPath(mixed $state): ?string
     {
-        if (is_string($state) && $state !== '') {
-            return $state;
+        return CourseSpreadsheetUpload::storedPath($state);
+    }
+
+    protected static function resolveUploadedSpreadsheetPreviewPath(mixed $state): ?string
+    {
+        return CourseSpreadsheetUpload::absolutePath($state);
+    }
+
+    protected static function countPreviewTracks(array $preview): int
+    {
+        return collect($preview['payload']['modules'] ?? [])
+            ->sum(fn (array $module): int => count($module['tracks'] ?? []));
+    }
+
+    protected static function resolveUploadedPath(mixed $state, ?string $fallback = null, ?string $directory = null): ?string
+    {
+        foreach (Arr::wrap($state) as $value) {
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
         }
 
-        if (is_array($state)) {
-            $first = Arr::first($state, fn ($value) => is_string($value) && $value !== '');
+        $path = $directory ? FilamentThumbnailUpload::store($state, $directory) : null;
 
-            return is_string($first) ? $first : null;
+        if ($path !== null) {
+            return $path;
         }
 
-        return null;
+        return $fallback;
+    }
+
+    protected static function formatSyncStats(array $stats): string
+    {
+        return sprintf(
+            '%d aula(s) vinculada(s), %d placeholder(s) substituído(s) e %d aula(s) publicada(s). Os planos dos alunos não são atualizados automaticamente.',
+            (int) ($stats['linked'] ?? 0),
+            (int) ($stats['replaced'] ?? 0),
+            (int) ($stats['published'] ?? 0),
+        );
+    }
+
+    protected static function logCourseDebug(string $event, array $context = []): void
+    {
+        try {
+            Log::channel('course_debug')->info($event, $context);
+        } catch (Throwable) {
+            //
+        }
     }
 }

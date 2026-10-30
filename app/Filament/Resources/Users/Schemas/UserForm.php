@@ -2,6 +2,8 @@
 
 namespace App\Filament\Resources\Users\Schemas;
 
+use App\Models\Course;
+use App\Models\User;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Schemas\Schema;
@@ -24,6 +26,29 @@ class UserForm
                     ])
                     ->required(),
                 TextInput::make('tutory_customer_id')->label('ID do cliente na Tutory'),
+                Select::make('course_ids')
+                    ->label('Cursos liberados')
+                    ->multiple()
+                    ->options(fn (): array => Course::query()
+                        ->orderBy('name')
+                        ->get()
+                        ->mapWithKeys(fn (Course $course): array => [
+                            $course->id => $course->is_active
+                                ? $course->name
+                                : "{$course->name} (inativo/provisório)",
+                        ])
+                        ->all())
+                    ->searchable()
+                    ->preload()
+                    ->dehydrated(false)
+                    ->afterStateHydrated(function (Select $component, ?User $record): void {
+                        if (! $record?->exists) {
+                            return;
+                        }
+
+                        $component->state($record->courses()->pluck('courses.id')->map(fn ($id) => (string) $id)->all());
+                    })
+                    ->helperText('Opcional. Para alunos, libera o acesso manual aos cursos selecionados.'),
                 TextInput::make('password')
                     ->label('Senha')
                     ->password()

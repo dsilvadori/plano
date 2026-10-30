@@ -32,7 +32,7 @@ class UserSpreadsheetImporter
 
         DB::transaction(function () use ($payload, $sendFirstAccessEmail, &$stats): void {
             foreach ($payload['students'] as $studentData) {
-                $user = User::query()->firstOrNew(['email' => $studentData['email']]);
+                $user = User::firstOrNewByEmail($studentData['email']);
                 $wasRecentlyCreated = ! $user->exists;
 
                 $user->name = $studentData['name'];
@@ -58,7 +58,7 @@ class UserSpreadsheetImporter
                 $stats['missing_courses'] += $this->countMissingCourses($studentData['courses']);
 
                 if ($sendFirstAccessEmail && $wasRecentlyCreated) {
-                    $token = Password::broker()->createToken($user);
+                    $token = Password::broker('first_access')->createToken($user);
                     $user->sendSetPasswordNotification($token);
                     $stats['emails_sent']++;
                 }

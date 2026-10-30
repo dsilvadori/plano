@@ -16,6 +16,10 @@ class CourseSpreadsheetParser
             throw new RuntimeException("Spreadsheet not found: {$path}");
         }
 
+        if (Str::lower(pathinfo($path, PATHINFO_EXTENSION)) === 'csv') {
+            return $this->parseCsv($path);
+        }
+
         $archive = new ZipArchive();
 
         if ($archive->open($path) !== true) {
@@ -44,6 +48,149 @@ class CourseSpreadsheetParser
         }
     }
 
+    protected function parseCsv(string $path): array
+    {
+        $handle = fopen($path, 'rb');
+
+        if ($handle === false) {
+            throw new RuntimeException("Unable to open CSV: {$path}");
+        }
+
+        try {
+            $headers = null;
+            $rows = [];
+
+            while (($row = fgetcsv($handle, 0, ';')) !== false) {
+                if (count($row) === 1 && str_contains((string) $row[0], ',')) {
+                    $row = str_getcsv((string) $row[0], ',');
+                }
+
+                if ($headers === null) {
+                    $headers = collect($row)
+                        ->map(fn (string $header) => $this->normalizeHeader($header))
+                        ->all();
+
+                    continue;
+                }
+
+                $mapped = [];
+
+                foreach ($headers as $index => $header) {
+                    $mapped[$header] = trim((string) ($row[$index] ?? ''));
+                }
+
+                if (collect($mapped)->filter()->isNotEmpty()) {
+                    $rows[] = $mapped;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        if ($rows === []) {
+            throw new RuntimeException('O CSV não possui linhas importáveis.');
+        }
+
+        $firstRow = $rows[0];
+        $courseName = $firstRow['course_name'] ?? $firstRow['curso'] ?? $this->fallbackCourseNameFromPath($path);
+        $groupedRows = collect($rows)
+            ->filter(fn (array $row) => filled($row['module_name'] ?? $row['modulo'] ?? null)
+                && (filled($row['lesson_title'] ?? $row['aula'] ?? null) || filled($row['track_name'] ?? $row['trilha'] ?? null)))
+            ->groupBy(fn (array $row) => $row['module_name'] ?? $row['modulo']);
+
+        if ($groupedRows->isEmpty()) {
+            throw new RuntimeException('O CSV precisa conter as colunas module_name e lesson_title.');
+        }
+
+        $sortOrder = 1;
+        $modules = $groupedRows
+            ->map(function (Collection $moduleRows, string $moduleName) use (&$sortOrder) {
+                $first = $moduleRows->first();
+                $moduleSortOrder = (int) ($first['module_sort_order'] ?? $first['ordem_modulo'] ?? 0);
+                $trackSortOrder = 1;
+                $tracks = $moduleRows
+                    ->groupBy(fn (array $row) => $row['track_name'] ?? $row['trilha'] ?? $moduleName)
+                    ->map(function (Collection $trackRows, string $trackName) use (&$trackSortOrder) {
+                        $firstTrackRow = $trackRows->first();
+                        $hasExplicitTrack = filled($firstTrackRow['track_name'] ?? $firstTrackRow['trilha'] ?? null);
+                        $lessons = $trackRows
+                            ->values()
+                            ->map(function (array $row, int $index) {
+                                $minutes = $this->parseLessonMinutes($row['lesson_minutes'] ?? $row['minutos'] ?? 0);
+                                $status = $row['lesson_status'] ?? $row['status_aula'] ?? null;
+
+                                return [
+                                    'name' => $this->normalizeLessonName($row['lesson_title'] ?? $row['aula']),
+                                    'minutes' => $minutes,
+                                    'type' => $row['lesson_type'] ?? $row['tipo_aula'] ?? 'video',
+                                    'status' => filled($status) ? $status : 'draft',
+                                    'status_explicit' => filled($status),
+                                    'thumbnail_url' => $row['thumbnail_url'] ?? null,
+                                    'google_doc_url' => $row['lesson_google_doc_url'] ?? null,
+                                    'panda_video_id' => $row['panda_video_id'] ?? null,
+                                    'panda_embed_url' => $row['panda_embed_url'] ?? null,
+                                    'panda_player_url' => $row['panda_player_url'] ?? null,
+                                    'sort_order' => (int) ($row['lesson_sort_order'] ?? $row['ordem_aula'] ?? ($index + 1)),
+                                ];
+                            })
+                            ->filter(fn (array $lesson) => filled($lesson['name']) && $lesson['minutes'] > 0)
+                            ->values()
+                            ->all();
+
+                        return [
+                            'name' => trim($trackName),
+                            'sort_order' => (int) ($firstTrackRow['track_sort_order'] ?? $firstTrackRow['ordem_trilha'] ?? $trackSortOrder++),
+                            'teacher_name' => $this->resolveTeacherName($firstTrackRow),
+                            'thumbnail_url' => $firstTrackRow['track_thumbnail_url'] ?? null,
+                            'google_doc_url' => $firstTrackRow['track_google_doc_url'] ?? null,
+                            'panda_folder_id' => $firstTrackRow['panda_folder_id'] ?? null,
+                            'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
+                            'lessons' => $lessons,
+                            'has_explicit_track' => $hasExplicitTrack,
+                        ];
+                    })
+                    ->filter(fn (array $track) => filled($track['name']) && ($track['lessons'] !== [] || ($track['has_explicit_track'] ?? false)))
+                    ->sortBy('sort_order')
+                    ->values()
+                    ->all();
+
+                $assignedSortOrder = $moduleSortOrder ?: $sortOrder++;
+                $lessons = collect($tracks)->flatMap(fn (array $track) => $track['lessons'])->values()->all();
+
+                return [
+                    'sheet_name' => 'CSV',
+                    'group_name' => $first['module_group'] ?? $first['grupo_modulo'] ?? 'CSV',
+                    'name' => $moduleName,
+                    'teacher_name' => $this->resolveModuleTeacherName($first),
+                    'type' => $first['module_type'] ?? $first['tipo_modulo'] ?? $this->inferModuleType('CSV', null, $moduleName),
+                    'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
+                    'sort_order' => $assignedSortOrder,
+                    'tracks' => $tracks,
+                    'lessons' => $lessons,
+                ];
+            })
+            ->filter(fn (array $module) => $module['tracks'] !== [])
+            ->sortBy('sort_order')
+            ->values()
+            ->map(function (array $module, int $index) {
+                $module['sort_order'] = $module['sort_order'] ?: ($index + 1);
+
+                return $module;
+            })
+            ->all();
+
+        if ($modules === []) {
+            throw new RuntimeException('O CSV não possui aulas com minutos válidos.');
+        }
+
+        return [
+            'course_name' => trim($courseName),
+            'course_slug' => Str::slug($courseName),
+            'study_track_name' => 'Trilha Oficial - ' . trim($courseName),
+            'modules' => $modules,
+        ];
+    }
+
     protected function parseModules(ZipArchive $archive, array $sharedStrings, Collection $sheets): array
     {
         $sortOrder = 1;
@@ -51,33 +198,36 @@ class CourseSpreadsheetParser
         return $sheets
             ->flatMap(function (array $sheet) use ($archive, $sharedStrings, &$sortOrder) {
                 $rows = $this->readWorksheetRows($archive, $sheet['target'], $sharedStrings);
-                $groupName = null;
+                $groupName = $this->normalizeSheetName($sheet['name']);
+                $currentModuleTeacherName = null;
                 $currentTrackName = null;
+                $currentTrackIsExplicit = false;
+                $currentTeacherName = null;
                 $currentLessons = [];
-                $modules = [];
+                $tracks = [];
+                $trackSortOrder = 1;
 
-                $flushTrack = function () use (&$modules, &$currentTrackName, &$currentLessons, &$sortOrder, &$groupName, $sheet): void {
-                    if (blank($currentTrackName) || empty($currentLessons)) {
+                $flushTrack = function () use (&$tracks, &$currentTrackName, &$currentTrackIsExplicit, &$currentTeacherName, &$currentLessons, &$trackSortOrder): void {
+                    if (blank($currentTrackName) || (empty($currentLessons) && ! $currentTrackIsExplicit)) {
                         $currentTrackName = null;
+                        $currentTrackIsExplicit = false;
+                        $currentTeacherName = null;
                         $currentLessons = [];
 
                         return;
                     }
 
-                    $moduleName = trim(($groupName ? $groupName . ' - ' : '') . $currentTrackName);
-
-                    $modules[] = [
-                        'sheet_name' => $sheet['name'],
-                        'group_name' => $groupName ?: $sheet['name'],
-                        'track_name' => $currentTrackName,
-                        'name' => $moduleName,
-                        'type' => $this->inferModuleType($sheet['name'], $groupName, $currentTrackName),
+                    $tracks[] = [
+                        'name' => $currentTrackName,
+                        'sort_order' => $trackSortOrder++,
+                        'teacher_name' => $currentTeacherName,
                         'workload_minutes' => array_sum(array_column($currentLessons, 'minutes')),
-                        'sort_order' => $sortOrder++,
                         'lessons' => $currentLessons,
                     ];
 
                     $currentTrackName = null;
+                    $currentTrackIsExplicit = false;
+                    $currentTeacherName = null;
                     $currentLessons = [];
                 };
 
@@ -91,21 +241,31 @@ class CourseSpreadsheetParser
                         continue;
                     }
 
-                    if ($this->isModuleRow($firstCell)) {
-                        $groupName = $this->extractSectionName($firstCell);
+                    if (Str::startsWith($firstCell, 'Módulo - ')) {
+                        $groupName = trim(Str::after($firstCell, 'Módulo - '));
+                        $currentModuleTeacherName = $this->resolveModuleTeacherName([
+                            'module_teacher_name' => Arr::get($row, 'C'),
+                        ]) ?: $currentModuleTeacherName;
 
                         continue;
                     }
 
-                    if ($this->isTrackRow($firstCell)) {
+                    if (Str::startsWith($firstCell, 'Trilha - ')) {
                         $flushTrack();
-                        $currentTrackName = $this->extractSectionName($firstCell);
+                        $currentTrackName = trim(Str::after($firstCell, 'Trilha - '));
+                        $currentTrackIsExplicit = true;
+                        $currentTeacherName = $this->resolveTeacherName([
+                            'professor' => Arr::get($row, 'C'),
+                        ]);
 
-                        if (is_numeric($minutesCell)) {
-                            $currentLessons[] = [
-                                'name' => $this->normalizeLessonName($currentTrackName),
-                                'minutes' => (int) round((float) $minutesCell),
-                            ];
+                        continue;
+                    }
+
+                    if ($this->isTeacherRow($firstCell)) {
+                        if ($currentTrackName === null) {
+                            $currentModuleTeacherName = $this->teacherNameFromLabel($firstCell);
+                        } else {
+                            $currentTeacherName = $this->teacherNameFromLabel($firstCell);
                         }
 
                         continue;
@@ -116,24 +276,65 @@ class CourseSpreadsheetParser
                     }
 
                     if ($currentTrackName === null) {
-                        $groupName ??= $this->normalizeSheetName($sheet['name']);
                         $currentTrackName = $groupName;
+                        $currentTrackIsExplicit = false;
                     }
 
-                    if (! is_numeric($minutesCell)) {
+                    $minutes = $this->parseLessonMinutes($minutesCell);
+
+                    if ($minutes <= 0) {
                         continue;
                     }
 
                     $currentLessons[] = [
                         'name' => $this->normalizeLessonName($firstCell),
-                        'minutes' => (int) round((float) $minutesCell),
+                        'minutes' => $minutes,
                     ];
                 }
 
                 $flushTrack();
+                $lessons = collect($tracks)->flatMap(fn (array $track) => $track['lessons'])->values()->all();
 
-                return $modules;
+                if ($tracks === []) {
+                    return [];
+                }
+
+                return [[
+                    'sheet_name' => $sheet['name'],
+                    'group_name' => $groupName,
+                    'name' => $groupName,
+                    'teacher_name' => $currentModuleTeacherName,
+                    'type' => $this->inferModuleType($sheet['name'], $groupName, implode(' ', array_column($tracks, 'name'))),
+                    'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
+                    'sort_order' => $sortOrder++,
+                    'tracks' => $tracks,
+                    'lessons' => $lessons,
+                ]];
             })
+            ->groupBy(fn (array $module) => $this->normalizeImportName($module['name']))
+            ->map(function (Collection $modules): array {
+                $first = $modules->first();
+                $tracks = $modules
+                    ->flatMap(fn (array $module) => $module['tracks'] ?? [])
+                    ->values()
+                    ->map(function (array $track, int $index): array {
+                        $track['sort_order'] = $index + 1;
+
+                        return $track;
+                    })
+                    ->all();
+                $lessons = collect($tracks)->flatMap(fn (array $track) => $track['lessons'] ?? [])->values()->all();
+
+                return [
+                    ...$first,
+                    'workload_minutes' => array_sum(array_column($lessons, 'minutes')),
+                    'teacher_name' => $modules->pluck('teacher_name')->filter()->first(),
+                    'tracks' => $tracks,
+                    'lessons' => $lessons,
+                ];
+            })
+            ->sortBy('sort_order')
+            ->values()
             ->all();
     }
 
@@ -145,19 +346,63 @@ class CourseSpreadsheetParser
         ], true);
     }
 
-    protected function isModuleRow(string $value): bool
+    protected function isTeacherRow(string $value): bool
     {
-        return preg_match('/^M[oó]dulo\s*-\s*/iu', $value) === 1;
+        $normalized = Str::of($value)
+            ->lower()
+            ->ascii()
+            ->squish()
+            ->value();
+
+        return Str::startsWith($normalized, [
+            'professor - ',
+            'professor: ',
+            'professora - ',
+            'professora: ',
+            'instrutor - ',
+            'instrutor: ',
+            'docente - ',
+            'docente: ',
+        ]);
     }
 
-    protected function isTrackRow(string $value): bool
+    protected function teacherNameFromLabel(string $value): ?string
     {
-        return preg_match('/^Trilha\s*-\s*/iu', $value) === 1;
+        $name = trim((string) preg_replace('/^(professor(a)?|instrutor(a)?|docente)\s*[-:]\s*/iu', '', $value));
+
+        return $name !== '' ? $name : null;
     }
 
-    protected function extractSectionName(string $value): string
+    protected function resolveTeacherName(array $row): ?string
     {
-        return trim(preg_replace('/^[^-]+-\s*/u', '', $value) ?? $value);
+        $value = $row['track_teacher_name']
+            ?? $row['teacher_name']
+            ?? $row['professor']
+            ?? $row['professora']
+            ?? $row['instrutor']
+            ?? $row['instrutora']
+            ?? $row['docente']
+            ?? null;
+
+        $name = trim((string) $value);
+
+        return $name !== '' ? $name : null;
+    }
+
+    protected function resolveModuleTeacherName(array $row): ?string
+    {
+        $value = $row['module_teacher_name']
+            ?? $row['teacher_name_module']
+            ?? $row['professor_modulo']
+            ?? $row['professora_modulo']
+            ?? $row['instrutor_modulo']
+            ?? $row['instrutora_modulo']
+            ?? $row['docente_modulo']
+            ?? null;
+
+        $name = trim((string) $value);
+
+        return $name !== '' ? $name : null;
     }
 
     protected function resolveCourseName(ZipArchive $archive, array $sharedStrings, Collection $sheets, string $path): string
@@ -214,6 +459,82 @@ class CourseSpreadsheetParser
     protected function normalizeLessonName(string $value): string
     {
         return trim(str_replace("\n", ' ', preg_replace('/\s+/', ' ', $value) ?? $value));
+    }
+
+    protected function parseLessonMinutes(mixed $value): int
+    {
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return 0;
+        }
+
+        $normalized = str_replace(',', '.', $value);
+
+        if (preg_match('/^(\d+)\s*h(?:\s*(\d+))?/iu', $normalized, $matches)) {
+            return ((int) $matches[1] * 60) + (int) ($matches[2] ?? 0);
+        }
+
+        if (preg_match('/^(\d{1,3}):(\d{2})(?::(\d{2}))?$/', $normalized, $matches)) {
+            $first = (int) $matches[1];
+            $second = (int) $matches[2];
+            $third = (int) ($matches[3] ?? 0);
+
+            if (array_key_exists(3, $matches)) {
+                return ($first * 60) + $second + (int) round($third / 60);
+            }
+
+            return $first > 12
+                ? $first + (int) round($second / 60)
+                : ($first * 60) + $second;
+        }
+
+        if (is_numeric($normalized)) {
+            $number = (float) $normalized;
+
+            if ($number > 0 && $number < 1) {
+                $minutesFromExcelSerial = max(1, (int) round($number * 24 * 60));
+
+                if ($minutesFromExcelSerial > (12 * 60)) {
+                    // Excel time serials can display video durations like 19:32; mirror the text parser's mm:ss heuristic.
+                    $clockHours = intdiv($minutesFromExcelSerial, 60);
+                    $clockMinutes = $minutesFromExcelSerial % 60;
+
+                    return max(1, $clockHours + (int) round($clockMinutes / 60));
+                }
+
+                return $minutesFromExcelSerial;
+            }
+
+            return max(0, (int) round($number));
+        }
+
+        if (preg_match('/(\d+(?:\.\d+)?)/', $normalized, $matches)) {
+            return max(0, (int) round((float) $matches[1]));
+        }
+
+        return 0;
+    }
+
+    protected function normalizeHeader(string $value): string
+    {
+        return Str::of($value)
+            ->trim()
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/[^a-z0-9]+/', '_')
+            ->trim('_')
+            ->value();
+    }
+
+    protected function normalizeImportName(string $value): string
+    {
+        return Str::of($value)
+            ->lower()
+            ->ascii()
+            ->replaceMatches('/[^a-z0-9]+/', ' ')
+            ->squish()
+            ->value();
     }
 
     protected function readSheets(ZipArchive $archive): Collection

@@ -23,16 +23,35 @@ class CreateUser extends CreateRecord
 
     protected function afterCreate(): void
     {
+        $this->syncManualCourses();
+
         if (! ($this->record->isStudent() || $this->record->isSubscriber())) {
             return;
         }
 
-        $token = Password::broker()->createToken($this->record);
+        $token = Password::broker('first_access')->createToken($this->record);
         $this->record->sendSetPasswordNotification($token);
 
         Notification::make()
             ->title('E-mail de primeiro acesso enviado.')
             ->success()
             ->send();
+    }
+
+    protected function syncManualCourses(): void
+    {
+        $courseIds = collect($this->data['course_ids'] ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($courseIds->isEmpty()) {
+            return;
+        }
+
+        $this->record->courses()->syncWithoutDetaching(
+            $courseIds->mapWithKeys(fn (int $courseId): array => [$courseId => ['source' => 'manual']])->all()
+        );
     }
 }

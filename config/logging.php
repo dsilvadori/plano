@@ -118,6 +118,13 @@ return [
             'replace_placeholders' => true,
         ],
 
+        'course_debug' => [
+            'driver' => 'single',
+            'path' => base_path('course-thumbnail-debug.log'),
+            'level' => 'debug',
+            'replace_placeholders' => true,
+        ],
+
         'null' => [
             'driver' => 'monolog',
             'handler' => NullHandler::class,

@@ -1,8 +1,4 @@
 @php
-    $navigationPlans = Auth::user()?->canAccessStudentArea()
-        ? Auth::user()->studyPlans()->with('course')->where('status', 'active')->latest()->get()
-        : collect();
-    $currentStudyPlan = request()->route('studyPlan');
     $impersonatorName = session(\App\Services\UserImpersonation::SESSION_NAME_KEY);
 @endphp
 
@@ -12,7 +8,7 @@
             <a href="{{ route('dashboard') }}" class="flex items-center gap-3">
                 <x-application-logo class="h-10 w-auto object-contain" />
                 <div>
-                    <p class="text-xs uppercase tracking-[0.25em] text-slate-400">Plano VC</p>
+                    <p class="text-xs uppercase tracking-[0.25em] text-slate-400">Plataforma VC</p>
                     <p class="text-sm font-semibold text-slate-100">Seu ciclo de estudo</p>
                 </div>
             </a>
@@ -35,78 +31,70 @@
             <x-application-logo class="h-14 w-auto object-contain" />
             <div>
                 <p class="text-xs uppercase tracking-[0.35em] text-slate-400">Vencendo Concursos</p>
-                <p class="text-lg font-semibold text-slate-50">Plano de Estudos</p>
+                <p class="text-lg font-semibold text-slate-50">Plataforma Vencendo Concursos</p>
             </div>
         </div>
 
-        <div class="px-4">
-            <div class="user-card rounded-3xl border border-white/10 bg-white/5 p-4">
-                <p class="text-sm font-semibold text-slate-50">{{ Auth::user()->name }}</p>
-                <p class="mt-1 text-sm text-slate-400">{{ Auth::user()->email }}</p>
-                <p class="mt-3 text-xs uppercase tracking-[0.25em] text-amber-300">
-                    {{ Auth::user()->isAdmin() ? 'Admin' : 'Aluno' }}
+        <div class="sidebar-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-6">
+            <div>
+                <div class="user-card rounded-3xl border border-white/10 bg-white/5 p-4">
+                    <p class="text-sm font-semibold text-slate-50">{{ Auth::user()->name }}</p>
+                    <p class="mt-1 text-sm text-slate-400">{{ Auth::user()->email }}</p>
+                    <p class="mt-3 text-xs uppercase tracking-[0.25em] text-amber-300">
+                        {{ Auth::user()->isAdmin() ? 'Admin' : 'Aluno' }}
+                    </p>
+                </div>
+
+                @if ($impersonatorName)
+                    <div class="mt-3 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-100">
+                        <p class="font-semibold">Visualizando como aluno</p>
+                        <p class="mt-1 text-xs text-amber-100/80">Admin: {{ $impersonatorName }}</p>
+                        <form method="POST" action="{{ route('admin.impersonation.stop') }}" class="mt-3">
+                            @csrf
+                            <button type="submit" class="w-full rounded-xl border border-amber-200/30 bg-amber-200/10 px-3 py-2 text-sm font-semibold text-amber-50 transition hover:bg-amber-200/20">
+                                Voltar ao admin
+                            </button>
+                        </form>
+                    </div>
+                @endif
+            </div>
+
+            <div class="mt-8 space-y-2">
+                @if (Auth::user()->canAccessStudentArea())
+                    <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard', 'courses.index', 'courses.show', 'courses.lessons.show') ? 'nav-pill-active' : '' }}">Início</a>
+                    <a href="{{ route('courses.mine') }}" class="nav-pill {{ request()->routeIs('courses.mine') ? 'nav-pill-active' : '' }}">Meus cursos</a>
+                    <a href="{{ route('study-plans.dashboard') }}" class="nav-pill {{ request()->routeIs('study-plans.dashboard') ? 'nav-pill-active' : '' }}">Plano de Estudos</a>
+                    <a href="{{ route('questions.index') }}" class="nav-pill {{ request()->routeIs('questions.*') ? 'nav-pill-active' : '' }}">Banco de questões</a>
+                @else
+                    <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
+                @endif
+                @if (Auth::user()->isAdmin())
+                    <a href="/admin" class="nav-pill">Painel admin</a>
+                @endif
+                <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
+            </div>
+
+            <div class="mt-6">
+                <x-theme-toggle class="w-full" />
+
+                <button data-install-app-button type="button" class="install-app-button w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
+                    Instalar aplicativo
+                </button>
+                <p data-ios-install-hint class="hidden mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
+                    No iPhone ou iPad, abra pelo Safari, toque em Compartilhar e depois em Adicionar à Tela de Início.
                 </p>
             </div>
 
-            @if ($impersonatorName)
-                <div class="mt-3 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-100">
-                    <p class="font-semibold">Visualizando como aluno</p>
-                    <p class="mt-1 text-xs text-amber-100/80">Admin: {{ $impersonatorName }}</p>
-                    <form method="POST" action="{{ route('admin.impersonation.stop') }}" class="mt-3">
-                        @csrf
-                        <button type="submit" class="w-full rounded-xl border border-amber-200/30 bg-amber-200/10 px-3 py-2 text-sm font-semibold text-amber-50 transition hover:bg-amber-200/20">
-                            Voltar ao admin
-                        </button>
-                    </form>
-                </div>
-            @endif
+            <form method="POST" action="{{ route('logout') }}" class="mt-4">
+                @csrf
+                <button type="submit" class="w-full rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-200 transition hover:bg-amber-400/20">
+                    Sair da conta
+                </button>
+            </form>
         </div>
-
-        <div class="mt-8 flex-1 space-y-2 px-4">
-            <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
-            @if (Auth::user()->canAccessStudentArea())
-                <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
-                @if ($navigationPlans->isNotEmpty())
-                    <div class="pt-4">
-                        <p class="px-4 text-xs uppercase tracking-[0.25em] text-slate-500">Seus planos</p>
-                        <div class="mt-2 space-y-2">
-                            @foreach ($navigationPlans as $plan)
-                                <a href="{{ route('study-plans.show', $plan) }}"
-                                   class="nav-pill text-sm {{ request()->routeIs('study-plans.show') && $currentStudyPlan?->id === $plan->id ? 'nav-pill-active' : '' }}">
-                                    Plano - {{ $plan->course->name }}
-                                </a>
-                            @endforeach
-                        </div>
-                    </div>
-                @endif
-            @endif
-            @if (Auth::user()->isAdmin())
-                <a href="/admin" class="nav-pill">Painel admin</a>
-            @endif
-            <a href="https://ead.vencendoconcursos.com.br/login" target="_blank" rel="noopener noreferrer" class="nav-pill">Plataforma de cursos</a>
-            <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
-        </div>
-
-        <div class="px-4 pb-4">
-            <x-theme-toggle class="w-full" />
-
-            <button id="install-app-button" type="button" class="hidden w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
-                Instalar aplicativo
-            </button>
-            <p id="ios-install-hint" class="hidden mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
-                No iPhone ou iPad, toque em compartilhar e depois em “Adicionar à Tela de Início”.
-            </p>
-        </div>
-
-        <form method="POST" action="{{ route('logout') }}" class="px-4 pb-6">
-            @csrf
-            <button type="submit" class="w-full rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-200 transition hover:bg-amber-400/20">
-                Sair da conta
-            </button>
-        </form>
     </aside>
 
-        <div :class="{'block': open, 'hidden': ! open}" class="hidden border-b border-white/10 bg-slate-950/95 px-4 pb-4 lg:hidden">
+    <div :class="{'block': open, 'hidden': ! open}" class="hidden border-b border-white/10 bg-slate-950/95 px-4 pb-4 lg:hidden">
         <div class="space-y-2">
             @if ($impersonatorName)
                 <div class="rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-100">
@@ -120,21 +108,24 @@
                     </form>
                 </div>
             @endif
-            <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @if (Auth::user()->canAccessStudentArea())
-                <a href="{{ route('study-plans.create') }}" class="nav-pill {{ request()->routeIs('study-plans.create') ? 'nav-pill-active' : '' }}">Criar plano</a>
-                @foreach ($navigationPlans as $plan)
-                    <a href="{{ route('study-plans.show', $plan) }}"
-                       class="nav-pill {{ request()->routeIs('study-plans.show') && $currentStudyPlan?->id === $plan->id ? 'nav-pill-active' : '' }}">
-                        Plano - {{ $plan->course->name }}
-                    </a>
-                @endforeach
+                <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard', 'courses.index', 'courses.show', 'courses.lessons.show') ? 'nav-pill-active' : '' }}">Início</a>
+                <a href="{{ route('courses.mine') }}" class="nav-pill {{ request()->routeIs('courses.mine') ? 'nav-pill-active' : '' }}">Meus cursos</a>
+                <a href="{{ route('study-plans.dashboard') }}" class="nav-pill {{ request()->routeIs('study-plans.dashboard') ? 'nav-pill-active' : '' }}">Plano de Estudos</a>
+                <a href="{{ route('questions.index') }}" class="nav-pill {{ request()->routeIs('questions.*') ? 'nav-pill-active' : '' }}">Banco de questões</a>
+            @else
+                <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard') ? 'nav-pill-active' : '' }}">Início</a>
             @endif
             @if (Auth::user()->isAdmin())
                 <a href="/admin" class="nav-pill">Painel admin</a>
             @endif
-            <a href="https://ead.vencendoconcursos.com.br/login" target="_blank" rel="noopener noreferrer" class="nav-pill">Plataforma de cursos</a>
             <x-theme-toggle class="w-full lg:hidden" />
+            <button data-install-app-button type="button" class="install-app-button w-full rounded-2xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-100">
+                Instalar aplicativo
+            </button>
+            <p data-ios-install-hint class="hidden rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
+                No iPhone ou iPad, abra pelo Safari, toque em Compartilhar e depois em Adicionar à Tela de Início.
+            </p>
             <a href="{{ route('profile.edit') }}" class="nav-pill">Perfil</a>
             <form method="POST" action="{{ route('logout') }}">
                 @csrf

@@ -2,8 +2,9 @@
 
 namespace App\Models;
 
-use App\Notifications\SetPasswordNotification;
+use App\Notifications\CourseAccessGrantedNotification;
 use App\Notifications\ResetPasswordNotification;
+use App\Notifications\SetPasswordNotification;
 use Illuminate\Database\Eloquent\Builder;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
@@ -16,6 +17,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 
 #[Fillable(['name', 'email', 'password', 'role', 'phone', 'tutory_customer_id', 'last_login_at'])]
 #[Hidden(['password', 'remember_token'])]
@@ -36,6 +39,34 @@ class User extends Authenticatable implements FilamentUser
             'last_login_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+
+    public static function normalizeEmail(?string $email): string
+    {
+        return Str::lower(trim((string) $email));
+    }
+
+    public static function findByEmail(?string $email): ?self
+    {
+        $email = self::normalizeEmail($email);
+
+        if ($email === '') {
+            return null;
+        }
+
+        return self::query()
+            ->whereRaw('lower(email) = ?', [$email])
+            ->first();
+    }
+
+    public static function firstOrNewByEmail(?string $email): self
+    {
+        return self::findByEmail($email) ?? new self(['email' => self::normalizeEmail($email)]);
+    }
+
+    public function setEmailAttribute(?string $email): void
+    {
+        $this->attributes['email'] = self::normalizeEmail($email);
     }
 
     public function canAccessPanel(Panel $panel): bool
@@ -75,9 +106,41 @@ class User extends Authenticatable implements FilamentUser
                 ->where('is_active', true);
         }
 
+        $linkedCourses = $this->courses()
+            ->select(['courses.id', 'courses.name', 'courses.slug', 'courses.tutory_product_id', 'courses.combo_name'])
+            ->get();
+
+        $linkedCourseIds = $linkedCourses->pluck('id')->all();
+        $linkedProductIds = $linkedCourses->pluck('tutory_product_id')->filter()->unique()->values()->all();
+        $linkedNames = $linkedCourses->pluck('name')->filter()->unique()->values()->all();
+        $linkedSlugs = $linkedCourses->pluck('slug')->filter()->unique()->values()->all();
+        $linkedComboNames = $linkedCourses->pluck('combo_name')->filter()->unique()->values()->all();
+
         return Course::query()
             ->where('is_active', true)
-            ->whereHas('students', fn (Builder $query) => $query->whereKey($this->getKey()));
+            ->where(function (Builder $query) use ($linkedCourseIds, $linkedProductIds, $linkedNames, $linkedSlugs, $linkedComboNames): void {
+                $query->whereHas('students', fn (Builder $query) => $query->whereKey($this->getKey()));
+
+                if ($linkedCourseIds !== []) {
+                    $query->orWhereIn('id', $linkedCourseIds);
+                }
+
+                if ($linkedProductIds !== []) {
+                    $query->orWhereIn('tutory_product_id', $linkedProductIds);
+                }
+
+                if ($linkedNames !== []) {
+                    $query->orWhereIn('name', $linkedNames);
+                }
+
+                if ($linkedSlugs !== []) {
+                    $query->orWhereIn('slug', $linkedSlugs);
+                }
+
+                if ($linkedComboNames !== []) {
+                    $query->orWhereIn('combo_name', $linkedComboNames);
+                }
+            });
     }
 
     public function studentCourses(): HasMany
@@ -97,9 +160,27 @@ class User extends Authenticatable implements FilamentUser
         return $this->hasMany(StudyPlan::class);
     }
 
+    public function lessonProgress(): HasMany
+    {
+        return $this->hasMany(LessonProgress::class);
+    }
+
+    public function lessonComments(): HasMany
+    {
+        return $this->hasMany(LessonComment::class);
+    }
+
     public function sendSetPasswordNotification(string $token): void
     {
         $this->notify(new SetPasswordNotification($token));
+    }
+
+    /**
+     * @param  Collection<int, Course>  $courses
+     */
+    public function sendCourseAccessGrantedNotification(Collection $courses): void
+    {
+        $this->notify(new CourseAccessGrantedNotification($courses));
     }
 
     public function sendPasswordResetNotification(#[\SensitiveParameter] $token): void

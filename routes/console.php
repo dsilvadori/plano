@@ -1,18 +1,157 @@
 <?php
 
+use App\Http\Controllers\CourseCatalogController;
 use App\Models\Course;
+use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
+use App\Models\Lesson;
+use App\Models\QuestionBank;
 use App\Models\StudyPlan;
+use App\Services\ActiveStudyPlanRefresher;
 use App\Services\CourseAccessResolver;
+use App\Services\CourseCatalogDuplicateMerger;
+use App\Services\CourseLessonMediaImporter;
+use App\Services\CourseSpreadsheetParser;
+use App\Services\LessonCourseLinker;
+use App\Services\LessonDuplicateMerger;
+use App\Services\LessonFolderDuplicateMerger;
+use App\Services\PandaVideoClient;
+use App\Services\QuestionPdfImporter;
 use App\Services\StudyPlanGenerator;
-use Carbon\Carbon;
-use Carbon\CarbonInterface;
+use App\Support\LessonTitleNormalizer;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('courses:ensure-start-here {--course-id=* : Limita a atualização a um ou mais cursos}', function () {
+    if (! Schema::hasTable('courses')) {
+        $this->error('Tabela de cursos não encontrada. Rode as migrations antes deste comando.');
+
+        return 1;
+    }
+
+    $courseIds = collect((array) $this->option('course-id'))
+        ->filter()
+        ->map(fn ($id): int => (int) $id)
+        ->values();
+
+    $query = Course::query()
+        ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('id', $courseIds));
+
+    $total = (clone $query)->count();
+
+    if ($total === 0) {
+        $this->warn('Nenhum curso encontrado para atualizar.');
+
+        return 0;
+    }
+
+    $updated = 0;
+
+    DB::transaction(function () use ($query, &$updated): void {
+        $query
+            ->orderBy('id')
+            ->chunkById(100, function ($courses) use (&$updated): void {
+                foreach ($courses as $course) {
+                    Course::ensureStartHereModuleIsAttached($course);
+                    $updated++;
+                }
+            });
+    });
+
+    $this->info("Cursos atualizados com Comece por aqui: {$updated}.");
+
+    return 0;
+})->purpose('Garante módulo, trilha e aula Comece por aqui em todos os cursos');
+
+Artisan::command('study-plans:refresh-active {--course-id=* : Limita a atualização a um ou mais cursos} {--from-date= : Regera itens não concluídos a partir desta data, no formato YYYY-MM-DD} {--dry-run}', function (ActiveStudyPlanRefresher $refresher) {
+    $courseIds = collect((array) $this->option('course-id'))
+        ->filter()
+        ->map(fn ($id): int => (int) $id)
+        ->values();
+    $query = Course::query()
+        ->where('is_active', true)
+        ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('id', $courseIds));
+    $courses = $query->get();
+
+    if ($courses->isEmpty()) {
+        $this->warn('Nenhum curso ativo encontrado para atualizar.');
+
+        return 0;
+    }
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+    }
+
+    $fromDate = filled($this->option('from-date')) ? (string) $this->option('from-date') : null;
+    $refreshed = $courses->sum(fn (Course $course): int => $fromDate
+        ? $refresher->refreshCourseFromDate($course, $fromDate)
+        : $refresher->refreshCourseFromNextWeek($course));
+
+    if ($this->option('dry-run')) {
+        DB::rollBack();
+        $this->info('Simulação concluída. Nada foi gravado.');
+    }
+
+    $this->info("Planos ativos atualizados: {$refreshed}.");
+
+    return 0;
+})->purpose('Atualiza planos ativos preservando progresso e semanas próximas');
+
+Artisan::command('study-plans:sync-active-lessons {--course-id=* : Limita a atualização a um ou mais cursos} {--dry-run}', function (StudyPlanGenerator $generator) {
+    $courseIds = collect((array) $this->option('course-id'))
+        ->filter()
+        ->map(fn ($id): int => (int) $id)
+        ->values();
+    $query = StudyPlan::query()
+        ->where('status', 'active')
+        ->with(['course'])
+        ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('course_id', $courseIds));
+
+    $total = (clone $query)->count();
+
+    if ($total === 0) {
+        $this->warn('Nenhum plano ativo encontrado para sincronizar.');
+
+        return 0;
+    }
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+    }
+
+    $synced = 0;
+
+    $query
+        ->orderBy('id')
+        ->chunkById(25, function ($plans) use ($generator, &$synced): void {
+            foreach ($plans as $plan) {
+                $generator->syncPublishedLessonsForPlan($plan);
+
+                if ($plan->course) {
+                    CourseCatalogController::forgetCourseCatalogCache((int) $plan->course->id);
+                }
+
+                $synced++;
+            }
+        });
+
+    if ($this->option('dry-run')) {
+        DB::rollBack();
+        $this->info('Simulação concluída. Nada foi gravado.');
+    }
+
+    $this->info("Planos ativos sincronizados: {$synced} de {$total}.");
+
+    return 0;
+})->purpose('Sincroniza aulas reais dos itens de todos os planos ativos sem regenerar o cronograma');
 
 Artisan::command('courses:expand-combo {comboName}', function (string $comboName) {
     $comboCourses = app(CourseAccessResolver::class)->coursesForCombo($comboName);
@@ -63,290 +202,720 @@ Artisan::command('courses:expand-santos-combo', function () {
     ]);
 })->purpose('Vincula alunos do combo Gabaritando Prefeitura de Santos aos cursos ativos marcados com esse combo');
 
-Artisan::command('courses:link-santos-nivel-medio {--dry-run : Mostra o que seria vinculado sem gravar no banco} {--include-inactive : Inclui cursos inativos que tenham o prefixo}', function () {
-    $comboName = 'GABARITANDO SANTOS - COMBO NÍVEL MÉDIO';
-    $coursePrefix = 'Gabaritando Santos';
+Artisan::command('lessons:normalize-titles {--dry-run}', function () {
+    $changed = 0;
+    $linked = 0;
+    $replaced = 0;
 
-    $comboPlaceholders = Course::query()
-        ->where(function ($query) use ($comboName) {
-            $query
-                ->where('name', $comboName)
-                ->orWhere('tutory_product_id', $comboName);
-        })
-        ->get();
+    $hasMedia = fn (Lesson $lesson): bool => filled($lesson->panda_video_id)
+        || filled($lesson->panda_embed_url)
+        || filled($lesson->panda_player_url)
+        || in_array($lesson->source_status, ['media_ready', 'upload_queued', 'uploading'], true);
 
-    if ($comboPlaceholders->isEmpty()) {
-        $this->warn("Nenhum curso placeholder encontrado com nome ou ID {$comboName}.");
+    $normalizeLesson = function (Lesson $lesson, int $position) use (&$changed): Lesson {
+        $title = LessonTitleNormalizer::normalizePreservingNumber($lesson->title, $position);
 
-        return 1;
-    }
-
-    $students = $comboPlaceholders
-        ->flatMap(fn (Course $course) => $course->students()->where('role', 'student')->get())
-        ->unique('id')
-        ->values();
-
-    if ($students->isEmpty()) {
-        $this->warn("Nenhum aluno encontrado no combo {$comboName}.");
-
-        return 1;
-    }
-
-    $targetCoursesQuery = Course::query()
-        ->whereRaw('LOWER(name) LIKE ?', [Str::lower($coursePrefix).'%'])
-        ->whereNotIn('id', $comboPlaceholders->pluck('id'))
-        ->orderBy('name');
-
-    if (! $this->option('include-inactive')) {
-        $targetCoursesQuery->where('is_active', true);
-    }
-
-    $targetCourses = $targetCoursesQuery->get();
-
-    if ($targetCourses->isEmpty()) {
-        $activeLabel = $this->option('include-inactive') ? '' : 'ativo ';
-
-        $this->warn("Nenhum curso {$activeLabel}encontrado com prefixo {$coursePrefix}.");
-
-        return 1;
-    }
-
-    $courseLinks = $targetCourses
-        ->mapWithKeys(fn (Course $course): array => [
-            $course->id => [
-                'source' => 'tutory',
-                'external_purchase_id' => null,
-            ],
-        ])
-        ->all();
-    $targetCourseIds = $targetCourses->pluck('id');
-
-    $newLinks = 0;
-
-    foreach ($students as $student) {
-        $existingCourseIds = $student->courses()
-            ->whereIn('courses.id', $targetCourseIds)
-            ->pluck('courses.id');
-
-        $newLinks += $targetCourseIds->diff($existingCourseIds)->count();
-
-        if (! $this->option('dry-run')) {
-            $student->courses()->syncWithoutDetaching($courseLinks);
+        if ($lesson->title !== $title || (int) $lesson->sort_order !== $position) {
+            $changed++;
         }
-    }
 
-    $mode = $this->option('dry-run') ? 'simulados' : 'criados';
+        $lesson->forceFill([
+            'title' => $title,
+            'sort_order' => $position,
+        ])->save();
 
-    $this->info("{$students->count()} aluno(s) do combo {$comboName}.");
-    $activeLabel = $this->option('include-inactive') ? '' : 'ativo(s) ';
+        return $lesson->fresh();
+    };
 
-    $this->info("{$targetCourses->count()} curso(s) {$activeLabel}com prefixo {$coursePrefix}.");
-    $this->info("{$newLinks} vínculo(s) {$mode}.");
+    $candidateFor = function (Lesson $sourceLesson, ?CourseModule $module = null, ?CourseModuleTrack $track = null) use ($hasMedia): ?Lesson {
+        $key = LessonTitleNormalizer::matchKey($sourceLesson->title);
 
-    return 0;
-})->purpose('Vincula alunos do combo Gabaritando Santos nível médio aos cursos ativos com prefixo Gabaritando Santos');
+        if ($key === '') {
+            return null;
+        }
 
-Artisan::command('study-plans:refresh-active {--course-id=* : Limita a correção a um ou mais IDs de curso} {--from-id= : Processa apenas planos com ID igual ou maior que o informado} {--dry-run : Mostra os planos que seriam corrigidos sem gravar}', function (StudyPlanGenerator $generator) {
-    $courseIds = collect($this->option('course-id'))
-        ->filter(fn ($value) => filled($value))
-        ->map(fn ($value) => (int) $value)
-        ->filter()
-        ->unique()
-        ->values();
-    $fromId = filled($this->option('from-id')) ? max(1, (int) $this->option('from-id')) : null;
+        $trackName = $track ? LessonTitleNormalizer::matchKey($track->name) : null;
+        $moduleName = $module ? LessonTitleNormalizer::matchKey($module->name) : null;
 
-    $plansQuery = StudyPlan::query()
-        ->where('status', 'active')
-        ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('course_id', $courseIds))
-        ->when($fromId, fn ($query) => $query->where('id', '>=', $fromId));
+        return Lesson::query()
+            ->whereKeyNot($sourceLesson->id)
+            ->orderByRaw('case when panda_video_id is null then 1 else 0 end')
+            ->orderBy('id')
+            ->get()
+            ->filter(fn (Lesson $lesson): bool => $hasMedia($lesson))
+            ->map(function (Lesson $lesson) use ($sourceLesson, $key, $trackName, $moduleName): array {
+                $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+                $path = LessonTitleNormalizer::matchKey((string) ($metadata['drive_source_folder_path'] ?? ''));
+                $score = 0;
 
-    $plansCount = (clone $plansQuery)->count();
+                if (! LessonTitleNormalizer::matches($lesson->title, $sourceLesson->title)) {
+                    return ['lesson' => $lesson, 'score' => -1];
+                }
 
-    if ($plansCount === 0) {
-        $this->warn('Nenhum plano ativo encontrado para corrigir.');
+                $score += LessonTitleNormalizer::matchKey($lesson->title) === $key ? 10 : 8;
+
+                if ($trackName && str_contains($path, $trackName)) {
+                    $score += 5;
+                }
+
+                if ($moduleName && str_contains($path, $moduleName)) {
+                    $score += 3;
+                }
+
+                if (blank($lesson->course_id)) {
+                    $score += 1;
+                }
+
+                return ['lesson' => $lesson, 'score' => $score];
+            })
+            ->filter(fn (array $candidate): bool => $candidate['score'] >= 10)
+            ->sortByDesc('score')
+            ->first()['lesson'] ?? null;
+    };
+
+    $normalize = function () use (&$changed, &$linked, &$replaced, $normalizeLesson, $candidateFor, $hasMedia): void {
+        Lesson::query()
+            ->whereNull('course_module_id')
+            ->orderBy('id')
+            ->get()
+            ->groupBy(function (Lesson $lesson): string {
+                $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+
+                return (string) ($metadata['drive_source_folder_path'] ?? 'avulsas');
+            })
+            ->each(function ($lessons) use ($normalizeLesson): void {
+                $lessons->sortBy('title', SORT_NATURAL | SORT_FLAG_CASE)
+                    ->values()
+                    ->each(fn (Lesson $lesson, int $index): Lesson => $normalizeLesson($lesson, $index + 1));
+            });
+
+        CourseModule::query()
+            ->with('onlineLessons')
+            ->orderBy('id')
+            ->get()
+            ->each(function (CourseModule $module) use ($normalizeLesson): void {
+                $planningLessons = [];
+
+                foreach ($module->onlineLessons as $index => $lesson) {
+                    $position = $index + 1;
+                    $lesson = $normalizeLesson($lesson, $position);
+
+                    $lesson->modules()->updateExistingPivot($module->id, [
+                        'sort_order' => $position,
+                    ]);
+
+                    $planningLessons[] = [
+                        'name' => $lesson->title,
+                        'minutes' => max(1, (int) ceil(((int) $lesson->duration_seconds) / 60)),
+                    ];
+                }
+
+                if ($planningLessons !== []) {
+                    $module->forceFill(['lessons' => $planningLessons])->save();
+                }
+            });
+
+        CourseModuleTrack::query()
+            ->with(['module.courses', 'lessons'])
+            ->orderBy('id')
+            ->get()
+            ->each(function (CourseModuleTrack $track) use (&$linked, &$replaced, $normalizeLesson, $candidateFor, $hasMedia): void {
+                $module = $track->module;
+
+                if (! $module) {
+                    return;
+                }
+
+                foreach ($track->lessons as $index => $lesson) {
+                    $position = (int) ($lesson->pivot->sort_order ?? ($index + 1));
+                    $lesson = $normalizeLesson($lesson, $position);
+                    $candidate = $hasMedia($lesson) ? null : $candidateFor($lesson, $module, $track);
+
+                    if (! $candidate) {
+                        $lesson->tracks()->updateExistingPivot($track->id, [
+                            'sort_order' => $position,
+                        ]);
+
+                        continue;
+                    }
+
+                    $candidate = $normalizeLesson($candidate, $position);
+                    $candidate->modules()->syncWithoutDetaching([
+                        $module->id => ['sort_order' => $position],
+                    ]);
+                    $candidate->tracks()->syncWithoutDetaching([
+                        $track->id => ['sort_order' => $position],
+                    ]);
+
+                    $linked++;
+
+                    if (! $hasMedia($lesson)) {
+                        $lesson->modules()->detach($module->id);
+                        $lesson->tracks()->detach($track->id);
+                        $lesson->forceFill([
+                            'course_id' => null,
+                            'course_module_id' => null,
+                            'course_module_track_id' => null,
+                            'status' => 'archived',
+                            'source_status' => 'structure_only',
+                        ])->save();
+                        $replaced++;
+                    }
+                }
+            });
+    };
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+        $normalize();
+        DB::rollBack();
+        $this->info("{$changed} aula(s) seriam normalizada(s).");
+        $this->info("{$linked} aula(s) seriam vinculada(s).");
+        $this->info("{$replaced} placeholder(s) seriam substituído(s).");
 
         return 0;
     }
 
-    $refreshed = 0;
+    DB::transaction($normalize);
 
-    $plansQuery
-        ->with(['course', 'studyTrack', 'user'])
+    $this->info("{$changed} aula(s) normalizada(s).");
+    $this->info("{$linked} aula(s) vinculada(s).");
+    $this->info("{$replaced} placeholder(s) substituído(s).");
+
+    return 0;
+})->purpose('Normaliza nomes e numeração das aulas importadas');
+
+Artisan::command('lessons:merge-duplicates {--apply : Executa a unificação. Sem esta opção, apenas simula} {--include-archived : Inclui aulas arquivadas na busca por duplicadas} {--scope=global : Escopo do agrupamento: global ou folder}', function (LessonDuplicateMerger $merger) {
+    $apply = (bool) $this->option('apply');
+    $scope = (string) $this->option('scope');
+
+    if (! in_array($scope, ['global', 'folder'], true)) {
+        $this->error('Escopo inválido. Use --scope=global ou --scope=folder.');
+
+        return 1;
+    }
+
+    $groups = $merger->duplicateGroups((bool) $this->option('include-archived'), $scope);
+
+    if ($groups->isEmpty()) {
+        $this->info('Nenhuma aula duplicada por nome encontrada.');
+
+        return 0;
+    }
+
+    $this->info("Grupos duplicados encontrados: {$groups->count()}.");
+    $groups->take(20)->each(function (array $group): void {
+        $this->line("- {$group['title']} | canônica #{$group['canonical_id']} | duplicadas: ".implode(', ', $group['duplicate_ids']));
+    });
+
+    if ($groups->count() > 20) {
+        $this->line('... mais '.($groups->count() - 20).' grupo(s).');
+    }
+
+    if (! $apply) {
+        $this->warn('Simulação concluída. Nada foi gravado. Rode com --apply para unificar.');
+
+        return 0;
+    }
+
+    $result = $merger->mergeAll((bool) $this->option('include-archived'), $scope);
+
+    $this->info("Unificação concluída. Grupos: {$result['groups']}. Aulas duplicadas removidas: {$result['deleted']}.");
+
+    return 0;
+})->purpose('Unifica aulas duplicadas pelo mesmo nome, preservando vínculos e progresso');
+
+Artisan::command('lesson-folders:merge-duplicates {--apply : Executa a unificação. Sem esta opção, apenas simula} {--scope=global : Escopo do agrupamento: global ou parent}', function (LessonFolderDuplicateMerger $merger) {
+    $apply = (bool) $this->option('apply');
+    $scope = (string) $this->option('scope');
+
+    if (! in_array($scope, ['global', 'parent'], true)) {
+        $this->error('Escopo inválido. Use --scope=global ou --scope=parent.');
+
+        return 1;
+    }
+
+    $summary = $merger->merge($apply, $scope);
+
+    $this->info($apply ? 'Pastas duplicadas mescladas.' : 'Simulação concluída. Nada foi gravado.');
+    $this->line('Escopo: '.$scope);
+    $this->line('Pastas mescladas: '.$summary['folders_merged']);
+    $this->line('Aulas movidas: '.$summary['lessons_moved']);
+    $this->line('Vídeos movidos: '.$summary['videos_moved']);
+    $this->line('Subpastas movidas: '.$summary['children_moved']);
+
+    return 0;
+})->purpose('Unifica pastas duplicadas da biblioteca de aulas e vídeos pelo mesmo nome');
+
+Artisan::command('catalog:merge-duplicates {--apply : Executa a unificação. Sem esta opção, apenas simula}', function (CourseCatalogDuplicateMerger $merger) {
+    $summary = $merger->merge((bool) $this->option('apply'));
+
+    $this->info($this->option('apply') ? 'Estrutura duplicada mesclada.' : 'Simulação concluída. Nada foi gravado.');
+    $this->line('Módulos/pastas mesclados: '.$summary['modules_merged']);
+    $this->line('Trilhas/subpastas mescladas: '.$summary['tracks_merged']);
+    $this->line('Trilhas/subpastas movidas: '.$summary['tracks_moved']);
+
+    return 0;
+})->purpose('Unifica módulos e trilhas duplicados por nome, preservando vínculos');
+
+Artisan::command('catalog:detach-course-bindings {--dry-run}', function () {
+    $modules = CourseModule::query()
+        ->whereNotNull('course_id')
         ->orderBy('id')
-        ->chunkById(25, function ($plans) use ($generator, &$refreshed): void {
-            foreach ($plans as $plan) {
-                $beforeRequired = (int) $plan->total_required_minutes;
-                $beforePlanned = (int) $plan->items()->sum('estimated_minutes');
-                $track = $plan->studyTrack ?: $plan->course
-                    ->studyTracks()
-                    ->where('is_active', true)
-                    ->where('name', 'like', 'Trilha Oficial -%')
-                    ->orderBy('id')
-                    ->first();
+        ->get();
+    $lessons = Lesson::query()
+        ->where(function ($query): void {
+            $query
+                ->whereNotNull('course_id')
+                ->orWhereNotNull('course_module_id')
+                ->orWhereNotNull('course_module_track_id');
+        })
+        ->orderBy('id')
+        ->get();
 
-                if ($this->option('dry-run')) {
-                    $requiredMinutes = (int) ($track
-                        ? $track->modules()->where('course_modules.is_active', true)->sum('workload_minutes')
-                        : $plan->course->modules()->where('is_active', true)->sum('workload_minutes'));
+    $modulesLinked = 0;
+    $modulesDetached = 0;
+    $lessonModuleLinks = 0;
+    $lessonTrackLinks = 0;
+    $lessonsDetached = 0;
 
-                    $this->line("Plano {$plan->id}: {$beforeRequired} min -> {$requiredMinutes} min ({$plan->course->name})");
+    $sync = function () use ($modules, $lessons, &$modulesLinked, &$modulesDetached, &$lessonModuleLinks, &$lessonTrackLinks, &$lessonsDetached): void {
+        foreach ($modules as $module) {
+            $courseId = $module->course_id;
+
+            if (blank($courseId)) {
+                continue;
+            }
+
+            $module->courses()->syncWithoutDetaching([
+                $courseId => ['sort_order' => (int) $module->sort_order],
+            ]);
+            $modulesLinked++;
+
+            $module->forceFill(['course_id' => null])->save();
+            $modulesDetached++;
+        }
+
+        foreach ($lessons as $lesson) {
+            if (filled($lesson->course_module_id)) {
+                $lesson->modules()->syncWithoutDetaching([
+                    $lesson->course_module_id => ['sort_order' => (int) $lesson->sort_order],
+                ]);
+                $lessonModuleLinks++;
+            }
+
+            if (filled($lesson->course_module_track_id)) {
+                $lesson->tracks()->syncWithoutDetaching([
+                    $lesson->course_module_track_id => ['sort_order' => (int) $lesson->sort_order],
+                ]);
+                $lessonTrackLinks++;
+            }
+
+            $lesson->forceFill([
+                'course_id' => null,
+                'course_module_id' => null,
+                'course_module_track_id' => null,
+            ])->save();
+            $lessonsDetached++;
+        }
+    };
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+        $sync();
+        DB::rollBack();
+        $this->info('Simulação concluída. Nada foi gravado.');
+    } else {
+        DB::transaction($sync);
+        $this->info('Saneamento concluído.');
+    }
+
+    $this->line("Módulos avaliados: {$modules->count()}");
+    $this->line("Vínculos de módulo preservados no agrupamento do curso: {$modulesLinked}");
+    $this->line("Módulos desvinculados do course_id legado: {$modulesDetached}");
+    $this->line("Aulas avaliadas: {$lessons->count()}");
+    $this->line("Vínculos de aula com módulo preservados: {$lessonModuleLinks}");
+    $this->line("Vínculos de aula com trilha preservados: {$lessonTrackLinks}");
+    $this->line("Aulas desvinculadas dos campos legados: {$lessonsDetached}");
+
+    return 0;
+})->purpose('Transforma vínculos diretos legados em agrupamentos reutilizáveis por pivot');
+
+Artisan::command('lessons:sync-course-links {courseId?} {--dry-run}', function (LessonCourseLinker $linker) {
+    $courseId = $this->argument('courseId');
+    $course = filled($courseId) ? Course::query()->findOrFail((int) $courseId) : null;
+
+    if ($this->option('dry-run')) {
+        DB::beginTransaction();
+        $stats = $linker->sync($course);
+        DB::rollBack();
+
+        $this->info('Simulação concluída. Nada foi gravado.');
+    } else {
+        $stats = $linker->sync($course);
+
+        $this->info('Sincronização concluída.');
+    }
+
+    if ($course instanceof Course) {
+        $this->line("Curso {$course->id}: {$course->name}");
+    }
+
+    $this->line("Trilhas avaliadas: {$stats['tracks']}");
+    $this->line("Aulas vinculadas: {$stats['linked']}");
+    $this->line("Placeholders substituídos: {$stats['replaced']}");
+    $this->line("Aulas publicadas: {$stats['published']}");
+    $this->line('Planos ativos: não sincronizados automaticamente.');
+
+    return 0;
+})->purpose('Substitui aulas sem mídia por aulas prontas correspondentes no curso');
+
+Artisan::command('courses:compare-spreadsheet {courseId} {path} {--include-system : Inclui módulos de sistema como Comece por aqui}', function (int $courseId, string $path, CourseSpreadsheetParser $parser) {
+    $course = Course::query()->findOrFail($courseId);
+    $payload = $parser->parse($path);
+    $keyFor = fn (string $moduleName, int $trackSortOrder, string $trackName): string => LessonTitleNormalizer::matchKey($moduleName).'||'.$trackSortOrder.'||'.LessonTitleNormalizer::matchKey($trackName);
+    $displayFor = fn (string $moduleName, int $trackSortOrder, string $trackName): string => "{$moduleName} > {$trackSortOrder}. {$trackName}";
+
+    $expected = collect($payload['modules'] ?? [])
+        ->flatMap(function (array $module) use ($keyFor, $displayFor) {
+            return collect($module['tracks'] ?? [])
+                ->mapWithKeys(function (array $track) use ($module, $keyFor, $displayFor): array {
+                    $moduleName = trim((string) ($module['name'] ?? ''));
+                    $trackName = trim((string) ($track['name'] ?? ''));
+                    $trackSortOrder = (int) ($track['sort_order'] ?? 0);
+                    $lessons = collect($track['lessons'] ?? [])
+                        ->map(fn (array $lesson): string => trim((string) ($lesson['name'] ?? '')))
+                        ->filter()
+                        ->values()
+                        ->all();
+
+                    return [
+                        $keyFor($moduleName, $trackSortOrder, $trackName) => [
+                            'display' => $displayFor($moduleName, $trackSortOrder, $trackName),
+                            'lessons' => $lessons,
+                        ],
+                    ];
+                });
+        });
+
+    $rows = DB::table('course_module_track_course as track_course')
+        ->join('course_module_tracks as tracks', 'tracks.id', '=', 'track_course.course_module_track_id')
+        ->join('course_modules as modules', 'modules.id', '=', 'tracks.course_module_id')
+        ->leftJoin('course_module_course as module_course', function ($join) use ($course): void {
+            $join->on('module_course.course_module_id', '=', 'modules.id')
+                ->where('module_course.course_id', '=', $course->id);
+        })
+        ->leftJoin('course_module_track_lesson_course as scope', function ($join) use ($course): void {
+            $join->on('scope.course_module_track_id', '=', 'tracks.id')
+                ->where('scope.course_id', '=', $course->id)
+                ->where('scope.status', '=', 'published');
+        })
+        ->leftJoin('lessons', 'lessons.id', '=', 'scope.lesson_id')
+        ->where('track_course.course_id', $course->id)
+        ->select([
+            'modules.name as module_name',
+            'modules.metadata as module_metadata',
+            DB::raw('coalesce(module_course.sort_order, modules.sort_order) as module_sort_order'),
+            'tracks.name as track_name',
+            'track_course.sort_order as track_sort_order',
+            'lessons.title as lesson_title',
+            'scope.sort_order as lesson_sort_order',
+        ])
+        ->orderBy('module_sort_order')
+        ->orderBy('track_course.sort_order')
+        ->orderBy('scope.sort_order')
+        ->orderBy('lessons.id')
+        ->get()
+        ->reject(function ($row): bool {
+            if ($this->option('include-system')) {
+                return false;
+            }
+
+            $metadata = json_decode((string) $row->module_metadata, true);
+            $normalizedName = LessonTitleNormalizer::matchKey((string) $row->module_name);
+
+            return ($metadata['source'] ?? null) === 'system_start_here'
+                || str_contains($normalizedName, 'comece por aqui');
+        })
+        ->values();
+
+    $actual = $rows
+        ->groupBy(fn ($row): string => $keyFor((string) $row->module_name, (int) $row->track_sort_order, (string) $row->track_name))
+        ->map(function ($rows) use ($displayFor): array {
+            $first = $rows->first();
+
+            return [
+                'display' => $displayFor((string) $first->module_name, (int) $first->track_sort_order, (string) $first->track_name),
+                'lessons' => $rows
+                    ->sortBy([
+                        ['lesson_sort_order', 'asc'],
+                    ])
+                    ->pluck('lesson_title')
+                    ->filter(fn ($title): bool => filled($title))
+                    ->map(fn (string $title): string => trim($title))
+                    ->values()
+                    ->all(),
+            ];
+        });
+
+    $allKeys = $expected->keys()->merge($actual->keys())->unique()->values();
+    $mismatches = 0;
+    $expectedLessonCount = $expected->sum(fn (array $group): int => count($group['lessons']));
+    $actualLessonCount = $actual->sum(fn (array $group): int => count($group['lessons']));
+
+    $this->info("Curso {$course->id}: {$course->name}");
+    $this->line('Planilha: '.($payload['course_name'] ?? basename($path)));
+    $this->line("Trilhas na planilha: {$expected->count()} | Trilhas no curso: {$actual->count()}");
+    $this->line("Aulas na planilha: {$expectedLessonCount} | Aulas no curso: {$actualLessonCount}");
+
+    foreach ($allKeys as $key) {
+        $expectedGroup = $expected->get($key);
+        $actualGroup = $actual->get($key);
+
+        if ($expectedGroup === null) {
+            $mismatches++;
+            $this->warn('Trilha sobrando no curso: '.$actualGroup['display'].' ('.count($actualGroup['lessons']).' aula(s))');
+
+            continue;
+        }
+
+        if ($actualGroup === null) {
+            $mismatches++;
+            $this->error('Trilha faltando no curso: '.$expectedGroup['display'].' ('.count($expectedGroup['lessons']).' aula(s))');
+
+            continue;
+        }
+
+        if ($expectedGroup['lessons'] === $actualGroup['lessons']) {
+            continue;
+        }
+
+        $mismatches++;
+        $this->error('Diferença em '.$expectedGroup['display']);
+        $this->line('  Planilha: '.count($expectedGroup['lessons']).' aula(s) | Curso: '.count($actualGroup['lessons']).' aula(s)');
+
+        $max = max(count($expectedGroup['lessons']), count($actualGroup['lessons']));
+
+        for ($index = 0; $index < $max; $index++) {
+            $expectedTitle = $expectedGroup['lessons'][$index] ?? '[faltando na planilha]';
+            $actualTitle = $actualGroup['lessons'][$index] ?? '[faltando no curso]';
+
+            if ($expectedTitle === $actualTitle) {
+                continue;
+            }
+
+            $position = $index + 1;
+            $this->line("  {$position}. planilha: {$expectedTitle}");
+            $this->line("     curso:    {$actualTitle}");
+        }
+    }
+
+    if ($mismatches === 0) {
+        $this->info('OK: curso corresponde 100% a planilha em trilhas, aulas e ordem.');
+
+        return 0;
+    }
+
+    $this->error("Encontrada(s) {$mismatches} divergência(s) entre curso e planilha.");
+
+    return 1;
+})->purpose('Compara a montagem final de um curso com a planilha importada');
+
+Artisan::command('lessons:sync-panda-durations {--lesson-id=* : ID de aula específica, pode repetir} {--course-id= : Limita às aulas vinculadas ao curso} {--only-wrong : Atualiza só aulas sem duração ou com até 1 minuto} {--dry-run}', function (PandaVideoClient $panda) {
+    $lessonIds = collect($this->option('lesson-id'))
+        ->map(fn ($id): int => (int) $id)
+        ->filter()
+        ->unique()
+        ->values();
+    $courseId = filled($this->option('course-id')) ? (int) $this->option('course-id') : null;
+    $dryRun = (bool) $this->option('dry-run');
+    $onlyWrong = (bool) $this->option('only-wrong');
+
+    $query = Lesson::query()
+        ->with(['module', 'modules'])
+        ->whereNotNull('panda_video_id')
+        ->when($lessonIds->isNotEmpty(), fn ($query) => $query->whereIn('id', $lessonIds))
+        ->when($onlyWrong, fn ($query) => $query->where('duration_seconds', '<=', 60))
+        ->when($courseId, function ($query) use ($courseId): void {
+            $query->where(function ($query) use ($courseId): void {
+                $query->where('course_id', $courseId)
+                    ->orWhereHas('modules', fn ($query) => $query->where('course_modules.course_id', $courseId))
+                    ->orWhereHas('modules.courses', fn ($query) => $query->whereKey($courseId));
+            });
+        })
+        ->orderBy('id');
+
+    $stats = [
+        'checked' => 0,
+        'updated' => 0,
+        'unchanged' => 0,
+        'skipped' => 0,
+        'failed' => 0,
+    ];
+    $affectedModuleIds = collect();
+
+    $sync = function () use ($query, $panda, $dryRun, &$stats, &$affectedModuleIds): void {
+        $query->chunkById(100, function ($lessons) use ($panda, $dryRun, &$stats, &$affectedModuleIds): void {
+            foreach ($lessons as $lesson) {
+                $stats['checked']++;
+
+                try {
+                    $video = $panda->video((string) $lesson->panda_video_id, data_get($lesson->metadata, 'folder_id'));
+                } catch (Throwable $exception) {
+                    $stats['failed']++;
+                    $this->warn("Falha ao consultar aula {$lesson->id} ({$lesson->panda_video_id}): {$exception->getMessage()}");
 
                     continue;
                 }
 
-                $refreshedPlan = $generator->regenerateFromDate(
-                    $plan,
-                    $plan->course,
-                    $track,
-                    $plan->exam_date_confirmed ? $plan->exam_date?->toDateString() : null,
-                    $plan->start_date?->toDateString() ?? now()->toDateString(),
-                    $plan->available_days ?? [],
-                    $plan->available_minutes_by_day ?? [],
-                    $plan->intensity ?: 'balanced',
-                    now()->addWeeks(3)->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
-                    false,
-                    now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
-                );
+                $durationSeconds = (int) ($video['duration_seconds'] ?? 0);
 
-                $afterRequired = (int) $refreshedPlan->total_required_minutes;
-                $afterPlanned = (int) $refreshedPlan->items()->sum('estimated_minutes');
+                if ($durationSeconds <= 0) {
+                    $stats['skipped']++;
+                    $this->line("Sem duração válida no Panda: aula {$lesson->id} - {$lesson->title}");
 
-                $this->line("Plano {$plan->id}: necessário {$beforeRequired} -> {$afterRequired} min; planejado {$beforePlanned} -> {$afterPlanned} min.");
-                $refreshed++;
+                    continue;
+                }
+
+                if ((int) $lesson->duration_seconds === $durationSeconds) {
+                    $stats['unchanged']++;
+
+                    continue;
+                }
+
+                $oldMinutes = max(1, (int) ceil(((int) $lesson->duration_seconds) / 60));
+                $newMinutes = max(1, (int) ceil($durationSeconds / 60));
+                $this->line(($dryRun ? '[dry-run] ' : '')."Aula {$lesson->id}: {$lesson->title} {$oldMinutes} min -> {$newMinutes} min");
+                $stats['updated']++;
+
+                $moduleIds = $lesson->modules->pluck('id');
+
+                if ($lesson->module) {
+                    $moduleIds->push($lesson->module->id);
+                }
+
+                $affectedModuleIds = $affectedModuleIds->merge($moduleIds);
+
+                if ($dryRun) {
+                    continue;
+                }
+
+                $lesson->forceFill([
+                    'duration_seconds' => $durationSeconds,
+                    'metadata' => array_merge($lesson->metadata ?? [], [
+                        'panda_duration_synced_at' => now()->toIso8601String(),
+                    ]),
+                ])->save();
+
+                if ($lesson->module) {
+                    $lesson->modules()->syncWithoutDetaching([
+                        $lesson->module->id => ['sort_order' => (int) $lesson->sort_order],
+                    ]);
+                }
             }
         });
 
-    if ($this->option('dry-run')) {
-        $this->info("{$plansCount} plano(s) ativo(s) avaliados em modo simulação.");
+        if ($dryRun) {
+            return;
+        }
 
-        return 0;
+        CourseModule::query()
+            ->with('onlineLessons')
+            ->whereIn('id', $affectedModuleIds->filter()->unique()->values())
+            ->get()
+            ->each(function (CourseModule $module): void {
+                $planningLessons = $module->onlineLessons
+                    ->map(fn (Lesson $lesson): array => [
+                        'name' => $lesson->title,
+                        'minutes' => max(1, (int) ceil(((int) $lesson->duration_seconds) / 60)),
+                    ])
+                    ->values()
+                    ->all();
+
+                if ($planningLessons !== []) {
+                    $module->forceFill([
+                        'lessons' => $planningLessons,
+                        'workload_minutes' => array_sum(array_column($planningLessons, 'minutes')),
+                    ])->save();
+                }
+            });
+    };
+
+    if ($dryRun) {
+        DB::beginTransaction();
+        $sync();
+        DB::rollBack();
+        $this->info('Simulação concluída. Nada foi gravado.');
+    } else {
+        DB::transaction($sync);
+        $this->info('Sincronização concluída.');
     }
 
-    $this->info("{$refreshed} plano(s) ativo(s) corrigido(s).");
+    $this->line("Aulas consultadas: {$stats['checked']}");
+    $this->line(($dryRun ? 'Aulas que seriam atualizadas' : 'Aulas atualizadas').": {$stats['updated']}");
+    $this->line("Sem alteração: {$stats['unchanged']}");
+    $this->line("Sem duração válida: {$stats['skipped']}");
+    $this->line("Falhas: {$stats['failed']}");
+    $this->line(($dryRun ? 'Módulos que seriam recalculados' : 'Módulos recalculados').': '.$affectedModuleIds->filter()->unique()->count());
+
+    return $stats['failed'] > 0 ? 1 : 0;
+})->purpose('Atualiza a duração de aulas já importadas consultando o Panda');
+
+Artisan::command('questions:import-pdf {path} {--title=} {--answer-key=}', function (QuestionPdfImporter $importer) {
+    $path = (string) $this->argument('path');
+
+    if (! is_file($path)) {
+        $this->error('PDF não encontrado: '.$path);
+
+        return 1;
+    }
+
+    $storedPath = 'question-banks/'.basename($path);
+    Storage::disk('local')->put($storedPath, file_get_contents($path));
+
+    $bank = QuestionBank::query()->create([
+        'title' => (string) ($this->option('title') ?: pathinfo($path, PATHINFO_FILENAME)),
+        'source_type' => 'pdf',
+        'source_file_path' => $storedPath,
+        'status' => 'draft',
+    ]);
+
+    $batch = $importer->import($bank);
+    $answerKey = (string) ($this->option('answer-key') ?: '');
+
+    if ($answerKey !== '') {
+        $updated = $importer->applyAnswerKey($bank->fresh(), $answerKey);
+        $this->info("Gabaritos aplicados: {$updated}");
+    }
+
+    $this->info("Banco criado: {$bank->fresh()->title} (#{$bank->id})");
+    $this->info("Questões importadas: {$batch->questions_imported}");
 
     return 0;
-})->purpose('Regenera planos ativos com a estrutura atual dos cursos, preservando progresso concluído');
+})->purpose('Importa um PDF para um novo banco de questões');
 
-Artisan::command('study-plans:recover {planId} {fromDate} {--dry-run : Mostra o que seria feito sem gravar no banco}', function (int $planId, string $fromDate, StudyPlanGenerator $generator) {
-    $from = Carbon::parse($fromDate)->startOfDay();
-    $plan = StudyPlan::query()
-        ->with(['course', 'studyTrack', 'user'])
-        ->findOrFail($planId);
+Artisan::command('questions:apply-answer-key {bank_id} {answer_key}', function (QuestionPdfImporter $importer) {
+    $bank = QuestionBank::query()->findOrFail((int) $this->argument('bank_id'));
+    $updated = $importer->applyAnswerKey($bank, (string) $this->argument('answer_key'));
 
-    $this->info("Plano {$plan->id}: {$plan->user?->name} ({$plan->user?->email})");
-    $this->line("Curso: {$plan->course->name}");
-    $this->line('Recuperar a partir de: '.$from->format('d/m/Y'));
-
-    $before = $plan->items()
-        ->selectRaw('scheduled_date, day_of_week, week_number, count(*) as tarefas, sum(completed_at is not null) as concluidas, sum(estimated_minutes) as minutos')
-        ->whereDate('scheduled_date', '>=', $from->toDateString())
-        ->groupBy('scheduled_date', 'day_of_week', 'week_number')
-        ->orderBy('scheduled_date')
-        ->get();
-
-    $this->line('Antes:');
-    $before->each(fn ($row) => $this->line(" - {$row->scheduled_date}: {$row->tarefas} tarefa(s), {$row->concluidas} concluída(s), {$row->minutos} min"));
-
-    if ($this->option('dry-run')) {
-        $this->warn('Simulação concluída. Nada foi gravado.');
-
-        return 0;
-    }
-
-    $generator->regenerateFromDate(
-        $plan,
-        $plan->course,
-        $plan->studyTrack,
-        $plan->exam_date_confirmed ? $plan->exam_date?->toDateString() : null,
-        $plan->start_date?->toDateString() ?? $from->toDateString(),
-        $plan->available_days ?? [],
-        $plan->available_minutes_by_day ?? [],
-        $plan->intensity ?: 'balanced',
-        $from->toDateString(),
-        false,
-    );
-
-    $plan->refresh();
-
-    $after = $plan->items()
-        ->selectRaw('scheduled_date, day_of_week, week_number, count(*) as tarefas, sum(completed_at is not null) as concluidas, sum(estimated_minutes) as minutos')
-        ->whereDate('scheduled_date', '>=', $from->toDateString())
-        ->groupBy('scheduled_date', 'day_of_week', 'week_number')
-        ->orderBy('scheduled_date')
-        ->get();
-
-    $this->line('Depois:');
-    $after->each(fn ($row) => $this->line(" - {$row->scheduled_date}: {$row->tarefas} tarefa(s), {$row->concluidas} concluída(s), {$row->minutos} min"));
-    $this->info('Plano recuperado com sucesso.');
+    $this->info("Gabaritos aplicados: {$updated}");
 
     return 0;
-})->purpose('Recupera tarefas de um plano a partir de uma data, preservando tarefas concluídas');
+})->purpose('Aplica gabarito em um banco de questões. Ex.: "1:C,2:A,3:D"');
 
-Artisan::command('courses:deactivate-stale-official-modules {--course-id=* : Limita a correção a um ou mais IDs de curso} {--dry-run : Mostra os módulos que seriam desativados sem gravar}', function () {
-    $courseIds = collect($this->option('course-id'))
-        ->filter(fn ($value) => filled($value))
-        ->map(fn ($value) => (int) $value)
-        ->filter()
-        ->unique()
-        ->values();
+Artisan::command('course-modules:sync-drive-media {courseId} {--folder-id= : ID da pasta do Google Drive com as mídias} {--manifest= : Caminho para JSON com arquivos, útil para testar sem API} {--confidence=0.72 : Confiança mínima do matching aproximado}', function (int $courseId, CourseLessonMediaImporter $importer) {
+    $course = Course::query()->findOrFail($courseId);
+    $confidence = (float) $this->option('confidence');
 
-    $courses = Course::query()
-        ->with(['studyTracks' => fn ($query) => $query
-            ->where('is_active', true)
-            ->where('name', 'like', 'Trilha Oficial -%')
-            ->orderBy('id')])
-        ->when($courseIds->isNotEmpty(), fn ($query) => $query->whereIn('id', $courseIds))
-        ->orderBy('id')
-        ->get();
+    $summary = filled($this->option('manifest'))
+        ? $importer->importFromManifest($course, (string) $this->option('manifest'), $confidence)
+        : $importer->importFromDrive($course, $this->option('folder-id') ?: null, $confidence);
 
-    if ($courses->isEmpty()) {
-        $this->warn('Nenhum curso encontrado.');
-
-        return 0;
-    }
-
-    $totalStaleModules = 0;
-
-    foreach ($courses as $course) {
-        $officialTrack = $course->studyTracks->first();
-
-        if (! $officialTrack) {
-            continue;
-        }
-
-        $officialModuleIds = $officialTrack->modules()->pluck('course_modules.id');
-        $staleModules = $course->modules()
-            ->where('is_active', true)
-            ->whereNotIn('id', $officialModuleIds)
-            ->get();
-
-        if ($staleModules->isEmpty()) {
-            $this->line("Curso {$course->id}: nenhum módulo ativo fora da Trilha Oficial.");
-
-            continue;
-        }
-
-        $totalStaleModules += $staleModules->count();
-        $this->line("Curso {$course->id} ({$course->name}): {$staleModules->count()} módulo(s) ativo(s) fora da Trilha Oficial.");
-
-        foreach ($staleModules as $module) {
-            $this->line(" - {$module->id}: {$module->name} ({$module->workload_minutes} min)");
-        }
-
-        if (! $this->option('dry-run')) {
-            $course->modules()
-                ->whereKey($staleModules->pluck('id'))
-                ->update(['is_active' => false]);
-        }
-    }
-
-    if ($this->option('dry-run')) {
-        $this->info("{$totalStaleModules} módulo(s) seriam desativados.");
-
-        return 0;
-    }
-
-    $this->info("{$totalStaleModules} módulo(s) desativados.");
+    $this->info("Curso {$course->id}: {$course->name}");
+    $this->line("Módulos avaliados: {$summary['modules']}");
+    $this->line("Aulas avaliadas: {$summary['lessons']}");
+    $this->line("Com mídia importada: {$summary['imported']}");
+    $this->line("Sem mídia: {$summary['missing']}");
 
     return 0;
-})->purpose('Desativa módulos ativos fora da Trilha Oficial para remover sobras de importações antigas');
+})->purpose('Marca aulas dos módulos com mídia importada a partir do Google Drive ou de um manifesto JSON');

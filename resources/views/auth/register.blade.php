@@ -2,7 +2,7 @@
     <div class="mb-6">
         <p class="text-sm uppercase tracking-[0.25em] text-amber-300">Criar acesso</p>
         <h1 class="mt-3 text-2xl font-semibold text-white">Cadastre-se para começar seu ciclo.</h1>
-        <p class="mt-2 text-sm text-slate-300">Preencha seus dados para entrar no Plano de Estudos da Vencendo Concursos.</p>
+        <p class="mt-2 text-sm text-slate-300">Preencha seus dados para entrar na Plataforma Vencendo Concursos.</p>
     </div>
 
     <form method="POST" action="{{ route('register') }}">

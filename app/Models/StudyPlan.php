@@ -31,6 +31,7 @@ class StudyPlan extends Model
         'viability_status',
         'viability_message',
         'generated_at',
+        'lessons_reprocessed_at',
     ];
 
     protected $casts = [
@@ -40,6 +41,7 @@ class StudyPlan extends Model
         'available_days' => 'array',
         'available_minutes_by_day' => 'array',
         'generated_at' => 'datetime',
+        'lessons_reprocessed_at' => 'datetime',
     ];
 
     public function user(): BelongsTo
@@ -64,16 +66,28 @@ class StudyPlan extends Model
 
     public function getCompletedMinutesAttribute(): int
     {
+        if ($this->relationLoaded('items')) {
+            return (int) $this->items->whereNotNull('completed_at')->sum('estimated_minutes');
+        }
+
         return (int) $this->items()->whereNotNull('completed_at')->sum('estimated_minutes');
     }
 
     public function getPlannedMinutesAttribute(): int
     {
+        if ($this->relationLoaded('items')) {
+            return (int) $this->items->sum('estimated_minutes');
+        }
+
         return (int) $this->items()->sum('estimated_minutes');
     }
 
     public function getPendingMinutesAttribute(): int
     {
+        if ($this->relationLoaded('items')) {
+            return (int) $this->items->whereNull('completed_at')->sum('estimated_minutes');
+        }
+
         return (int) $this->items()->whereNull('completed_at')->sum('estimated_minutes');
     }
 
@@ -145,11 +159,19 @@ class StudyPlan extends Model
 
     public function getWeeklyQuestionsHoursMinutesAttribute(): string
     {
+        if ($this->relationLoaded('items')) {
+            return StudyTime::formatMinutes((int) $this->items->where('type', 'questions')->sum('estimated_minutes'));
+        }
+
         return StudyTime::formatMinutes((int) $this->items()->where('type', 'questions')->sum('estimated_minutes'));
     }
 
     public function getWeeklyReviewHoursMinutesAttribute(): string
     {
+        if ($this->relationLoaded('items')) {
+            return StudyTime::formatMinutes((int) $this->items->where('type', 'review')->sum('estimated_minutes'));
+        }
+
         return StudyTime::formatMinutes((int) $this->items()->where('type', 'review')->sum('estimated_minutes'));
     }
 }

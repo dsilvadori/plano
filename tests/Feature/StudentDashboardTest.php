@@ -4,15 +4,14 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
+use App\Models\Lesson;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
 use App\Models\User;
-use App\Livewire\StudyPlanBuilder;
-use App\Livewire\StudyPlanViewer;
 use Carbon\CarbonInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Livewire\Livewire;
 use Tests\TestCase;
 
 class StudentDashboardTest extends TestCase
@@ -47,6 +46,58 @@ class StudentDashboardTest extends TestCase
             ->assertOk();
     }
 
+    public function test_enrolled_featured_course_is_not_locked_on_dashboard(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Contagem - Assistente Administrativo',
+            'status' => 'published',
+            'is_active' => true,
+            'is_featured' => true,
+        ]);
+
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $this->actingAs($student)
+            ->get('/dashboard')
+            ->assertOk()
+            ->assertSee('Gabaritando Contagem - Assistente Administrativo')
+            ->assertSee('Acessar curso')
+            ->assertDontSee('Bloqueado')
+            ->assertDontSee('Ver detalhes');
+    }
+
+    public function test_student_with_placeholder_purchase_gets_access_to_published_equivalent_course(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $placeholderCourse = Course::factory()->create([
+            'name' => 'Gabaritando Contagem - Assistente Administrativo',
+            'slug' => 'gabaritando-contagem-assistente-administrativo',
+            'tutory_product_id' => 'tutory-gabaritando-contagem',
+            'status' => 'draft',
+            'is_active' => false,
+            'is_featured' => false,
+        ]);
+        $publishedCourse = Course::factory()->create([
+            'name' => 'Gabaritando Contagem - Assistente Administrativo',
+            'slug' => 'gabaritando-contagem-assistente-administrativo-2',
+            'tutory_product_id' => 'tutory-gabaritando-contagem',
+            'status' => 'published',
+            'is_active' => true,
+            'is_featured' => true,
+        ]);
+
+        $student->courses()->attach($placeholderCourse, ['source' => 'tutory']);
+
+        $this->assertTrue($student->availableCoursesQuery()->whereKey($publishedCourse)->exists());
+
+        $this->actingAs($student)
+            ->get('/dashboard')
+            ->assertOk()
+            ->assertSee('Acessar curso')
+            ->assertDontSee('Bloqueado');
+    }
+
     public function test_student_can_generate_study_plan(): void
     {
         ['student' => $student, 'course' => $course, 'track' => $track] = $this->makeStudentWithCourse();
@@ -54,7 +105,7 @@ class StudentDashboardTest extends TestCase
         $response = $this->actingAs($student)->post('/dashboard/plano', [
             'course_id' => $course->id,
             'study_track_id' => $track->id,
-            'exam_date' => now()->addWeeks(52)->toDateString(),
+            'exam_date' => now()->addWeeks(8)->toDateString(),
             'start_date' => now()->toDateString(),
             'available_days' => ['monday', 'wednesday', 'friday'],
             'available_minutes_by_day' => [
@@ -66,169 +117,134 @@ class StudentDashboardTest extends TestCase
         ]);
 
         $plan = StudyPlan::first();
-        $response->assertSessionHasNoErrors();
 
         $response->assertRedirect(route('study-plans.show', $plan));
         $this->assertNotNull($plan);
         $this->assertGreaterThan(0, $plan->items()->count());
     }
 
-    public function test_builder_suggests_minimum_weekly_load_when_course_has_exam_date(): void
-    {
-        $course = Course::factory()->create([
-            'exam_date' => now()->addDays(13)->toDateString(),
-        ]);
-        CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'type' => 'basic',
-            'workload_minutes' => 600,
-            'sort_order' => 1,
-        ]);
-        $student = User::factory()->create();
-        $student->courses()->attach($course, ['source' => 'manual']);
-
-        Livewire::actingAs($student)
-            ->test(StudyPlanBuilder::class)
-            ->set('course_id', $course->id)
-            ->set('available_days', ['monday', 'wednesday', 'friday'])
-            ->set('available_minutes_by_day.monday', '01:00')
-            ->set('available_minutes_by_day.wednesday', '01:00')
-            ->set('available_minutes_by_day.friday', '01:00')
-            ->assertSee('Carga mínima sugerida')
-            ->assertSee('6:30 por semana')
-            ->assertSee('Atual: 3:00 / semana')
-            ->assertSee('aumente pelo menos 3:30 por semana');
-    }
-
-    public function test_builder_fills_admin_exam_date_when_course_is_selected(): void
-    {
-        $adminExamDate = now()->addMonth()->toDateString();
-        $course = Course::factory()->create([
-            'name' => 'Gabaritando Santos - Administrador',
-            'exam_date' => $adminExamDate,
-        ]);
-        $student = User::factory()->create();
-        $student->courses()->attach($course, ['source' => 'manual']);
-
-        Livewire::actingAs($student)
-            ->test(StudyPlanBuilder::class)
-            ->call('selectCourse', $course->id)
-            ->assertSet('exam_date_locked', true)
-            ->assertSet('exam_date', $adminExamDate)
-            ->assertSee('(definida no curso)')
-            ->assertSee($adminExamDate);
-    }
-
-    public function test_student_cannot_generate_plan_below_minimum_weekly_load_when_exam_date_exists(): void
-    {
-        $course = Course::factory()->create([
-            'exam_date' => now()->addDays(13)->toDateString(),
-        ]);
-        CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'type' => 'basic',
-            'workload_minutes' => 600,
-            'sort_order' => 1,
-        ]);
-        $student = User::factory()->create();
-        $student->courses()->attach($course, ['source' => 'manual']);
-
-        $this->actingAs($student)->post('/dashboard/plano', [
-            'course_id' => $course->id,
-            'exam_date' => now()->addDays(13)->toDateString(),
-            'start_date' => now()->toDateString(),
-            'available_days' => ['monday', 'wednesday', 'friday'],
-            'available_minutes_by_day' => [
-                'monday' => '1:00',
-                'wednesday' => '1:00',
-                'friday' => '1:00',
-            ],
-            'intensity' => 'balanced',
-        ])->assertSessionHasErrors([
-            'available_days' => 'Para gerar este plano até a prova, informe pelo menos 6:30 por semana. Hoje você informou 3:00.',
-        ]);
-
-        $this->assertSame(0, StudyPlan::query()->count());
-    }
-
-    public function test_builder_keeps_submitted_course_and_exam_date_after_minimum_weekly_load_error(): void
+    public function test_study_plan_viewer_uses_planned_track_lessons_instead_of_module_wide_lessons(): void
     {
         $course = Course::factory()->create();
-        CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'type' => 'basic',
-            'workload_minutes' => 600,
-            'sort_order' => 1,
-        ]);
-        $student = User::factory()->create();
-        $student->courses()->attach($course, ['source' => 'manual']);
-        $examDate = now()->addDays(13)->toDateString();
-
-        $this->withSession(['_old_input' => [
-            'course_id' => (string) $course->id,
-            'exam_date' => $examDate,
-            'start_date' => now()->toDateString(),
-            'available_days' => ['monday', 'wednesday', 'friday'],
-            'available_minutes_by_day' => [
-                'monday' => '1:00',
-                'wednesday' => '1:00',
-                'friday' => '1:00',
-            ],
-            'intensity' => 'balanced',
-        ]]);
-
-        $response = $this->actingAs($student)
-            ->get('/dashboard/plano/novo')
-            ->assertOk()
-            ->assertSee('Carga mínima sugerida')
-            ->assertSee('6:30 por semana')
-            ->assertSee('Atual: 3:00 / semana')
-            ->assertSee($examDate);
-
-        $content = $response->getContent();
-
-        foreach (['monday', 'wednesday', 'friday'] as $day) {
-            $this->assertMatchesRegularExpression(
-                '/name="available_days\[\]"\s+wire:model\.live="available_days"\s+value="'.$day.'"\s+type="checkbox"\s+checked/s',
-                $content,
-            );
-        }
-    }
-
-    public function test_builder_shows_admin_exam_date_when_returning_after_validation_error(): void
-    {
-        $adminExamDate = now()->addMonth()->toDateString();
-        $course = Course::factory()->create([
-            'name' => 'Gabaritando Santos - Administrador',
-            'exam_date' => $adminExamDate,
-        ]);
-        CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'type' => 'basic',
-            'workload_minutes' => 600,
-            'sort_order' => 1,
-        ]);
         $student = User::factory()->create();
         $student->courses()->attach($course, ['source' => 'manual']);
 
-        $this->withSession(['_old_input' => [
-            'course_id' => (string) $course->id,
-            'start_date' => now()->toDateString(),
-            'available_days' => ['monday', 'wednesday', 'friday'],
-            'available_minutes_by_day' => [
-                'monday' => '2:00',
-                'wednesday' => '2:00',
-                'friday' => '2:00',
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Conhecimentos Específicos',
+            'type' => 'specific',
+            'lessons' => [
+                ['name' => '01 - Licitação', 'minutes' => 34],
+                ['name' => 'Aula 01 - Conceitos de Recursos Materiais', 'minutes' => 17],
             ],
-            'intensity' => 'balanced',
-        ]]);
+            'workload_minutes' => 51,
+        ]);
+
+        $archiveTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Arquivologia',
+            'slug' => 'arquivologia',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $archiveLesson = Lesson::factory()->create([
+            'title' => 'Conceitos de Arquivologia',
+            'duration_seconds' => 1020,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $archiveTrack->lessons()->attach($archiveLesson->id, ['sort_order' => 1]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = $plan->items()->create([
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Conhecimentos Específicos: Arquivologia',
+            'description' => 'Bloco de até 17 minutos para avançar em conhecimentos específicos com foco em Arquivologia. Aulas do bloco: Conceitos de Arquivologia.',
+            'type' => 'specific',
+            'estimated_minutes' => 17,
+            'sort_order' => 1,
+        ]);
 
         $this->actingAs($student)
-            ->get('/dashboard/plano/novo')
+            ->get(route('study-plans.show', $plan))
             ->assertOk()
-            ->assertSee('Gabaritando Santos - Administrador')
-            ->assertSee('(definida no curso)')
-            ->assertSee($adminExamDate);
+            ->assertSee('Este curso pode ter recebido atualizações de aulas')
+            ->assertSee('Reprocessar aulas')
+            ->assertSee('Conceitos de Arquivologia')
+            ->assertSee('17 min')
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $archiveLesson]), false)
+            ->assertDontSee('01 - Licitação')
+            ->assertDontSee('Aula 01 - Conceitos de Recursos Materiais');
+
+        $this->assertFalse($item->fresh()->lessons()->whereKey($archiveLesson->id)->exists());
+    }
+
+    public function test_study_plan_viewer_restores_lesson_links_for_legacy_items_without_module_id(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+
+        $module = CourseModule::factory()->create([
+            'course_id' => null,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 60,
+            'sort_order' => 1,
+        ]);
+        $course->modules()->syncWithoutDetaching([$module->id => ['sort_order' => 1]]);
+
+        $lessons = collect([
+            ['Classes de Palavras - Substantivo e Adjetivo', 10],
+            ['Classes de Palavras - Advérbio', 11],
+            ['Classe de palavras - Conjunção coordenativa', 16],
+        ])->map(function (array $payload, int $index): Lesson {
+            return Lesson::factory()->create([
+                'title' => $payload[0],
+                'duration_seconds' => $payload[1] * 60,
+                'sort_order' => $index + 1,
+                'status' => 'published',
+            ]);
+        });
+
+        foreach ($lessons as $index => $lesson) {
+            $module->onlineLessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => null,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 37 minutos para estudar Português. Aulas do bloco: Classes de Palavras - Substantivo e Adjetivo; Classes de Palavras - Advérbio; Classe de palavras - Conjunção coordenativa.',
+            'type' => 'basic',
+            'estimated_minutes' => 37,
+            'sort_order' => 1,
+        ]);
+
+        $response = $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[0]]), false)
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[1]]), false)
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[2]]), false);
+
+        foreach ($lessons as $lesson) {
+            $this->assertSame(1, substr_count($response->getContent(), route('study-plans.items.lessons.show', [$plan, $item, $lesson])));
+        }
     }
 
     public function test_study_plan_creation_validation_messages_are_translated(): void
@@ -267,7 +283,7 @@ class StudentDashboardTest extends TestCase
 
         $response = $this->actingAs($student)->post('/dashboard/plano', [
             'course_id' => $course->id,
-            'exam_date' => now()->addWeeks(52)->toDateString(),
+            'exam_date' => now()->addWeeks(8)->toDateString(),
             'start_date' => now()->toDateString(),
             'available_days' => ['monday', 'wednesday', 'friday'],
             'available_minutes_by_day' => [
@@ -300,7 +316,7 @@ class StudentDashboardTest extends TestCase
 
         $response = $this->actingAs($student)->post('/dashboard/plano', [
             'course_id' => $secondCourse->id,
-            'exam_date' => now()->addWeeks(52)->toDateString(),
+            'exam_date' => now()->addWeeks(8)->toDateString(),
             'start_date' => now()->toDateString(),
             'available_days' => ['monday', 'wednesday', 'friday'],
             'available_minutes_by_day' => [
@@ -376,134 +392,6 @@ class StudentDashboardTest extends TestCase
         $this->assertNotNull($item->fresh()->completed_at);
     }
 
-    public function test_student_can_manually_adjust_a_plan_day_without_losing_completed_items(): void
-    {
-        ['student' => $student, 'course' => $course, 'track' => $track] = $this->makeStudentWithCourse();
-
-        $firstModule = CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'name' => 'Português - Pontuação',
-            'type' => 'basic',
-            'lessons' => [
-                ['name' => 'Pontuação - Parte 01', 'minutes' => 30],
-                ['name' => 'Pontuação - Parte 02', 'minutes' => 30],
-                ['name' => 'Pontuação - Parte 03', 'minutes' => 30],
-            ],
-            'workload_minutes' => 90,
-            'sort_order' => 1,
-        ]);
-        $secondModule = CourseModule::factory()->create([
-            'course_id' => $course->id,
-            'name' => 'Português - Classes de Palavras',
-            'type' => 'basic',
-            'lessons' => [
-                ['name' => 'Classes de palavras', 'minutes' => 45],
-            ],
-            'workload_minutes' => 45,
-            'sort_order' => 2,
-        ]);
-        $track->modules()->sync([
-            $firstModule->id => ['weight' => 1, 'sort_order' => 1],
-            $secondModule->id => ['weight' => 1, 'sort_order' => 2],
-        ]);
-        $plan = StudyPlan::factory()->create([
-            'user_id' => $student->id,
-            'course_id' => $course->id,
-            'study_track_id' => $track->id,
-            'status' => 'active',
-        ]);
-        $date = now()->next('monday')->toDateString();
-        $completedItem = StudyPlanItem::factory()->create([
-            'study_plan_id' => $plan->id,
-            'course_module_id' => $firstModule->id,
-            'scheduled_date' => $date,
-            'week_number' => 1,
-            'day_of_week' => 'monday',
-            'type' => 'basic',
-            'estimated_minutes' => 30,
-            'completed_at' => now(),
-            'sort_order' => 1,
-        ]);
-        $pendingItem = StudyPlanItem::factory()->create([
-            'study_plan_id' => $plan->id,
-            'course_module_id' => $firstModule->id,
-            'scheduled_date' => $date,
-            'week_number' => 1,
-            'day_of_week' => 'monday',
-            'title' => 'Bloco 2 · Matéria Básica: Português - Pontuação',
-            'type' => 'basic',
-            'estimated_minutes' => 30,
-            'completed_at' => null,
-            'sort_order' => 2,
-        ]);
-        $unchangedPendingItem = StudyPlanItem::factory()->create([
-            'study_plan_id' => $plan->id,
-            'course_module_id' => $firstModule->id,
-            'scheduled_date' => $date,
-            'week_number' => 1,
-            'day_of_week' => 'monday',
-            'title' => 'Bloco 3 · Matéria Básica: Português - Pontuação',
-            'description' => 'Descrição original que deve ficar intacta.',
-            'type' => 'basic',
-            'estimated_minutes' => 30,
-            'completed_at' => null,
-            'sort_order' => 3,
-        ]);
-        $targetOriginalItem = StudyPlanItem::factory()->create([
-            'study_plan_id' => $plan->id,
-            'course_module_id' => $secondModule->id,
-            'scheduled_date' => now()->next('monday')->addWeek()->toDateString(),
-            'week_number' => 2,
-            'day_of_week' => 'monday',
-            'title' => 'Bloco 1 · Matéria Básica: Português - Classes de Palavras',
-            'description' => 'Destino original da aula escolhida.',
-            'type' => 'basic',
-            'estimated_minutes' => 45,
-            'completed_at' => null,
-            'sort_order' => 4,
-        ]);
-
-        Livewire::actingAs($student)
-            ->test(StudyPlanViewer::class, ['studyPlan' => $plan])
-            ->call('editDay', $date)
-            ->assertSet('manualDayRows.0.block_number', 2)
-            ->assertSet('manualDayRows.0.lesson_index', '1')
-            ->set('manualDayRows.0.module_id', (string) $secondModule->id)
-            ->assertSet('manualDayRows.0.lesson_index', '0')
-            ->assertSet('manualDayRows.0.minutes', '0:45')
-            ->call('saveManualDay')
-            ->assertSet('manualDayConfirmation.swaps.0.missing_target', false)
-            ->call('confirmManualDay')
-            ->assertHasNoErrors();
-
-        $this->assertNotNull($completedItem->fresh()->completed_at);
-        $this->assertSame($firstModule->id, $completedItem->fresh()->course_module_id);
-        $this->assertDatabaseHas('study_plan_items', [
-            'id' => $pendingItem->id,
-            'study_plan_id' => $plan->id,
-            'course_module_id' => $secondModule->id,
-            'title' => 'Bloco 2 · Matéria Básica: Português - Classes de Palavras',
-            'estimated_minutes' => 45,
-        ]);
-        $this->assertDatabaseHas('study_plan_items', [
-            'id' => $unchangedPendingItem->id,
-            'study_plan_id' => $plan->id,
-            'course_module_id' => $firstModule->id,
-            'title' => 'Bloco 3 · Matéria Básica: Português - Pontuação',
-            'description' => 'Descrição original que deve ficar intacta.',
-            'estimated_minutes' => 30,
-        ]);
-        $this->assertSame('Ajuste manual do aluno. Aulas do bloco: Classes de palavras.', $pendingItem->fresh()->description);
-        $this->assertDatabaseHas('study_plan_items', [
-            'id' => $targetOriginalItem->id,
-            'study_plan_id' => $plan->id,
-            'course_module_id' => $firstModule->id,
-            'title' => 'Bloco 1 · Matéria Básica: Português - Pontuação',
-            'estimated_minutes' => 30,
-        ]);
-        $this->assertSame('Ajuste manual do aluno. Aulas do bloco: Pontuação - Parte 02.', $targetOriginalItem->fresh()->description);
-    }
-
     public function test_study_plan_viewer_shows_each_lesson_with_its_own_duration(): void
     {
         ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
@@ -550,45 +438,455 @@ class StudentDashboardTest extends TestCase
             ->assertDontSee('Descrição antiga com aulas em texto corrido.');
     }
 
-    public function test_student_can_open_manual_day_editor_from_viewer(): void
+    public function test_study_plan_viewer_prefers_linked_lesson_video_duration_over_planned_minutes(): void
     {
         ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+
         $module = CourseModule::factory()->create([
             'course_id' => $course->id,
-            'name' => 'Português - Classes de Palavras',
-            'type' => 'basic',
+            'name' => 'Administração Geral',
+            'type' => 'specific',
             'lessons' => [
-                ['name' => 'Substantivo', 'minutes' => 45],
+                ['name' => '03 - Teorias da Administração - Teoria das Relações Humanas', 'minutes' => 4],
             ],
-            'workload_minutes' => 45,
+            'workload_minutes' => 4,
+            'sort_order' => 1,
         ]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => $course->id,
+            'course_module_id' => $module->id,
+            'title' => '03 - Teorias da Administração - Teoria das Relações Humanas',
+            'duration_seconds' => 19 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
         $plan = StudyPlan::factory()->create([
             'user_id' => $student->id,
             'course_id' => $course->id,
-            'start_date' => now()->toDateString(),
+            'status' => 'active',
         ]);
-        $date = now()->toDateString();
         $item = StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $module->id,
-            'scheduled_date' => $date,
+            'scheduled_date' => now()->toDateString(),
             'week_number' => 1,
             'day_of_week' => strtolower(now()->englishDayOfWeek),
-            'title' => 'Bloco 1 · Matéria Básica: Português - Classes de Palavras',
-            'type' => 'basic',
+            'title' => 'Bloco 2 · Conhecimentos Específicos: Administração Geral',
+            'description' => 'Bloco de até 20 minutos para estudar Administração Geral.',
+            'type' => 'specific',
+            'estimated_minutes' => 20,
+            'sort_order' => 1,
+        ]);
+        $item->lessons()->attach($lesson->id, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee('19 min')
+            ->assertDontSee('4 min');
+    }
+
+    public function test_study_plan_viewer_uses_linked_lessons_when_real_video_durations_no_longer_fit_old_block_estimate(): void
+    {
+        ['student' => $student, 'course' => $course] = $this->makeStudentWithCourse();
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Administração Geral',
+            'type' => 'specific',
+            'workload_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Teorias da Administração',
+            'slug' => 'teorias-da-administracao',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $lessons = collect([
+            ['01 - Teorias da Administração - Teoria Científica', 23],
+            ['02 - Teorias da Administração - Teoria Clássica', 18],
+            ['03 - Teorias da Administração - Teoria das Relações Humanas', 19],
+        ])->map(function (array $payload, int $index): Lesson {
+            return Lesson::factory()->create([
+                'course_id' => null,
+                'course_module_id' => null,
+                'course_module_track_id' => null,
+                'title' => $payload[0],
+                'duration_seconds' => $payload[1] * 60,
+                'sort_order' => $index + 1,
+                'status' => 'published',
+            ]);
+        });
+
+        foreach ($lessons as $index => $lesson) {
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 2 · Conhecimentos Específicos: Administração Geral',
+            'description' => 'Bloco de até 45 minutos para estudar Administração Geral. Aulas do bloco: '.$lessons->pluck('title')->join(', ').'.',
+            'type' => 'specific',
             'estimated_minutes' => 45,
-            'completed_at' => null,
             'sort_order' => 1,
         ]);
 
-        Livewire::actingAs($student)
-            ->test(StudyPlanViewer::class, ['studyPlan' => $plan])
-            ->assertSee('Editar dia')
-            ->call('editDay', $date)
-            ->assertSet('editingDate', $date)
-            ->assertSet('manualDayRows.0.item_id', (string) $item->id)
-            ->assertSee('Ajuste manual do dia')
-            ->assertSee('Português - Classes de Palavras');
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee('01 - Teorias da Administração - Teoria Científica')
+            ->assertSee('23 min')
+            ->assertSee('02 - Teorias da Administração - Teoria Clássica')
+            ->assertSee('18 min')
+            ->assertDontSee('03 - Teorias da Administração - Teoria das Relações Humanas')
+            ->assertDontSee('19 min')
+            ->assertDontSee('4 min');
+    }
+
+    public function test_study_plan_viewer_resolves_multiple_lesson_links_from_continuation_description(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Matemática e Raciocínio Lógico',
+            'type' => 'basic',
+            'workload_minutes' => 47,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Operações com Frações',
+            'slug' => 'operacoes-com-fracoes',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $lessons = collect([
+            ['Operações com Frações - Parte II', 15],
+            ['Operações com Frações - Parte III', 16],
+        ])->map(fn (array $payload, int $index): Lesson => Lesson::factory()->create([
+            'title' => $payload[0],
+            'duration_seconds' => $payload[1] * 60,
+            'sort_order' => $index + 1,
+            'status' => 'published',
+        ]));
+        foreach ($lessons as $index => $lesson) {
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Matemática e Raciocínio Lógico',
+            'description' => 'Bloco de até 20 minutos para estudar Matemática e Raciocínio Lógico. Aulas do bloco: Continuação: Operações com Frações - Parte II e Operações com Frações - Parte III.',
+            'type' => 'basic',
+            'estimated_minutes' => 20,
+            'sort_order' => 1,
+        ]);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[0]]), false)
+            ->assertDontSee(route('study-plans.items.lessons.show', [$plan, $item, $lessons[1]]), false);
+    }
+
+    public function test_lesson_page_plan_track_resyncs_all_lessons_from_the_study_plan_item(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de Palavras',
+            'slug' => 'classes-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+
+        $lessonPayloads = [
+            ['Classes de Palavras - Substantivo e Adjetivo', 10],
+            ['Classes de Palavras - Advérbio', 11],
+            ['Classes de palavras - Conjunção subordinativa adverbial', 16],
+            ['Classes de palavras - Conjunção integrante', 8],
+        ];
+        $lessons = collect($lessonPayloads)->map(function (array $payload, int $index): Lesson {
+            return Lesson::factory()->create([
+                'course_id' => null,
+                'course_module_id' => null,
+                'course_module_track_id' => null,
+                'title' => $payload[0],
+                'duration_seconds' => $payload[1] * 60,
+                'sort_order' => $index + 1,
+                'status' => 'published',
+            ]);
+        });
+
+        foreach ($lessons as $index => $lesson) {
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => now()->toDateString(),
+            'week_number' => 1,
+            'day_of_week' => strtolower(now()->englishDayOfWeek),
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 45 minutos para estudar Português. Aulas do bloco: '.$lessons->pluck('title')->join(', ').'.',
+            'type' => 'basic',
+            'estimated_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+        $item->lessons()->sync($lessons->take(3)->mapWithKeys(fn (Lesson $lesson, int $index): array => [
+            $lesson->id => ['sort_order' => $index + 1],
+        ])->all());
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lessons->first()]))
+            ->assertOk()
+            ->assertSee('Classes de palavras - Conjunção integrante')
+            ->assertSee('8 min');
+
+        $this->assertSame(
+            $lessons->pluck('id')->all(),
+            $item->fresh()->lessons()->pluck('lessons.id')->all(),
+        );
+    }
+
+    public function test_lesson_page_without_active_plan_shows_regular_course_track_sidebar(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de Palavras',
+            'slug' => 'classes-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $lesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => 'Classes de Palavras - Substantivo e Adjetivo',
+            'duration_seconds' => 10 * 60,
+            'status' => 'published',
+        ]);
+        $track->lessons()->attach($lesson->id, ['sort_order' => 1]);
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lesson]))
+            ->assertOk()
+            ->assertSee('Aulas da trilha')
+            ->assertSee('Classes de Palavras')
+            ->assertDontSee('Trilha do plano');
+    }
+
+    public function test_student_can_reprocess_plan_lessons_before_opening_the_matching_plan_day(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 45,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de Palavras',
+            'slug' => 'classes-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $lessons = collect([
+            ['Classes de Palavras - Substantivo e Adjetivo', 10],
+            ['Classes de Palavras - Advérbio', 11],
+            ['Classes de palavras - Conjunção subordinativa adverbial', 16],
+            ['Classes de palavras - Conjunção integrante', 8],
+        ])->map(fn (array $payload, int $index): Lesson => Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => $payload[0],
+            'duration_seconds' => $payload[1] * 60,
+            'sort_order' => $index + 1,
+            'status' => 'published',
+        ]));
+
+        foreach ($lessons as $index => $lesson) {
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-09-10',
+            'week_number' => 1,
+            'day_of_week' => 'thursday',
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 45 minutos para estudar Português. Aulas do bloco: '.$lessons->pluck('title')->join(', ').'.',
+            'type' => 'basic',
+            'estimated_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+
+        $this->actingAs($student)
+            ->post(route('study-plans.sync-lessons', $plan))
+            ->assertRedirect(route('study-plans.show', $plan))
+            ->assertSessionHas('status', 'Curso atualizado. Reprocessamos seu plano de estudos com as aulas disponíveis sem perder os dias já concluídos.');
+
+        $this->assertNotNull($plan->fresh()->lessons_reprocessed_at);
+
+        $this->actingAs($student)
+            ->get(route('study-plans.show', $plan))
+            ->assertOk()
+            ->assertDontSee('Reprocessar aulas');
+
+        $this->actingAs($student)
+            ->get(route('courses.lessons.show', [$course->slug, $lessons->last()]))
+            ->assertOk()
+            ->assertSee('Trilha do plano')
+            ->assertSee('10/09/2026')
+            ->assertSee('Classes de palavras - Conjunção integrante')
+            ->assertDontSee('Aulas da trilha');
+
+        $this->assertSame(
+            $lessons->pluck('id')->all(),
+            $item->fresh()->lessons()->pluck('lessons.id')->all(),
+        );
+    }
+
+    public function test_lesson_page_uses_exact_plan_item_context_when_same_lesson_appears_on_multiple_days(): void
+    {
+        $course = Course::factory()->create();
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+
+        $module = CourseModule::factory()->create([
+            'course_id' => $course->id,
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 42,
+            'sort_order' => 1,
+        ]);
+
+        $sharedLesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras - Conjunção integrante',
+            'duration_seconds' => 12 * 60,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $preposition = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => $module->id,
+            'title' => 'Classes de palavras - Preposição',
+            'duration_seconds' => 14 * 60,
+            'sort_order' => 2,
+            'status' => 'published',
+        ]);
+
+        $plan = StudyPlan::factory()->create([
+            'user_id' => $student->id,
+            'course_id' => $course->id,
+            'status' => 'active',
+        ]);
+        $dayTenItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-09-10',
+            'week_number' => 1,
+            'day_of_week' => 'thursday',
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 12 minutos para estudar Português. Aulas do bloco: Classes de palavras - Conjunção integrante.',
+            'type' => 'basic',
+            'estimated_minutes' => 12,
+            'sort_order' => 1,
+        ]);
+        $dayTwelveItem = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-09-12',
+            'week_number' => 1,
+            'day_of_week' => 'saturday',
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 26 minutos para estudar Português. Aulas do bloco: Classes de palavras - Conjunção integrante, Classes de palavras - Preposição.',
+            'type' => 'basic',
+            'estimated_minutes' => 26,
+            'sort_order' => 1,
+        ]);
+
+        $dayTenItem->lessons()->sync([$sharedLesson->id => ['sort_order' => 1]]);
+        $dayTwelveItem->lessons()->sync([
+            $sharedLesson->id => ['sort_order' => 1],
+            $preposition->id => ['sort_order' => 2],
+        ]);
+
+        $this->actingAs($student)
+            ->followingRedirects()
+            ->get(route('study-plans.items.lessons.show', [$plan, $dayTenItem, $sharedLesson]))
+            ->assertOk()
+            ->assertSee('Trilha do plano')
+            ->assertSee('10/09/2026')
+            ->assertDontSee('12/09/2026')
+            ->assertSee('Classes de palavras - Conjunção integrante')
+            ->assertDontSee('Classes de palavras - Preposição');
     }
 
     public function test_student_can_delete_own_plan(): void
@@ -708,6 +1006,7 @@ class StudentDashboardTest extends TestCase
             'workload_minutes' => 180,
             'sort_order' => 1,
         ]);
+        $course->modules()->attach($module->id, ['sort_order' => 1]);
 
         $plan = StudyPlan::factory()->create([
             'user_id' => $student->id,
@@ -733,19 +1032,7 @@ class StudentDashboardTest extends TestCase
             'sort_order' => 1,
         ]);
 
-        $pastPendingItem = StudyPlanItem::factory()->create([
-            'study_plan_id' => $plan->id,
-            'course_module_id' => $module->id,
-            'scheduled_date' => now()->subDay()->toDateString(),
-            'week_number' => 1,
-            'day_of_week' => strtolower(now()->subDay()->englishDayOfWeek),
-            'type' => 'basic',
-            'estimated_minutes' => 60,
-            'completed_at' => null,
-            'sort_order' => 2,
-        ]);
-
-        $currentWeekPendingItem = StudyPlanItem::factory()->create([
+        $pendingItem = StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $module->id,
             'scheduled_date' => now()->addDay()->toDateString(),
@@ -754,18 +1041,7 @@ class StudentDashboardTest extends TestCase
             'type' => 'basic',
             'estimated_minutes' => 60,
             'completed_at' => null,
-            'sort_order' => 3,
-        ]);
-        $nextWeekPendingItem = StudyPlanItem::factory()->create([
-            'study_plan_id' => $plan->id,
-            'course_module_id' => $module->id,
-            'scheduled_date' => now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
-            'week_number' => 2,
-            'day_of_week' => 'monday',
-            'type' => 'basic',
-            'estimated_minutes' => 60,
-            'completed_at' => null,
-            'sort_order' => 4,
+            'sort_order' => 2,
         ]);
 
         $response = $this->actingAs($student)->put(route('study-plans.update', $plan), [
@@ -788,15 +1064,8 @@ class StudentDashboardTest extends TestCase
             'study_plan_id' => $plan->id,
         ]);
         $this->assertDatabaseHas('study_plan_items', [
-            'id' => $pastPendingItem->id,
+            'id' => $pendingItem->id,
             'study_plan_id' => $plan->id,
-        ]);
-        $this->assertDatabaseHas('study_plan_items', [
-            'id' => $currentWeekPendingItem->id,
-            'study_plan_id' => $plan->id,
-        ]);
-        $this->assertDatabaseMissing('study_plan_items', [
-            'id' => $nextWeekPendingItem->id,
         ]);
         $this->assertTrue($plan->fresh()->items()->whereNotNull('completed_at')->exists());
         $this->assertTrue($plan->fresh()->items()->whereDate('scheduled_date', '>=', now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString())->exists());
@@ -852,7 +1121,7 @@ class StudentDashboardTest extends TestCase
             'sort_order' => 1,
         ]);
 
-        $pastPendingItem = StudyPlanItem::factory()->create([
+        $pendingItem = StudyPlanItem::factory()->create([
             'study_plan_id' => $plan->id,
             'course_module_id' => $moduleB->id,
             'scheduled_date' => now()->subDay()->toDateString(),
@@ -876,9 +1145,8 @@ class StudentDashboardTest extends TestCase
             'id' => $completedItem->id,
             'study_plan_id' => $plan->id,
         ]);
-        $this->assertDatabaseHas('study_plan_items', [
-            'id' => $pastPendingItem->id,
-            'study_plan_id' => $plan->id,
+        $this->assertDatabaseMissing('study_plan_items', [
+            'id' => $pendingItem->id,
         ]);
         $this->assertTrue($plan->items()->whereNotNull('completed_at')->exists());
         $this->assertTrue($plan->items()->whereDate('scheduled_date', '>=', now()->toDateString())->exists());

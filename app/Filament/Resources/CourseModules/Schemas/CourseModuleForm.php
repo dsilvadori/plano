@@ -2,7 +2,8 @@
 
 namespace App\Filament\Resources\CourseModules\Schemas;
 
-use App\Models\Course;
+use App\Models\CourseModule;
+use App\Models\Teacher;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -15,14 +16,34 @@ class CourseModuleForm
     {
         return $schema
             ->components([
-                Select::make('course_id')
-                    ->label('Curso')
-                    ->options(Course::query()->orderBy('name')->pluck('name', 'id'))
-                    ->searchable()
-                    ->required(),
                 TextInput::make('name')
                     ->label('Nome')
                     ->required(),
+                Textarea::make('description')
+                    ->label('Descrição')
+                    ->rows(3)
+                    ->columnSpanFull(),
+                Select::make('teacher_id')
+                    ->label('Professor cadastrado')
+                    ->options(fn (): array => Teacher::query()
+                        ->where('is_active', true)
+                        ->orderBy('name')
+                        ->pluck('name', 'id')
+                        ->all())
+                    ->searchable()
+                    ->preload()
+                    ->live()
+                    ->afterStateUpdated(function ($state, callable $set): void {
+                        $teacherName = filled($state) ? Teacher::query()->whereKey($state)->value('name') : null;
+
+                        if (filled($teacherName)) {
+                            $set('teacher_name', $teacherName);
+                        }
+                    }),
+                TextInput::make('teacher_name')
+                    ->label('Professor em texto')
+                    ->maxLength(255)
+                    ->helperText('Fallback para importações e módulos antigos sem professor cadastrado.'),
                 Select::make('type')
                     ->label('Tipo')
                     ->options([
@@ -38,7 +59,9 @@ class CourseModuleForm
                     ->label('Aulas da trilha')
                     ->rows(8)
                     ->helperText('Uma aula por linha no formato: Nome da aula|50. A carga horária será recalculada pela soma das aulas.')
-                    ->formatStateUsing(fn ($state): string => self::formatLessonsForTextarea(is_array($state) ? $state : []))
+                    ->formatStateUsing(fn ($state, ?CourseModule $record = null): string => self::formatLessonsForTextarea(
+                        is_array($state) && $state !== [] ? $state : ($record?->planning_lessons ?? []),
+                    ))
                     ->dehydrateStateUsing(fn (?string $state): array => self::parseLessonsFromTextarea($state))
                     ->afterStateUpdated(function ($state, callable $set): void {
                         $set('workload_minutes', array_sum(array_column(self::parseLessonsFromTextarea($state), 'minutes')));
@@ -54,6 +77,9 @@ class CourseModuleForm
                     ->numeric()
                     ->default(0)
                     ->required(),
+                TextInput::make('panda_folder_id')
+                    ->label('ID da pasta no provedor')
+                    ->helperText('Preparado para a sincronização futura com a integração de vídeo.'),
                 Toggle::make('is_active')
                     ->label('Ativo')
                     ->default(true),
@@ -63,7 +89,7 @@ class CourseModuleForm
     protected static function formatLessonsForTextarea(array $lessons): string
     {
         return collect($lessons)
-            ->map(fn (array $lesson) => trim((string) ($lesson['name'] ?? '')) . '|' . (int) ($lesson['minutes'] ?? 0))
+            ->map(fn (array $lesson) => trim((string) ($lesson['name'] ?? '')).'|'.(int) ($lesson['minutes'] ?? 0))
             ->implode("\n");
     }
 

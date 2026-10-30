@@ -15,7 +15,7 @@ class Dashboard extends \Filament\Pages\Dashboard
                 ->color('primary')
                 ->button()
                 ->openUrlInNewTab()
-                ->url(route('dashboard')),
+                ->url(route('dashboard', absolute: false)),
         ];
     }
 }

@@ -5,10 +5,12 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\User;
 use App\Models\WebhookEvent;
+use App\Notifications\CourseAccessGrantedNotification;
 use App\Notifications\SetPasswordNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Notification;
+use RuntimeException;
 use Tests\TestCase;
 
 class TutoryWebhookTest extends TestCase
@@ -64,6 +66,11 @@ class TutoryWebhookTest extends TestCase
     public function test_valid_webhook_creates_student_user(): void
     {
         Notification::fake();
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'tutory_product_id' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
 
         $this->postJson('/webhooks/tutory', $this->payload(), [
             'Authorization' => 'Bearer secret-local',
@@ -73,7 +80,100 @@ class TutoryWebhookTest extends TestCase
 
         $this->assertNotNull($user);
         $this->assertSame('student', $user->role);
+        $this->assertTrue($user->courses()->whereKey($course)->wherePivot('source', 'tutory')->exists());
         Notification::assertSentTo($user, SetPasswordNotification::class);
+    }
+
+    public function test_email_failure_keeps_student_course_and_event_registered(): void
+    {
+        Notification::shouldReceive('send')->once()->andThrow(new RuntimeException('SMTP indisponível'));
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'tutory_product_id' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload(), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'joao@email.com')->first();
+        $event = WebhookEvent::where('event_id', 'evt_123')->first();
+
+        $this->assertNotNull($user);
+        $this->assertTrue($user->courses()->whereKey($course)->exists());
+        $this->assertSame('processed', $event->status);
+        $this->assertStringContainsString('SMTP indisponível', $event->error_message);
+    }
+
+    public function test_webhook_links_existing_student_to_new_course_and_sends_course_access_email(): void
+    {
+        Notification::fake();
+
+        $student = User::factory()->create([
+            'name' => 'João da Silva',
+            'email' => 'joao@email.com',
+            'role' => 'student',
+        ]);
+
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'tutory_product_id' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload(), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $this->assertTrue($student->fresh()->courses()->whereKey($course)->wherePivot('source', 'tutory')->exists());
+
+        Notification::assertSentTo($student, CourseAccessGrantedNotification::class);
+        Notification::assertNotSentTo($student, SetPasswordNotification::class);
+    }
+
+    public function test_course_access_email_announces_existing_platform_access(): void
+    {
+        $student = User::factory()->create([
+            'name' => 'Aluno Atual',
+            'email' => 'aluno.atual@example.com',
+            'role' => 'student',
+        ]);
+        $course = Course::factory()->create([
+            'name' => 'Curso Novo Liberado',
+            'is_active' => true,
+        ]);
+
+        $mail = (new CourseAccessGrantedNotification(collect([$course])))->toMail($student);
+        $html = (string) $mail->render();
+
+        $this->assertSame('Novo curso liberado na Plataforma Vencendo Concursos', $mail->subject);
+        $this->assertSame('Acessar meus cursos', $mail->actionText);
+        $this->assertSame(route('courses.mine'), $mail->actionUrl);
+        $this->assertStringContainsString('Seu acesso ao novo curso foi liberado', $html);
+        $this->assertStringContainsString('Curso Novo Liberado', $html);
+        $this->assertStringContainsString('a senha que já usa na plataforma', $html);
+        $this->assertStringNotContainsString('primeiro acesso', $html);
+        $this->assertStringNotContainsString('first_access=1', $html);
+    }
+
+    public function test_valid_webhook_accepts_secret_in_url(): void
+    {
+        Notification::fake();
+
+        Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'tutory_product_id' => 'gabaritando-santos-inspetor-de-alunos',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory/secret-local', $this->payload())
+            ->assertOk();
+
+        $this->assertDatabaseHas('users', [
+            'email' => 'joao@email.com',
+            'role' => 'student',
+        ]);
     }
 
     public function test_duplicate_webhook_does_not_create_duplicate_user(): void
@@ -106,6 +206,81 @@ class TutoryWebhookTest extends TestCase
         $user = User::where('email', 'joao@email.com')->firstOrFail();
 
         $this->assertTrue($user->courses()->exists());
+    }
+
+    public function test_approved_webhook_links_to_published_course_by_normalized_name_and_stores_product_id(): void
+    {
+        Notification::fake();
+
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'slug' => 'gabaritando-santos-inspetor-de-alunos',
+            'tutory_product_id' => null,
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload([
+            'purchase' => [
+                'product_id' => 'produto-tutory-123',
+                'product_name' => '  gabaritando santos - inspetor de alunos  ',
+            ],
+        ]), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'joao@email.com')->firstOrFail();
+
+        $this->assertTrue($user->courses()->whereKey($course)->exists());
+        $this->assertSame('produto-tutory-123', $course->fresh()->tutory_product_id);
+        $this->assertSame(1, Course::query()->count());
+    }
+
+    public function test_webhook_ignores_stale_product_id_when_product_name_matches_another_published_course(): void
+    {
+        Notification::fake();
+
+        $student = User::factory()->create([
+            'name' => 'João da Silva',
+            'email' => 'joao@email.com',
+            'role' => 'student',
+        ]);
+        $staleCourse = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Administrador',
+            'slug' => 'gabaritando-santos-administrador',
+            'tutory_product_id' => 'produto-tutory-contagem',
+            'status' => 'draft',
+            'is_active' => false,
+        ]);
+        $contagemCourse = Course::factory()->create([
+            'name' => 'Gabaritando Contagem - Assistente Administrativo',
+            'slug' => 'gabaritando-contagem-assistente-administrativo',
+            'tutory_product_id' => null,
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+
+        $student->courses()->attach($staleCourse, [
+            'source' => 'tutory',
+            'external_purchase_id' => 'purchase_contagem',
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload([
+            'event_id' => 'evt_contagem',
+            'purchase' => [
+                'id' => 'purchase_contagem',
+                'product_id' => 'produto-tutory-contagem',
+                'product_name' => 'Gabaritando Contagem',
+            ],
+        ]), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $student->refresh();
+
+        $this->assertTrue($student->courses()->whereKey($contagemCourse)->exists());
+        $this->assertFalse($student->courses()->whereKey($staleCourse)->exists());
+        $this->assertSame('produto-tutory-contagem', $contagemCourse->fresh()->tutory_product_id);
     }
 
     public function test_generic_santos_combo_product_links_student_to_all_active_santos_courses(): void

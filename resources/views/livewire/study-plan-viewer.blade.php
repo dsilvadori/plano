@@ -124,7 +124,7 @@
                 <div class="grid gap-2 md:grid-cols-3">
                     @foreach ($availableWeeks as $weekNumber)
                         <label class="cursor-pointer select-none rounded-2xl border px-4 py-3 text-sm font-semibold transition {{ $selectedWeek === $weekNumber ? 'border-amber-300/40 bg-amber-300 text-slate-950' : 'border-white/10 bg-white/5 text-slate-200' }}">
-                            <input wire:click="selectWeek({{ $weekNumber }})" type="radio" name="week_selector" class="sr-only" {{ $selectedWeek === $weekNumber ? 'checked' : '' }}>
+                            <input wire:click="selectWeek({{ $weekNumber }})" wire:loading.attr="disabled" type="radio" name="week_selector" class="sr-only" {{ $selectedWeek === $weekNumber ? 'checked' : '' }}>
                             Semana {{ $weekNumber }}
                         </label>
                     @endforeach
@@ -321,20 +321,36 @@
                                             <div class="flex flex-wrap items-center gap-2">
                                                 <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-200">Bloco {{ $loop->iteration }}</span>
                                                 <span class="badge-chip {{ $typeBadgeClasses[$item->type] ?? $typeBadgeClasses['other'] }}">{{ $typeLabels[$item->type] ?? $item->type }}</span>
-                                                <span class="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-200">{{ $item->estimated_minutes }} min</span>
+                                                <span class="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-200">{{ $itemDisplayMinutes[$item->id] ?? $item->estimated_minutes }} min</span>
                                             </div>
                                             <p class="mt-3 text-sm font-semibold text-white">{{ $item->display_title }}</p>
                                             @if (! empty($itemLessons[$item->id]))
                                                 <div class="mt-3 space-y-2">
                                                     @foreach ($itemLessons[$item->id] as $lesson)
                                                         <div class="flex items-start justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
-                                                            <p class="text-sm leading-5 text-slate-300">{{ $lesson['name'] }}</p>
+                                                            @if (! empty($lesson['url']))
+                                                                <a href="{{ $lesson['url'] }}" class="text-sm font-semibold leading-5 text-sky-100 underline-offset-4 hover:underline">
+                                                                    {{ $lesson['name'] }}
+                                                                </a>
+                                                            @else
+                                                                <p class="text-sm leading-5 text-slate-300">{{ $lesson['name'] }}</p>
+                                                            @endif
                                                             <span class="shrink-0 rounded-full border border-white/10 bg-slate-900/80 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-200">{{ $lesson['minutes_label'] }}</span>
                                                         </div>
                                                     @endforeach
                                                 </div>
                                             @else
                                                 <p class="mt-2 text-sm text-slate-400">{{ $item->display_description }}</p>
+                                            @endif
+                                            @if (! empty($itemQuestionLinks[$item->id]))
+                                                <div class="mt-3 space-y-2">
+                                                    @foreach ($itemQuestionLinks[$item->id] as $questionLink)
+                                                        <a href="{{ $questionLink['url'] }}" class="block rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300/40 hover:bg-sky-400/15">
+                                                            <span class="block font-semibold">{{ $questionLink['label'] }}</span>
+                                                            <span class="mt-1 block text-xs text-sky-100/80">Pratique pelo tempo reservado neste bloco</span>
+                                                        </a>
+                                                    @endforeach
+                                                </div>
                                             @endif
                                         </div>
                                         <div class="mt-auto flex justify-end pt-2">

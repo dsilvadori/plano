@@ -4,19 +4,26 @@ namespace App\Services;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\Lesson;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
 use App\Models\User;
+use App\Support\LessonTitleNormalizer;
 use App\Support\StudyTime;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class StudyPlanGenerator
 {
+    protected const POST_THEORY_RESERVE_WEEKS = 2;
+
+    protected array $publishedReadyCourseIds = [];
+
     public function generate(
         User $user,
         Course $course,
@@ -48,6 +55,7 @@ class StudyPlanGenerator
                 $availableMinutesByDay,
                 $intensity,
             );
+            $this->syncPublishedLessonsForPlan($plan);
 
             return $plan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
         });
@@ -62,17 +70,11 @@ class StudyPlanGenerator
         array $availableDays,
         array $availableMinutesByDay,
         string $intensity,
-        bool $reloadItems = true,
     ): StudyPlan {
-        return DB::transaction(function () use ($studyPlan, $course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity, $reloadItems) {
-            $studyPlan->loadMissing(['course', 'studyTrack', 'user']);
+        return DB::transaction(function () use ($studyPlan, $course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity) {
+            $studyPlan->loadMissing(['course', 'studyTrack', 'user', 'items.courseModule']);
 
-            $generationStart = Carbon::parse($startDate)->startOfDay()->max(now()->startOfDay());
-
-            if (
-                $studyPlan->items()->whereNotNull('completed_at')->exists()
-                || $studyPlan->items()->whereDate('scheduled_date', '<', $generationStart->toDateString())->exists()
-            ) {
+            if ($studyPlan->items->whereNotNull('completed_at')->isNotEmpty()) {
                 return $this->regeneratePreservingProgress(
                     $studyPlan,
                     $course,
@@ -82,7 +84,6 @@ class StudyPlanGenerator
                     $availableDays,
                     $availableMinutesByDay,
                     $intensity,
-                    $reloadItems,
                 );
             }
 
@@ -108,10 +109,9 @@ class StudyPlanGenerator
                 $availableMinutesByDay,
                 $intensity,
             );
+            $this->syncPublishedLessonsForPlan($studyPlan);
 
-            return $reloadItems
-                ? $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user'])
-                : $studyPlan->fresh(['course', 'studyTrack', 'user']);
+            return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
         });
     }
 
@@ -144,25 +144,26 @@ class StudyPlanGenerator
                 }
             }
 
+            $this->syncPublishedLessonsForPlan($studyPlan);
+
             $preservedItems = $studyPlan->items()
                 ->where(function ($query) use ($cutoff) {
                     $query
                         ->whereDate('scheduled_date', '<', $cutoff->toDateString())
                         ->orWhereNotNull('completed_at');
                 })
-                ->with('courseModule')
+                ->with(['courseModule', 'lessons'])
                 ->get()
                 ->values();
+
             $preservedMinutesByModule = $preservedItems
-                ->filter(fn ($item) => filled($item->course_module_id) && in_array($item->course_module_id, $moduleIds, true))
+                ->filter(fn (StudyPlanItem $item): bool => filled($item->course_module_id) && in_array($item->course_module_id, $moduleIds, true))
                 ->groupBy('course_module_id')
-                ->map(fn (Collection $items) => (int) $items->sum('estimated_minutes'))
+                ->map(fn (Collection $items): int => (int) $items->sum('estimated_minutes'))
                 ->all();
-            $remainingByModule = $modules
-                ->mapWithKeys(fn (CourseModule $module) => [
-                    $module->id => max(0, (int) $module->workload_minutes - (int) ($preservedMinutesByModule[$module->id] ?? 0)),
-                ])
-                ->all();
+
+            $remainingByModule = $this->remainingMinutesByModule($modules, $preservedMinutesByModule);
+            $consumedLessonIdsByModule = $this->consumedLessonIdsByModule($preservedItems, $moduleIds);
 
             $studyPlan->user
                 ->studyPlans()
@@ -175,11 +176,13 @@ class StudyPlanGenerator
                 ->whereDate('scheduled_date', '>=', $cutoff->toDateString())
                 ->whereNull('completed_at')
                 ->delete();
+
             $studyPlan->fill($payload['attributes']);
             $studyPlan->save();
 
             $completedModules = $preservedItems
-                ->map(fn ($item) => $item->courseModule?->name)
+                ->filter(fn (StudyPlanItem $item): bool => in_array($item->course_module_id, $moduleIds, true))
+                ->map(fn (StudyPlanItem $item): ?string => $item->courseModule?->name)
                 ->filter()
                 ->unique()
                 ->values()
@@ -198,8 +201,11 @@ class StudyPlanGenerator
                     $remainingByModule,
                     $completedModules,
                     ((int) $studyPlan->items()->max('sort_order')) + 1,
+                    $consumedLessonIdsByModule,
                 );
             }
+
+            $this->syncPublishedLessonsForPlan($studyPlan);
 
             return $reloadItems
                 ? $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user'])
@@ -216,31 +222,17 @@ class StudyPlanGenerator
         array $availableDays,
         array $availableMinutesByDay,
         string $intensity,
-        bool $reloadItems = true,
     ): StudyPlan {
         $payload = $this->buildPlanPayload($course, $studyTrack, $examDate, $startDate, $availableDays, $availableMinutesByDay, $intensity);
         $modules = $payload['modules'];
-        $generationStart = Carbon::parse($startDate)->startOfDay()->max(now()->startOfDay());
-        $preservedItems = $studyPlan->items()
-            ->where(function ($query) use ($generationStart) {
-                $query
-                    ->whereDate('scheduled_date', '<', $generationStart->toDateString())
-                    ->orWhereNotNull('completed_at');
-            })
-            ->with('courseModule')
-            ->get()
-            ->values();
-        $preservedMinutesByModule = $preservedItems
+        $completedItems = $studyPlan->items->whereNotNull('completed_at')->values();
+        $completedMinutesByModule = $completedItems
             ->filter(fn ($item) => filled($item->course_module_id))
             ->groupBy('course_module_id')
             ->map(fn (Collection $items) => (int) $items->sum('estimated_minutes'))
             ->all();
 
-        $remainingByModule = $modules
-            ->mapWithKeys(fn (CourseModule $module) => [
-                $module->id => max(0, (int) $module->workload_minutes - (int) ($preservedMinutesByModule[$module->id] ?? 0)),
-            ])
-            ->all();
+        $remainingByModule = $this->remainingMinutesByModule($modules, $completedMinutesByModule);
 
         $studyPlan->user
             ->studyPlans()
@@ -249,15 +241,11 @@ class StudyPlanGenerator
             ->whereKeyNot($studyPlan->id)
             ->update(['status' => 'archived']);
 
-        $studyPlan->items()
-            ->whereDate('scheduled_date', '>=', $generationStart->toDateString())
-            ->whereNull('completed_at')
-            ->delete();
+        $studyPlan->items()->whereNull('completed_at')->delete();
         $studyPlan->fill($payload['attributes']);
         $studyPlan->save();
 
-        $completedModules = $preservedItems
-            ->whereNotNull('completed_at')
+        $completedModules = $completedItems
             ->map(fn ($item) => $item->courseModule?->name)
             ->filter()
             ->unique()
@@ -265,6 +253,8 @@ class StudyPlanGenerator
             ->all();
 
         if (array_sum($remainingByModule) > 0) {
+            $generationStart = Carbon::parse($startDate)->startOfDay()->max(now()->startOfDay());
+
             $this->generateItems(
                 $studyPlan,
                 $modules,
@@ -278,11 +268,10 @@ class StudyPlanGenerator
                 $completedModules,
                 ((int) $studyPlan->items()->max('sort_order')) + 1,
             );
+            $this->syncPublishedLessonsForPlan($studyPlan);
         }
 
-        return $reloadItems
-            ? $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user'])
-            : $studyPlan->fresh(['course', 'studyTrack', 'user']);
+        return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
     }
 
     protected function replaceRemovedModuleItemsBeforeCutoff(StudyPlan $studyPlan, Collection $modules, Carbon $from, Carbon $until): void
@@ -299,14 +288,14 @@ class StudyPlanGenerator
             ->whereDate('scheduled_date', '>=', $from->toDateString())
             ->whereDate('scheduled_date', '<', $until->toDateString())
             ->whereNull('completed_at')
-            ->where(function ($query) use ($moduleIds) {
+            ->where(function ($query) use ($moduleIds): void {
                 $query
-                    ->where(function ($query) use ($moduleIds) {
+                    ->where(function ($query) use ($moduleIds): void {
                         $query
                             ->whereNotNull('course_module_id')
                             ->whereNotIn('course_module_id', $moduleIds);
                     })
-                    ->orWhere(function ($query) {
+                    ->orWhere(function ($query): void {
                         $query
                             ->whereNull('course_module_id')
                             ->whereIn('type', ['basic', 'specific', 'complementary']);
@@ -326,20 +315,16 @@ class StudyPlanGenerator
             ->selectRaw('course_module_id, sum(estimated_minutes) as minutes')
             ->groupBy('course_module_id')
             ->pluck('minutes', 'course_module_id')
-            ->map(fn ($minutes) => (int) $minutes)
+            ->map(fn ($minutes): int => (int) $minutes)
             ->all();
-        $remainingByModule = $modules
-            ->mapWithKeys(fn (CourseModule $module) => [
-                $module->id => max(0, (int) $module->workload_minutes - (int) ($scheduledMinutesByModule[$module->id] ?? 0)),
-            ])
-            ->all();
+        $remainingByModule = $this->remainingMinutesByModule($modules, $scheduledMinutesByModule);
         $orderedModules = $this->sortModulesForPlanning($modules);
         $reserveIndex = 0;
 
         foreach ($removedItems as $item) {
             $plannedMinutes = max(15, (int) $item->estimated_minutes);
             $blockNumber = $this->blockNumberFromItem($item);
-            $replacementModule = $orderedModules->first(fn (CourseModule $module) => ($remainingByModule[$module->id] ?? 0) > 0);
+            $replacementModule = $orderedModules->first(fn (CourseModule $module): bool => ($remainingByModule[$module->id] ?? 0) > 0);
 
             if ($replacementModule) {
                 $type = $this->normalizeModuleType($replacementModule->type);
@@ -386,7 +371,7 @@ class StudyPlanGenerator
             ->whereDate('scheduled_date', '>=', $from->toDateString())
             ->whereDate('scheduled_date', '<', $until->toDateString())
             ->whereNull('completed_at')
-            ->where(function ($query) {
+            ->where(function ($query): void {
                 $query
                     ->whereNotNull('course_module_id')
                     ->orWhereIn('type', ['basic', 'specific', 'complementary']);
@@ -434,21 +419,14 @@ class StudyPlanGenerator
             $availableDays = $studyPlan->available_days ?? [];
             $availableMinutesByDay = $studyPlan->available_minutes_by_day ?? [];
             $modules = $this->resolveModules($studyPlan->course, $studyPlan->studyTrack);
-            $preservedItems = $studyPlan->items
-                ->filter(fn ($item) => $item->scheduled_date->lt($today) || filled($item->completed_at))
-                ->values();
-            $completedItems = $preservedItems->whereNotNull('completed_at')->values();
-            $preservedMinutesByModule = $preservedItems
+            $completedItems = $studyPlan->items->whereNotNull('completed_at')->values();
+            $completedMinutesByModule = $completedItems
                 ->filter(fn ($item) => filled($item->course_module_id))
                 ->groupBy('course_module_id')
                 ->map(fn (Collection $items) => (int) $items->sum('estimated_minutes'))
                 ->all();
 
-            $remainingByModule = $modules
-                ->mapWithKeys(fn (CourseModule $module) => [
-                    $module->id => max(0, (int) $module->workload_minutes - (int) ($preservedMinutesByModule[$module->id] ?? 0)),
-                ])
-                ->all();
+            $remainingByModule = $this->remainingMinutesByModule($modules, $completedMinutesByModule);
 
             $remainingRequiredMinutes = array_sum($remainingByModule);
             $examDate = $studyPlan->exam_date && ($studyPlan->exam_date->isFuture() || $studyPlan->exam_date->isToday())
@@ -466,12 +444,10 @@ class StudyPlanGenerator
                 $today,
                 $exam,
                 $availableDays,
+                $availableMinutesByDay,
             );
 
-            $studyPlan->items()
-                ->whereDate('scheduled_date', '>=', $today->toDateString())
-                ->whereNull('completed_at')
-                ->delete();
+            $studyPlan->items()->whereNull('completed_at')->delete();
 
             $studyPlan->forceFill([
                 'name' => filled($examDate)
@@ -508,14 +484,103 @@ class StudyPlanGenerator
                     $completedModules,
                     ((int) $studyPlan->items()->max('sort_order')) + 1,
                 );
+                $this->syncPublishedLessonsForPlan($studyPlan);
             }
 
             $studyPlan->forceFill([
-                'total_required_minutes' => (int) $modules->sum('workload_minutes'),
+                'total_required_minutes' => $this->plannedMinutesForModules($modules),
             ])->save();
 
             return $studyPlan->fresh(['items.courseModule', 'course', 'studyTrack', 'user']);
         });
+    }
+
+    public function syncPublishedLessonsForPlan(StudyPlan $studyPlan): StudyPlan
+    {
+        $studyPlan->loadMissing(['course']);
+
+        if (! $studyPlan->course) {
+            return $studyPlan;
+        }
+
+        $this->publishReadyLessonsForCourse($studyPlan->course);
+
+        return DB::transaction(function () use ($studyPlan): StudyPlan {
+            $lessonIndexes = [];
+            $usedLessonIdsByModule = [];
+            $courseModules = $this->coursePlanningModules($studyPlan->course);
+            $items = $studyPlan->items()
+                ->with('courseModule')
+                ->orderBy('scheduled_date')
+                ->orderBy('sort_order')
+                ->orderBy('id')
+                ->get();
+
+            $items->each(function (StudyPlanItem $item) use (&$lessonIndexes, &$usedLessonIdsByModule, $studyPlan, $courseModules): void {
+                    $module = $item->courseModule ?: $this->resolveModuleForPlanItem($item, $courseModules);
+
+                    if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
+                        if ($item->lessons()->exists()) {
+                            $item->lessons()->detach();
+                        }
+
+                        return;
+                    }
+
+                    $this->loadModulePlanningRelations(collect([$module]), $studyPlan->course);
+                    $moduleId = (int) $module->id;
+                    $usedLessonIdsByModule[$moduleId] ??= [];
+
+                    $lessonNames = $this->lessonNamesFromPlanItemDescription((string) $item->description)
+                        ?: $this->lessonNamesForPlanItem($module, $item, $lessonIndexes);
+
+                    if ($lessonNames === []) {
+                        return;
+                    }
+
+                    $matchedLessons = $this->attachOnlineLessonsToItem(
+                        $item,
+                        $module,
+                        $lessonNames,
+                        $this->trackNamesForPlanItem($module, $item),
+                        [],
+                        $usedLessonIdsByModule[$moduleId],
+                    );
+
+                    $usedLessonIdsByModule[$moduleId] = array_values(array_unique([
+                        ...$usedLessonIdsByModule[$moduleId],
+                        ...$matchedLessons->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+                    ]));
+                });
+
+            return $studyPlan->withoutRelations()->fresh(['course', 'studyTrack', 'user']);
+        });
+    }
+
+    public function resolveOnlineLessonsForItem(StudyPlanItem $item, Course $course): Collection
+    {
+        $item->loadMissing('courseModule.onlineLessons');
+        $module = $item->courseModule ?: $this->resolveModuleForPlanItem($item, $this->coursePlanningModules($course));
+
+        if (! $module || ! in_array($item->type, ['basic', 'specific', 'complementary'], true)) {
+            return collect();
+        }
+
+        $this->loadModulePlanningRelations(collect([$module]), $course);
+
+        $lessonIndexes = [];
+        $lessonNames = $this->lessonNamesFromPlanItemDescription((string) $item->description)
+            ?: $this->lessonNamesForPlanItem($module, $item, $lessonIndexes);
+
+        if ($lessonNames === []) {
+            return collect();
+        }
+
+        return $this->matchedOnlineLessonsForItem(
+            $module,
+            $lessonNames,
+            $this->trackNamesForPlanItem($module, $item),
+        );
     }
 
     protected function buildPlanPayload(
@@ -528,12 +593,11 @@ class StudyPlanGenerator
         string $intensity,
     ): array {
         $start = Carbon::parse($startDate)->startOfDay();
-        $studyTrack ??= $this->resolveDefaultStudyTrack($course);
         $modules = $this->resolveModules($course, $studyTrack);
-        $totalRequiredMinutes = (int) $modules->sum('workload_minutes');
+        $totalRequiredMinutes = $this->plannedMinutesForModules($modules);
         $exam = $examDate
             ? Carbon::parse($examDate)->startOfDay()
-            : $this->estimatePlanEndDate($start, $totalRequiredMinutes, $availableDays, $availableMinutesByDay);
+            : $this->estimatePlanEndDate($start, $totalRequiredMinutes, $availableMinutesByDay);
         $totalAvailableMinutes = $this->calculateAvailableMinutes($start, $exam, $availableDays, $availableMinutesByDay);
 
         [$viabilityStatus, $viabilityMessage] = $this->resolveViability(
@@ -543,6 +607,7 @@ class StudyPlanGenerator
             $start,
             $exam,
             $availableDays,
+            $availableMinutesByDay,
         );
 
         return [
@@ -574,18 +639,123 @@ class StudyPlanGenerator
     protected function resolveModules(Course $course, ?StudyTrack $studyTrack): Collection
     {
         if ($studyTrack) {
-            return $studyTrack->modules()
+            $modules = $studyTrack->modules()
                 ->where('course_modules.is_active', true)
                 ->get()
                 ->reject(fn (CourseModule $module) => $this->shouldSkipModule($module))
+                ->sortBy(fn (CourseModule $module) => $this->modulePlanningOrder($module))
                 ->values();
+
+            return $this->loadModulePlanningRelations($modules, $course);
         }
 
-        return $course->modules()
+        $pivotModules = $course->modules()
+            ->where('course_modules.is_active', true)
+            ->get();
+
+        $legacyModules = CourseModule::query()
+            ->where('course_id', $course->id)
             ->where('is_active', true)
-            ->get()
+            ->get();
+
+        $modules = $pivotModules
+            ->concat($legacyModules)
+            ->unique('id')
             ->reject(fn (CourseModule $module) => $this->shouldSkipModule($module))
+            ->sortBy(fn (CourseModule $module) => $this->modulePlanningOrder($module))
             ->values();
+
+        return $this->loadModulePlanningRelations($modules, $course);
+    }
+
+    protected function loadModulePlanningRelations(Collection $modules, Course $course): Collection
+    {
+        $modules->each(function (CourseModule $module) use ($course): void {
+            $courseScopedOnlineLessons = $module->onlineLessonsForCourseQuery($course)
+                ->select([
+                    'lessons.id',
+                    'lessons.course_id',
+                    'lessons.course_module_id',
+                    'lessons.course_module_track_id',
+                    'lessons.title',
+                    'lessons.duration_seconds',
+                    'lessons.status',
+                    'lessons.sort_order',
+                    'course_lesson_scope.sort_order as course_scope_sort_order',
+                ])
+                ->get();
+
+            $module->setRelation('onlineLessons', $courseScopedOnlineLessons->isNotEmpty()
+                ? $courseScopedOnlineLessons
+                : $module->onlineLessons()
+                    ->select([
+                        'lessons.id',
+                        'lessons.course_id',
+                        'lessons.course_module_id',
+                        'lessons.course_module_track_id',
+                        'lessons.title',
+                        'lessons.duration_seconds',
+                        'lessons.status',
+                        'lessons.sort_order',
+                    ])
+                    ->get());
+
+            $tracks = $module->tracks()
+                ->where('status', 'published')
+                ->where(function ($query) use ($course): void {
+                    $query
+                        ->whereDoesntHave('courses')
+                        ->orWhereHas('courses', fn ($query) => $query->whereKey($course->id));
+                })
+                ->orderBy('sort_order')
+                ->orderBy('name')
+                ->get();
+
+            $tracks->each(function ($track) use ($course): void {
+                $scopedLessons = $track->lessons()
+                    ->select([
+                        'lessons.id',
+                        'lessons.course_id',
+                        'lessons.course_module_id',
+                        'lessons.course_module_track_id',
+                        'lessons.title',
+                        'lessons.duration_seconds',
+                        'lessons.status',
+                        'lessons.sort_order',
+                    ])
+                    ->join('course_module_track_lesson_course as course_lesson_scope', function ($join) use ($course): void {
+                        $join->on('course_lesson_scope.lesson_id', '=', 'lessons.id')
+                            ->where('course_lesson_scope.course_id', '=', $course->id);
+                    })
+                    ->whereColumn('course_lesson_scope.course_module_track_id', 'course_module_track_lessons.course_module_track_id')
+                    ->where('course_lesson_scope.status', 'published')
+                    ->where('lessons.status', '!=', 'archived')
+                    ->orderBy('course_lesson_scope.sort_order')
+                    ->orderBy('lessons.sort_order')
+                    ->orderBy('lessons.title')
+                    ->get();
+
+                $track->setRelation('lessons', $scopedLessons->isNotEmpty()
+                    ? $scopedLessons
+                    : $track->lessons()
+                        ->select([
+                            'lessons.id',
+                            'lessons.course_id',
+                            'lessons.course_module_id',
+                            'lessons.course_module_track_id',
+                            'lessons.title',
+                            'lessons.duration_seconds',
+                            'lessons.status',
+                            'lessons.sort_order',
+                        ])
+                        ->where('lessons.status', '!=', 'archived')
+                        ->get());
+            });
+
+            $module->setRelation('tracks', $tracks);
+        });
+
+        return $modules;
     }
 
     protected function sortModulesForPlanning(Collection $modules): Collection
@@ -600,26 +770,9 @@ class StudyPlanGenerator
         return (int) ($module->pivot?->sort_order ?? $module->sort_order);
     }
 
-    protected function resolveDefaultStudyTrack(Course $course): ?StudyTrack
-    {
-        return $course->studyTracks()
-            ->where('is_active', true)
-            ->where('name', 'like', 'Trilha Oficial -%')
-            ->orderBy('id')
-            ->first();
-    }
-
     protected function shouldSkipModule(CourseModule $module): bool
     {
-        $normalizedName = Str::of($module->name)->lower()->ascii()->value();
-
-        return Str::contains($normalizedName, [
-            'apresentacao',
-            'boas-vindas',
-            'boas vindas',
-            'bem-vindo',
-            'bem vindo',
-        ]);
+        return $module->shouldBeExcludedFromStudyPlan();
     }
 
     protected function calculateAvailableMinutes(Carbon $start, Carbon $exam, array $availableDays, array $availableMinutesByDay): int
@@ -637,6 +790,49 @@ class StudyPlanGenerator
         return $total;
     }
 
+    protected function availableMinutesAfter(Carbon $date, Carbon $exam, array $availableDays, array $availableMinutesByDay): int
+    {
+        $total = 0;
+
+        for ($cursor = $date->copy()->addDay(); $cursor->lte($exam); $cursor->addDay()) {
+            $dayKey = strtolower($cursor->englishDayOfWeek);
+
+            if (in_array($dayKey, $availableDays, true)) {
+                $total += (int) ($availableMinutesByDay[$dayKey] ?? 0);
+            }
+        }
+
+        return $total;
+    }
+
+    protected function remainingTheoryMinutes(Collection $theoryModules, array $remainingByModule): int
+    {
+        return (int) $theoryModules
+            ->sum(fn (CourseModule $module): int => max(0, (int) ($remainingByModule[$module->id] ?? 0)));
+    }
+
+    protected function remainingMinutesByModule(Collection $modules, array $scheduledMinutesByModule = []): array
+    {
+        return $modules
+            ->mapWithKeys(fn (CourseModule $module): array => [
+                $module->id => max(0, $this->plannedMinutesForModule($module) - (int) ($scheduledMinutesByModule[$module->id] ?? 0)),
+            ])
+            ->all();
+    }
+
+    protected function plannedMinutesForModules(Collection $modules): int
+    {
+        return (int) $modules->sum(fn (CourseModule $module): int => $this->plannedMinutesForModule($module));
+    }
+
+    protected function plannedMinutesForModule(CourseModule $module): int
+    {
+        $lessonMinutes = collect($this->planningLessonsForModule($module))
+            ->sum(fn (array $lesson): int => max(0, (int) ($lesson['minutes'] ?? 0)));
+
+        return $lessonMinutes > 0 ? (int) $lessonMinutes : max(0, (int) $module->workload_minutes);
+    }
+
     protected function resolveViability(
         int $available,
         int $required,
@@ -644,25 +840,34 @@ class StudyPlanGenerator
         ?Carbon $start = null,
         ?Carbon $exam = null,
         array $availableDays = [],
+        array $availableMinutesByDay = [],
     ): array {
         if (! $hasExamDate) {
             return ['good', 'Plano criado sem data de prova definida. Distribuímos o ciclo com foco em constância, revisão e questões até você informar a prova.'];
         }
 
+        $effectiveAvailable = $hasExamDate
+            ? $this->calculateEffectiveTheoryMinutes($start, $exam, $availableDays, $availableMinutesByDay)
+            : $available;
         $minimumDailyGuidance = $this->buildMinimumDailyGuidance($required, $start, $exam, $availableDays);
+        $postTheoryGuidance = $this->buildPostTheoryGuidance($available, $required, $availableMinutesByDay);
         $isCloseExam = $start && $exam ? $start->diffInDays($exam) <= 21 : false;
 
-        if ($required === 0 || $available >= $required) {
+        if ($required === 0 || $effectiveAvailable >= $required) {
             $message = 'Plano viável. Seu tempo disponível cobre a carga necessária até a prova.';
 
             if ($isCloseExam && $minimumDailyGuidance) {
                 $message .= ' '.$minimumDailyGuidance;
             }
 
+            if ($postTheoryGuidance) {
+                $message .= ' '.$postTheoryGuidance;
+            }
+
             return ['good', $message];
         }
 
-        if ($available >= (int) round($required * 0.75)) {
+        if ($effectiveAvailable >= (int) round($required * 0.75)) {
             $message = 'Plano apertado. Há espaço para avançar, mas será importante manter constância e priorizar o essencial.';
 
             if ($minimumDailyGuidance) {
@@ -672,13 +877,28 @@ class StudyPlanGenerator
             return ['warning', $message];
         }
 
-        $message = 'Plano crítico. O tempo disponível não cobre a carga prevista, então o ciclo vai priorizar o que mais move sua preparação.';
+        $message = 'Plano crítico. O tempo disponível não cobre a carga prevista considerando as reservas obrigatórias de revisão e questões.';
 
         if ($minimumDailyGuidance) {
             $message .= ' '.$minimumDailyGuidance;
         }
 
         return ['critical', $message];
+    }
+
+    protected function buildPostTheoryGuidance(int $availableMinutes, int $requiredMinutes, array $availableMinutesByDay): ?string
+    {
+        $weeklyMinutes = array_sum($availableMinutesByDay);
+
+        if ($weeklyMinutes <= 0) {
+            return null;
+        }
+
+        if ($availableMinutes <= ($requiredMinutes + ($weeklyMinutes * self::POST_THEORY_RESERVE_WEEKS))) {
+            return null;
+        }
+
+        return 'Depois do conteúdo, o plano limita revisão e questões a duas semanas; até a prova, priorize simulados, correção dos erros e aulas ao vivo.';
     }
 
     protected function buildMinimumDailyGuidance(int $requiredMinutes, ?Carbon $start, ?Carbon $exam, array $availableDays): ?string
@@ -693,18 +913,49 @@ class StudyPlanGenerator
             return null;
         }
 
-        $minimumDailyMinutes = (int) ceil(($requiredMinutes / $studyDaysUntilExam) / 15) * 15;
+        $minimumDailyMinutes = $this->minimumDailyMinutesIncludingReserve($requiredMinutes, $studyDaysUntilExam);
         $daysPerWeek = count(array_unique($availableDays));
 
-        if ($minimumDailyMinutes > 480) {
+        if ($minimumDailyMinutes === null || $minimumDailyMinutes > 480) {
             return 'Mesmo estudando 8h por dia nos dias marcados, a carga completa não cabe até a prova. Se possível, aumente os dias disponíveis ou reduza o escopo de prioridade.';
         }
 
         return 'Para cumprir 100% da carga até a prova, mantenha pelo menos '
             .StudyTime::formatMinutes($minimumDailyMinutes)
-            .' por dia nos '
+            .' por dia, já considerando as reservas de revisão e questões, nos '
             .$daysPerWeek
             .' dia(s) de estudo que você marcou por semana.';
+    }
+
+    protected function minimumDailyMinutesIncludingReserve(int $requiredMinutes, int $studyDays): ?int
+    {
+        for ($minutes = 30; $minutes <= 480; $minutes += 15) {
+            $effectiveTheoryMinutes = max(0, $minutes - $this->resolveReserveMinutes('', $minutes, 0));
+
+            if (($effectiveTheoryMinutes * $studyDays) >= $requiredMinutes) {
+                return $minutes;
+            }
+        }
+
+        return null;
+    }
+
+    protected function calculateEffectiveTheoryMinutes(Carbon $start, Carbon $exam, array $availableDays, array $availableMinutesByDay): int
+    {
+        $total = 0;
+
+        for ($date = $start->copy(); $date->lte($exam); $date->addDay()) {
+            $dayKey = strtolower($date->englishDayOfWeek);
+
+            if (! in_array($dayKey, $availableDays, true)) {
+                continue;
+            }
+
+            $minutes = (int) ($availableMinutesByDay[$dayKey] ?? 0);
+            $total += max(0, $minutes - $this->resolveReserveMinutes($dayKey, $minutes, 0));
+        }
+
+        return $total;
     }
 
     protected function countStudyDaysUntilExam(Carbon $start, Carbon $exam, array $availableDays): int
@@ -720,36 +971,19 @@ class StudyPlanGenerator
         return $total;
     }
 
-    protected function estimatePlanEndDate(Carbon $start, int $totalRequiredMinutes, array $availableDays, array $availableMinutesByDay): Carbon
+    protected function estimatePlanEndDate(Carbon $start, int $totalRequiredMinutes, array $availableMinutesByDay): Carbon
     {
-        $weeklyTheoryMinutes = max(60, $this->estimateWeeklyTheoryMinutes($availableDays, $availableMinutesByDay));
-        $weeksNeeded = (int) ceil(max(1, $totalRequiredMinutes) / $weeklyTheoryMinutes);
+        $weeklyMinutes = max(60, collect($availableMinutesByDay)->sum(
+            fn (int $minutes, string $dayKey): int => max(0, $minutes - $this->resolveReserveMinutes($dayKey, $minutes, 0))
+        ));
+        $weeksNeeded = (int) ceil(max(1, $totalRequiredMinutes) / $weeklyMinutes);
 
         return $start
             ->copy()
             ->startOfWeek(CarbonInterface::MONDAY)
-            ->addWeeks(max(4, min($weeksNeeded + 1, 52)) - 1)
+            ->addWeeks(max(4, min($weeksNeeded + 8, 104)) - 1)
             ->endOfWeek(CarbonInterface::SUNDAY)
             ->startOfDay();
-    }
-
-    protected function estimateWeeklyTheoryMinutes(array $availableDays, array $availableMinutesByDay): int
-    {
-        return collect($availableDays)
-            ->unique()
-            ->sum(function (string $dayKey) use ($availableMinutesByDay) {
-                $availableMinutes = (int) ($availableMinutesByDay[$dayKey] ?? 0);
-
-                if ($availableMinutes < 15) {
-                    return 0;
-                }
-
-                if ($dayKey === 'saturday') {
-                    return (int) floor($availableMinutes / 2);
-                }
-
-                return max(0, $availableMinutes - $this->resolveReserveMinutes($dayKey, $availableMinutes, 0));
-            });
     }
 
     protected function generateItems(
@@ -764,13 +998,14 @@ class StudyPlanGenerator
         ?array $remainingByModule = null,
         array $completedModules = [],
         int $initialSortOrder = 1,
+        array $consumedLessonIdsByModule = [],
     ): void {
         $orderedModules = $this->sortModulesForPlanning($modules);
         $theoryModules = $orderedModules
             ->filter(fn (CourseModule $module) => in_array($this->normalizeModuleType($module->type), ['basic', 'specific', 'complementary'], true))
             ->values();
-        $remainingByModule = $remainingByModule ?? $modules->mapWithKeys(fn (CourseModule $module) => [$module->id => (int) $module->workload_minutes])->all();
-        $lessonStates = $this->buildLessonStates($theoryModules, $remainingByModule);
+        $remainingByModule = $remainingByModule ?? $this->remainingMinutesByModule($modules);
+        $lessonStates = $this->buildLessonStates($theoryModules, $remainingByModule, $consumedLessonIdsByModule);
         $typeQueues = $this->buildTheoryQueues($theoryModules);
         $typePointers = collect($typeQueues)->mapWithKeys(fn (Collection $queue, string $type) => [$type => 0])->all();
         $lastSubjectsByType = [];
@@ -778,6 +1013,7 @@ class StudyPlanGenerator
         $sortOrder = $initialSortOrder;
         $weeklyTheoryScheduled = [];
         $weeklyTheoryMinutes = [];
+        $postTheoryReserveWeeks = [];
         $weekReferenceStart = $weekReferenceStart?->copy()->startOfWeek(CarbonInterface::MONDAY) ?? $start->copy()->startOfWeek(CarbonInterface::MONDAY);
 
         for ($date = $start->copy(); $date->lte($exam); $date->addDay()) {
@@ -792,25 +1028,31 @@ class StudyPlanGenerator
                 continue;
             }
 
+            $dailyAvailableMinutes = $remainingToday;
             $weekNumber = $weekReferenceStart
                 ->diffInWeeks($date->copy()->startOfWeek(CarbonInterface::MONDAY)) + 1;
             $blockNumber = 1;
-            $dailyTheoryModules = [];
-            $reserveMinutes = $this->resolveReserveMinutes(
+            $hasTheoryAtStartOfDay = $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates);
+
+            if (! $hasTheoryAtStartOfDay && ! in_array($weekNumber, $postTheoryReserveWeeks, true)) {
+                if (count($postTheoryReserveWeeks) >= self::POST_THEORY_RESERVE_WEEKS) {
+                    break;
+                }
+
+                $postTheoryReserveWeeks[] = $weekNumber;
+            }
+
+            $defaultReserveMinutes = $this->resolveReserveMinutes(
                 $dayKey,
-                $remainingToday,
+                $dailyAvailableMinutes,
                 (int) ($weeklyTheoryMinutes[$weekNumber] ?? 0),
             );
+            $reserveMinutes = $defaultReserveMinutes;
 
             if ($dayKey === 'saturday') {
-                $weekTheoryTargetMinutes = 360;
-                $theoryBudget = (
-                    ($weeklyTheoryMinutes[$weekNumber] ?? 0) < $weekTheoryTargetMinutes
-                    && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)
-                )
-                    ? (int) floor($remainingToday / 2)
+                $theoryBudget = $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)
+                    ? max(0, $remainingToday - $reserveMinutes)
                     : 0;
-                $reserveMinutes = max(0, $remainingToday - $theoryBudget);
 
                 if ($theoryBudget <= 0) {
                     $this->createReserveItems(
@@ -824,16 +1066,18 @@ class StudyPlanGenerator
                         $completedModules,
                         $orderedModules,
                         $remainingByModule,
-                        $dailyTheoryModules,
-                        true,
+                        false,
                     );
 
                     continue;
                 }
+            }
 
-                $reserveMinutes = 0;
-            } else {
-                $theoryBudget = max(0, $remainingToday - $reserveMinutes);
+            $theoryBudget = max(0, $remainingToday - $reserveMinutes);
+
+            $minimumPairTheoryMinutes = $this->minimumDailyPairTheoryMinutes($typeQueues, $typePointers, $lessonStates, $remainingByModule);
+            if ($minimumPairTheoryMinutes > $theoryBudget && ($minimumPairTheoryMinutes + $reserveMinutes) <= $remainingToday) {
+                $theoryBudget = $minimumPairTheoryMinutes;
             }
 
             $balancedTheoryBlocks = 0;
@@ -853,7 +1097,6 @@ class StudyPlanGenerator
                 $remainingByModule,
                 $completedModules,
                 $balancedTheoryBlocks,
-                $dailyTheoryModules,
             );
 
             if ($balancedAllocated > 0) {
@@ -863,7 +1106,7 @@ class StudyPlanGenerator
                 $weeklyTheoryMinutes[$weekNumber] = ($weeklyTheoryMinutes[$weekNumber] ?? 0) + $balancedAllocated;
             }
 
-            while ($theoryBudget > 0 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
+            while ($theoryBudget >= 15 && $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)) {
                 $allocated = $this->createInterleavedStudyItem(
                     $plan,
                     $date,
@@ -879,8 +1122,6 @@ class StudyPlanGenerator
                     $lessonStates,
                     $remainingByModule,
                     $completedModules,
-                    null,
-                    $dailyTheoryModules,
                 );
 
                 if ($allocated === 0) {
@@ -895,21 +1136,18 @@ class StudyPlanGenerator
             }
 
             if ($dayKey !== 'saturday') {
-                $shouldExpandReserve = $theoryBudget > 0;
-
                 $this->createReserveItems(
                     $plan,
                     $date,
                     $weekNumber,
                     $dayKey,
-                    $remainingToday,
+                    min($reserveMinutes, $remainingToday),
                     $blockNumber,
                     $sortOrder,
                     $completedModules,
                     $orderedModules,
                     $remainingByModule,
-                    $dailyTheoryModules,
-                    $shouldExpandReserve,
+                    false,
                 );
             } else {
                 $this->createReserveItems(
@@ -917,14 +1155,13 @@ class StudyPlanGenerator
                     $date,
                     $weekNumber,
                     $dayKey,
-                    max(0, $remainingToday),
+                    min($reserveMinutes, $remainingToday),
                     $blockNumber,
                     $sortOrder,
                     $completedModules,
                     $orderedModules,
                     $remainingByModule,
-                    $dailyTheoryModules,
-                    true,
+                    false,
                 );
             }
         }
@@ -946,12 +1183,10 @@ class StudyPlanGenerator
         array &$remainingByModule,
         array &$completedModules,
         int &$createdBlocks,
-        array &$dailyTheoryModules,
     ): int {
         if (
-            $theoryBudget < 30
-            || ! $this->hasRemainingTheoryTypes(['basic'], $typeQueues, $typePointers, $lessonStates)
-            || ! $this->hasRemainingTheoryTypes(['specific', 'complementary'], $typeQueues, $typePointers, $lessonStates)
+            $theoryBudget < 15
+            || ! $this->hasRemainingTheoryModules($typeQueues, $typePointers, $lessonStates)
         ) {
             return 0;
         }
@@ -963,14 +1198,19 @@ class StudyPlanGenerator
         ];
 
         foreach ($dailyGroups as $index => $preferredTypes) {
+            $preferredTypes = $this->orderedRemainingTheoryTypes($preferredTypes, $typeQueues, $typePointers, $lessonStates);
             $remainingBudget = $theoryBudget - $allocated;
 
             if ($remainingBudget <= 0 || ! $this->hasRemainingTheoryTypes($preferredTypes, $typeQueues, $typePointers, $lessonStates)) {
                 continue;
             }
 
-            $availableForBlock = $index === 0
-                ? max(15, (int) floor($theoryBudget / 2))
+            $nextGroupMinimum = isset($dailyGroups[$index + 1])
+                ? $this->minimumTheoryBlockMinutesForTypes($dailyGroups[$index + 1], $typeQueues, $typePointers, $lessonStates, $remainingByModule)
+                : 0;
+            $currentGroupMinimum = $this->minimumTheoryBlockMinutesForTypes($preferredTypes, $typeQueues, $typePointers, $lessonStates, $remainingByModule);
+            $availableForBlock = ($index === 0 && $nextGroupMinimum > 0)
+                ? max($currentGroupMinimum, min((int) floor($theoryBudget / 2), $theoryBudget - $nextGroupMinimum), 15)
                 : $remainingBudget;
             $availableForBlock = min($remainingBudget, $availableForBlock);
 
@@ -990,7 +1230,6 @@ class StudyPlanGenerator
                 $remainingByModule,
                 $completedModules,
                 $preferredTypes,
-                $dailyTheoryModules,
             );
 
             if ($blockAllocated <= 0 && $index === 0 && $availableForBlock < $remainingBudget) {
@@ -1010,7 +1249,6 @@ class StudyPlanGenerator
                     $remainingByModule,
                     $completedModules,
                     $preferredTypes,
-                    $dailyTheoryModules,
                 );
             }
 
@@ -1026,13 +1264,72 @@ class StudyPlanGenerator
         return $allocated;
     }
 
-    protected function resolveReserveMinutes(string $dayKey, int $remainingToday, int $weeklyTheoryMinutes): int
+    protected function orderedRemainingTheoryTypes(array $types, array $typeQueues, array $typePointers, array $lessonStates): array
     {
-        if ($remainingToday <= 60) {
-            return min(20, $remainingToday);
+        return collect($types)
+            ->map(function (string $type) use ($typeQueues, $typePointers, $lessonStates): ?array {
+                $module = $this->remainingTheoryModules($typeQueues[$type] ?? collect(), $typePointers[$type] ?? 0, $lessonStates)->first();
+
+                return $module ? [
+                    'type' => $type,
+                    'order' => $this->modulePlanningOrder($module),
+                ] : null;
+            })
+            ->filter()
+            ->sortBy('order')
+            ->pluck('type')
+            ->values()
+            ->all();
+    }
+
+    protected function minimumDailyPairTheoryMinutes(array $typeQueues, array $typePointers, array $lessonStates, array $remainingByModule): int
+    {
+        if (
+            ! $this->hasRemainingTheoryTypes(['basic'], $typeQueues, $typePointers, $lessonStates)
+            || ! $this->hasRemainingTheoryTypes(['specific', 'complementary'], $typeQueues, $typePointers, $lessonStates)
+        ) {
+            return 0;
         }
 
-        return max(30, (int) round($remainingToday * 0.25));
+        return $this->minimumTheoryBlockMinutesForTypes(['basic'], $typeQueues, $typePointers, $lessonStates, $remainingByModule)
+            + $this->minimumTheoryBlockMinutesForTypes(['specific', 'complementary'], $typeQueues, $typePointers, $lessonStates, $remainingByModule);
+    }
+
+    protected function minimumTheoryBlockMinutesForTypes(array $types, array $typeQueues, array $typePointers, array $lessonStates, array $remainingByModule): int
+    {
+        foreach ($types as $type) {
+            $module = $this->remainingTheoryModules($typeQueues[$type] ?? collect(), $typePointers[$type] ?? 0, $lessonStates)->first();
+
+            if (! $module) {
+                continue;
+            }
+
+            $state = $lessonStates[$module->id] ?? null;
+            $index = (int) ($state['index'] ?? 0);
+            $lessons = $state['lessons'] ?? [];
+            $lessonMinutes = (int) ($lessons[$index]['minutes'] ?? 0);
+
+            if ($lessonMinutes > 0) {
+                return $lessonMinutes;
+            }
+
+            return min(60, max(15, (int) ($remainingByModule[$module->id] ?? $module->workload_minutes)));
+        }
+
+        return 0;
+    }
+
+    protected function resolveReserveMinutes(string $dayKey, int $remainingToday, int $weeklyTheoryMinutes): int
+    {
+        if ($remainingToday < 60) {
+            return 0;
+        }
+
+        if ($remainingToday < 120) {
+            return 20;
+        }
+
+        return intdiv($remainingToday, 120) * 30;
     }
 
     protected function buildReserveBlueprint(string $dayKey, int $remainingToday, bool $fillAvailable = false): array
@@ -1041,48 +1338,12 @@ class StudyPlanGenerator
             return [];
         }
 
-        if ($fillAvailable) {
-            if ($remainingToday < 20) {
-                return [
-                    [
-                        'type' => 'questions',
-                        'minutes' => $remainingToday,
-                    ],
-                ];
-            }
-
-            $questionsMinutes = (int) ceil($remainingToday / 2);
-            $reviewMinutes = max(0, $remainingToday - $questionsMinutes);
-
-            return array_values(array_filter([
-                [
-                    'type' => 'questions',
-                    'minutes' => $questionsMinutes,
-                ],
-                $reviewMinutes > 0 ? [
-                    'type' => 'review',
-                    'minutes' => $reviewMinutes,
-                ] : null,
-            ]));
-        }
-
         if ($remainingToday < 20) {
-            return [
-                [
-                    'type' => 'questions',
-                    'minutes' => $remainingToday,
-                ],
-            ];
+            return [];
         }
 
-        if ($remainingToday <= 30) {
-            $targetMinutes = $remainingToday <= 20 ? 10 : 15;
-            $questionsMinutes = min($targetMinutes, (int) ceil($remainingToday / 2));
-            $reviewMinutes = min($targetMinutes, max(0, $remainingToday - $questionsMinutes));
-        } else {
-            $questionsMinutes = (int) ceil($remainingToday / 2);
-            $reviewMinutes = max(0, $remainingToday - $questionsMinutes);
-        }
+        $questionsMinutes = (int) ceil($remainingToday / 2);
+        $reviewMinutes = max(1, $remainingToday - $questionsMinutes);
 
         return array_values(array_filter([
             [
@@ -1107,7 +1368,6 @@ class StudyPlanGenerator
         array $completedModules,
         Collection $orderedModules,
         array $remainingByModule,
-        array $dailyTheoryModules = [],
         bool $fillAvailable = false,
     ): int {
         $allocated = 0;
@@ -1125,7 +1385,6 @@ class StudyPlanGenerator
                 $completedModules,
                 $orderedModules,
                 $remainingByModule,
-                $dailyTheoryModules,
             );
 
             $allocated += $reserveBlock['minutes'];
@@ -1151,7 +1410,6 @@ class StudyPlanGenerator
         array &$remainingByModule,
         array &$completedModules,
         ?array $preferredTypes = null,
-        ?array &$dailyTheoryModules = null,
     ): int {
         [$type, $module] = $preferredTypes
             ? $this->resolveCurrentTheoryModuleFromTypes($preferredTypes, $typeQueues, $typePointers, $typeRotationIndex, $lastSubjectsByType, $lessonStates)
@@ -1170,20 +1428,22 @@ class StudyPlanGenerator
 
         $type = $this->normalizeModuleType($module->type);
         $lessonNames = $lessonBlock['lesson_names'] ?? [];
+        $subjectName = $this->planItemSubjectName($type, $module, $lessonBlock);
         $lastSubjectsByType[$type] = $this->moduleSubject($module);
-        $dailyTheoryModules[$module->id] = $module;
 
-        $plan->items()->create([
+        $item = $plan->items()->create([
             'course_module_id' => $module->id,
             'scheduled_date' => $date->toDateString(),
             'week_number' => $weekNumber,
             'day_of_week' => $dayKey,
-            'title' => $this->makeItemTitle($type, $module->name, $blockNumber),
-            'description' => $this->makeItemDescription($type, $module->name, $dayKey, $estimatedMinutes, $lessonNames),
+            'title' => $this->makeItemTitle($type, $subjectName, $blockNumber),
+            'description' => $this->makeItemDescription($type, $subjectName, $dayKey, $estimatedMinutes, $lessonNames),
             'type' => $type,
             'estimated_minutes' => $estimatedMinutes,
             'sort_order' => $sortOrder++,
         ]);
+
+        $this->attachOnlineLessonsToItem($item, $module, $lessonNames, $lessonBlock['track_names'] ?? [], $lessonBlock['lesson_ids'] ?? []);
 
         $remainingByModule[$module->id] -= $estimatedMinutes;
         $lessonStates[$module->id] = $lessonBlock['state'];
@@ -1192,7 +1452,11 @@ class StudyPlanGenerator
             $completedModules[] = $module->name;
         }
 
-        $typePointers[$type] = $this->nextTheoryPointer($typeQueues[$type] ?? collect(), $module);
+        $typePointers[$type] = $this->nextTheoryPointer(
+            $typeQueues[$type] ?? collect(),
+            $module,
+            (bool) ($lessonBlock['completed_module'] ?? false),
+        );
 
         return $estimatedMinutes;
     }
@@ -1209,14 +1473,12 @@ class StudyPlanGenerator
         array $completedModules,
         Collection $orderedModules,
         array $remainingByModule,
-        array $dailyTheoryModules,
     ): void {
         [$module, $title, $description] = $this->pickReserveContext(
             $type,
             $orderedModules,
             $remainingByModule,
             $completedModules,
-            $dailyTheoryModules,
             $blockNumber,
             $dayKey,
             $plannedMinutes,
@@ -1235,13 +1497,462 @@ class StudyPlanGenerator
         ]);
     }
 
+    protected function attachOnlineLessonsToItem(StudyPlanItem $item, CourseModule $module, array $lessonNames, array $trackNames = [], array $lessonIds = [], array $exceptLessonIds = []): Collection
+    {
+        $matchedLessons = $this->lessonsThatFitInMinutes(
+            $this->matchedOnlineLessonsForItem($module, $lessonNames, $trackNames, $lessonIds, $exceptLessonIds),
+            (int) $item->estimated_minutes,
+        );
+
+        if ($matchedLessons->isEmpty()) {
+            $item->lessons()->detach();
+
+            return $matchedLessons;
+        }
+
+        $syncPayload = $matchedLessons
+            ->values()
+            ->mapWithKeys(fn (Lesson $lesson, int $index) => [$lesson->id => ['sort_order' => $index + 1]])
+            ->all();
+
+        $item->lessons()->sync($syncPayload);
+
+        return $matchedLessons;
+    }
+
+    protected function lessonsThatFitInMinutes(Collection $lessons, int $availableMinutes): Collection
+    {
+        $usedMinutes = 0;
+        $availableMinutes = max(0, $availableMinutes);
+
+        return $lessons
+            ->filter(function (Lesson $lesson) use (&$usedMinutes, $availableMinutes): bool {
+                $lessonMinutes = max(1, (int) $lesson->duration_minutes);
+
+                if ($usedMinutes + $lessonMinutes > $availableMinutes) {
+                    return false;
+                }
+
+                $usedMinutes += $lessonMinutes;
+
+                return true;
+            })
+            ->values();
+    }
+
+    protected function matchedOnlineLessonsForItem(CourseModule $module, array $lessonNames, array $trackNames = [], array $lessonIds = [], array $exceptLessonIds = []): Collection
+    {
+        $lessonNameEntries = collect($lessonNames)
+            ->map(fn (string $lessonName): array => [
+                'name' => $lessonName,
+                'normalized' => $this->normalizeLessonName($lessonName),
+                'leading_number' => LessonTitleNormalizer::leadingNumber($lessonName),
+                'is_contextual_generic' => $this->isContextualGenericLessonName($lessonName),
+            ])
+            ->filter(fn (array $entry): bool => filled($entry['normalized']))
+            ->values();
+        $lessonIds = collect($lessonIds)
+            ->map(fn ($lessonId): int => (int) $lessonId)
+            ->filter()
+            ->values();
+        $exceptLessonIds = collect($exceptLessonIds)
+            ->map(fn ($lessonId): int => (int) $lessonId)
+            ->filter()
+            ->flip();
+
+        if ($lessonNameEntries->isEmpty() && $lessonIds->isEmpty()) {
+            return collect();
+        }
+
+        $normalizedTrackNames = collect($trackNames)
+            ->map(fn ($trackName): string => $this->normalizeLessonName((string) $trackName))
+            ->filter()
+            ->values();
+        $inferredTrackNames = collect();
+
+        if ($normalizedTrackNames->isEmpty() && $module->relationLoaded('tracks')) {
+            $inferredTrackNames = $module->tracks
+                ->map(fn ($track): string => $this->normalizeLessonName((string) $track->name))
+                ->filter(fn (string $trackName): bool => $trackName !== '' && $lessonNameEntries->contains(
+                    fn (array $entry): bool => str_contains((string) $entry['normalized'], $trackName)
+                        || str_contains($trackName, (string) $entry['normalized'])
+                ))
+                ->values();
+            $normalizedTrackNames = $inferredTrackNames;
+        }
+        $hasSpecificTrackContext = $normalizedTrackNames->isNotEmpty();
+
+        $allTrackLessons = $module->relationLoaded('tracks')
+            ? $module->tracks
+                ->flatMap(fn ($track) => $track->relationLoaded('lessons') ? $track->lessons : $track->lessons()->get())
+            : collect();
+        $trackLessons = $module->relationLoaded('tracks')
+            ? $module->tracks
+                ->when($normalizedTrackNames->isNotEmpty(), fn (Collection $tracks) => $tracks->filter(
+                    fn ($track): bool => $normalizedTrackNames->contains($this->normalizeLessonName((string) $track->name))
+                ))
+                ->flatMap(fn ($track) => $track->relationLoaded('lessons') ? $track->lessons : $track->lessons()->get())
+            : collect();
+        $specificTrackLessonIds = $trackLessons->pluck('id')->map(fn ($id): int => (int) $id)->flip();
+        $trackLessons = $trackLessons->isNotEmpty() ? $trackLessons : $allTrackLessons;
+
+        $moduleLessons = $module->relationLoaded('onlineLessons')
+            ? $module->onlineLessons
+            : $module->onlineLessons()->get();
+        $onlineLessons = ($normalizedTrackNames->isNotEmpty() ? $trackLessons->merge($moduleLessons) : $moduleLessons->merge($trackLessons))
+            ->unique('id')
+            ->filter(fn (Lesson $lesson): bool => $lesson->status === 'published')
+            ->reject(fn (Lesson $lesson): bool => $exceptLessonIds->has((int) $lesson->id))
+            ->values();
+
+        if ($onlineLessons->isEmpty()) {
+            return collect();
+        }
+
+        $matchedLessons = collect();
+
+        foreach ($lessonIds as $lessonId) {
+            $matchedLesson = $onlineLessons->first(function (Lesson $lesson) use ($lessonId, $matchedLessons) {
+                if ($matchedLessons->contains(fn (Lesson $matched) => $matched->is($lesson))) {
+                    return false;
+                }
+
+                return (int) $lesson->id === $lessonId;
+            });
+
+            if ($matchedLesson) {
+                $matchedLessons->push($matchedLesson);
+            }
+        }
+
+        foreach ($lessonNameEntries as $lessonNameEntry) {
+            $matchingLessons = $onlineLessons->filter(function (Lesson $lesson) use ($lessonNameEntry, $matchedLessons, $normalizedTrackNames, $specificTrackLessonIds, $hasSpecificTrackContext) {
+                if ($matchedLessons->contains(fn (Lesson $matched) => $matched->is($lesson))) {
+                    return false;
+                }
+
+                $normalizedTitle = $this->normalizeLessonName($lesson->title);
+                $lessonNumber = LessonTitleNormalizer::leadingNumber($lesson->title);
+
+                if (
+                    $lessonNumber !== null
+                    && $lessonNameEntry['leading_number'] !== null
+                    && $lessonNumber !== $lessonNameEntry['leading_number']
+                ) {
+                    return false;
+                }
+
+                if ($this->lessonNamesMatchExactly($normalizedTitle, $lessonNameEntry['normalized'])) {
+                    return true;
+                }
+
+                return $normalizedTrackNames->isNotEmpty()
+                    && $hasSpecificTrackContext
+                    && $specificTrackLessonIds->has((int) $lesson->id)
+                    && $lessonNameEntry['is_contextual_generic']
+                    && $lessonNameEntry['leading_number'] !== null
+                    && $lessonNumber !== null
+                    && $lessonNumber === $lessonNameEntry['leading_number'];
+            });
+
+            if ($lessonNameEntry['is_contextual_generic'] && $matchingLessons->isNotEmpty()) {
+                $matchingLessons->each(fn (Lesson $lesson) => $matchedLessons->push($lesson));
+
+                continue;
+            }
+
+            $matchedLesson = $matchingLessons->first();
+
+            if ($matchedLesson instanceof Lesson) {
+                $matchedLessons->push($matchedLesson);
+            }
+        }
+
+        if ($matchedLessons->isEmpty() && $lessonNameEntries->count() === 1) {
+            $lessonNameEntry = $lessonNameEntries->first();
+            $descriptionLessonName = (string) ($lessonNameEntry['normalized'] ?? '');
+
+            $matchedLessons = $onlineLessons
+                ->filter(function (Lesson $lesson) use ($descriptionLessonName, $lessonNameEntry): bool {
+                    $normalizedTitle = $this->normalizeLessonName($lesson->title);
+                    $lessonNumber = LessonTitleNormalizer::leadingNumber($lesson->title);
+
+                    if (
+                        $lessonNumber !== null
+                        && $lessonNameEntry['leading_number'] !== null
+                        && $lessonNumber !== $lessonNameEntry['leading_number']
+                    ) {
+                        return false;
+                    }
+
+                    return $normalizedTitle !== '' && str_contains($descriptionLessonName, $normalizedTitle);
+                })
+                ->values();
+        }
+
+        return $matchedLessons->values();
+    }
+
+    protected function lessonNamesForPlanItem(CourseModule $module, StudyPlanItem $item, array &$lessonIndexes): array
+    {
+        $moduleId = $module->id;
+        $lessons = $this->planningLessonsForModule($module);
+        $index = $lessonIndexes[$moduleId] ?? 0;
+        $minutes = 0;
+        $lessonNames = [];
+        $currentTrackName = null;
+
+        while ($index < count($lessons)) {
+            $lessonMinutes = (int) ($lessons[$index]['minutes'] ?? 0);
+            $lessonTrackName = trim((string) ($lessons[$index]['track_name'] ?? ''));
+
+            if ($lessonMinutes <= 0) {
+                $index++;
+
+                continue;
+            }
+
+            if ($minutes > 0 && $currentTrackName !== null && $lessonTrackName !== '' && $lessonTrackName !== $currentTrackName) {
+                break;
+            }
+
+            if ($currentTrackName === null && $lessonTrackName !== '') {
+                $currentTrackName = $lessonTrackName;
+            }
+
+            if (($minutes + $lessonMinutes) > (int) $item->estimated_minutes) {
+                break;
+            }
+
+            $lessonNames[] = (string) ($lessons[$index]['name'] ?? '');
+            $minutes += $lessonMinutes;
+            $index++;
+        }
+
+        $lessonIndexes[$moduleId] = $index;
+
+        return array_values(array_filter($lessonNames));
+    }
+
+    protected function lessonNamesFromPlanItemDescription(string $description): array
+    {
+        if (! preg_match('/Aulas do bloco:\s*(.+)$/u', $description, $matches)) {
+            return [];
+        }
+
+        $lessonList = rtrim(trim((string) $matches[1]), '.');
+        $separator = str_contains($lessonList, ';') ? '/\s*;\s*/u' : '/\s+e\s+(?=\d{1,3}\s+-)/u';
+
+        return collect(preg_split($separator, $lessonList) ?: [])
+            ->map(fn (string $name): string => trim($name))
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    protected function coursePlanningModules(Course $course): Collection
+    {
+        return CourseModule::query()
+            ->where(function ($query) use ($course): void {
+                $query
+                    ->where('course_id', $course->id)
+                    ->orWhereHas('courses', fn ($query) => $query->whereKey($course->id));
+            })
+            ->whereIn('type', ['basic', 'specific', 'complementary'])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+    }
+
+    protected function resolveModuleForPlanItem(StudyPlanItem $item, Collection $modules): ?CourseModule
+    {
+        $type = $this->normalizeModuleType((string) $item->type);
+
+        if (! in_array($type, ['basic', 'specific', 'complementary'], true)) {
+            return null;
+        }
+
+        $candidates = $modules
+            ->filter(fn (CourseModule $module): bool => $this->normalizeModuleType((string) $module->type) === $type)
+            ->values();
+
+        if ($candidates->isEmpty()) {
+            return null;
+        }
+
+        $titleKey = $this->normalizeLessonName((string) $item->title);
+        $subjectKey = $this->normalizeLessonName(trim((string) Str::of((string) $item->title)->afterLast(':')));
+
+        $matched = $candidates->first(function (CourseModule $module) use ($titleKey, $subjectKey): bool {
+            $moduleKey = $this->normalizeLessonName((string) $module->name);
+
+            return $moduleKey !== ''
+                && ($titleKey === $moduleKey
+                    || $subjectKey === $moduleKey
+                    || str_contains($titleKey, $moduleKey)
+                    || str_contains($moduleKey, $subjectKey));
+        });
+
+        if ($matched) {
+            return $matched;
+        }
+
+        return $candidates->count() === 1 ? $candidates->first() : null;
+    }
+
+    protected function trackNamesForPlanItem(CourseModule $module, StudyPlanItem $item): array
+    {
+        if (! $module->relationLoaded('tracks') || $module->tracks->isEmpty()) {
+            return [];
+        }
+
+        $titleSubject = trim((string) Str::of((string) $item->title)->afterLast(':'));
+
+        if ($titleSubject === '' || $titleSubject === $item->title) {
+            return [];
+        }
+
+        $normalizedSubject = $this->normalizeLessonName($titleSubject);
+        $trackName = $module->tracks
+            ->first(fn ($track): bool => $this->normalizeLessonName((string) $track->name) === $normalizedSubject)
+            ?->name;
+
+        return $trackName ? [(string) $trackName] : [];
+    }
+
+    protected function publishReadyLessonsForCourse(Course $course): void
+    {
+        if (isset($this->publishedReadyCourseIds[$course->id])) {
+            return;
+        }
+
+        $trackLessonIds = DB::table('course_module_track_course')
+            ->join('course_module_track_lessons', 'course_module_track_lessons.course_module_track_id', '=', 'course_module_track_course.course_module_track_id')
+            ->join('lessons', 'lessons.id', '=', 'course_module_track_lessons.lesson_id')
+            ->where('course_module_track_course.course_id', $course->id)
+            ->where($this->readyLessonFilter())
+            ->distinct()
+            ->pluck('lessons.id');
+
+        $moduleLessonIds = DB::table('course_module_course')
+            ->join('course_module_lessons', 'course_module_lessons.course_module_id', '=', 'course_module_course.course_module_id')
+            ->join('lessons', 'lessons.id', '=', 'course_module_lessons.lesson_id')
+            ->where('course_module_course.course_id', $course->id)
+            ->where($this->readyLessonFilter())
+            ->distinct()
+            ->pluck('lessons.id');
+
+        $legacyModuleLessonIds = DB::table('course_modules')
+            ->join('course_module_lessons', 'course_module_lessons.course_module_id', '=', 'course_modules.id')
+            ->join('lessons', 'lessons.id', '=', 'course_module_lessons.lesson_id')
+            ->where('course_modules.course_id', $course->id)
+            ->where($this->readyLessonFilter())
+            ->distinct()
+            ->pluck('lessons.id');
+
+        $lessonIds = $trackLessonIds
+            ->merge($moduleLessonIds)
+            ->merge($legacyModuleLessonIds)
+            ->unique()
+            ->values();
+
+        if ($lessonIds->isEmpty()) {
+            $this->publishedReadyCourseIds[$course->id] = true;
+
+            return;
+        }
+
+        $lessonIds
+            ->chunk(25)
+            ->each(function (Collection $chunk): void {
+                $this->retryOnLockTimeout(function () use ($chunk): void {
+                    Lesson::query()
+                        ->whereIn('id', $chunk->all())
+                        ->where('status', '!=', 'published')
+                        ->update([
+                            'status' => 'published',
+                            'updated_at' => now(),
+                        ]);
+                });
+            });
+
+        $this->publishedReadyCourseIds[$course->id] = true;
+    }
+
+    protected function retryOnLockTimeout(callable $operation): void
+    {
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            try {
+                $operation();
+
+                return;
+            } catch (QueryException $exception) {
+                if ($attempt >= 3 || ! str_contains($exception->getMessage(), 'Lock wait timeout')) {
+                    throw $exception;
+                }
+
+                usleep(250000 * $attempt);
+            }
+        }
+    }
+
+    protected function readyLessonFilter(): callable
+    {
+        return function ($query): void {
+            $query->where(function ($query): void {
+                $query->whereNotNull('lessons.panda_video_id')
+                    ->orWhereNotNull('lessons.panda_embed_url')
+                    ->orWhereNotNull('lessons.panda_player_url')
+                    ->orWhere('lessons.source_status', 'media_ready');
+            });
+        };
+    }
+
+    protected function normalizeLessonName(string $value): string
+    {
+        return LessonTitleNormalizer::matchKey(
+            preg_replace('/^continua(?:c|ç)(?:a|ã)o:\s*/iu', '', $value) ?: $value
+        );
+    }
+
+    protected function isContextualGenericLessonName(string $value): bool
+    {
+        return preg_match('/\b(?:L\.?\s*I\.?\s*A|L\.?\s*A\.?\s*I|L\.?\s*G\.?\s*P\.?\s*D|E\.?\s*C\.?\s*A)\b/iu', $value) === 1;
+    }
+
+    protected function withoutLeadingLessonNumber(string $value): string
+    {
+        return Str::of($value)
+            ->replaceMatches('/^(?:aula\s*)?\d{1,4}\s+/', '')
+            ->squish()
+            ->value();
+    }
+
+    protected function hasLeadingLessonNumber(string $value): bool
+    {
+        return (bool) preg_match('/^(?:aula\s*)?\d{1,4}\s+/', $value);
+    }
+
+    protected function lessonNamesMatchExactly(string $normalizedTitle, string $normalizedLessonName): bool
+    {
+        if ($normalizedTitle === $normalizedLessonName) {
+            return true;
+        }
+
+        if ($this->hasLeadingLessonNumber($normalizedTitle) && $this->hasLeadingLessonNumber($normalizedLessonName)) {
+            return false;
+        }
+
+        return $this->withoutLeadingLessonNumber($normalizedTitle) === $this->withoutLeadingLessonNumber($normalizedLessonName);
+    }
+
     protected function buildTheoryQueues(Collection $modules): array
     {
         return collect(['basic', 'specific', 'complementary'])
             ->mapWithKeys(fn (string $type) => [
                 $type => $modules
                     ->filter(fn (CourseModule $module) => $this->normalizeModuleType($module->type) === $type)
-                    ->sortBy(fn (CourseModule $module) => $this->modulePlanningOrder($module))
+                    ->sortBy('sort_order')
                     ->values(),
             ])
             ->all();
@@ -1333,9 +2044,7 @@ class StudyPlanGenerator
             return null;
         }
 
-        return $availableModules
-            ->first(fn (CourseModule $module) => $this->moduleSubject($module) !== $lastSubject)
-            ?? $availableModules->first();
+        return $availableModules->first();
     }
 
     protected function remainingTheoryModules(Collection $queue, int $pointer, array $lessonStates): Collection
@@ -1356,7 +2065,7 @@ class StudyPlanGenerator
             ->values();
     }
 
-    protected function nextTheoryPointer(Collection $queue, CourseModule $currentModule): int
+    protected function nextTheoryPointer(Collection $queue, CourseModule $currentModule, bool $completedModule): int
     {
         $index = $queue->search(fn (CourseModule $module) => $module->id === $currentModule->id);
 
@@ -1364,24 +2073,29 @@ class StudyPlanGenerator
             return 0;
         }
 
+        if (! $completedModule) {
+            return (int) $index;
+        }
+
         return (((int) $index) + 1) % $queue->count();
     }
 
-    protected function buildLessonStates(Collection $modules, array $remainingByModule): array
+    protected function buildLessonStates(Collection $modules, array $remainingByModule, array $consumedLessonIdsByModule = []): array
     {
-        return $modules->mapWithKeys(function (CourseModule $module) use ($remainingByModule) {
-            $lessons = collect($module->planning_lessons)->values()->all();
-            $completedMinutes = max(0, (int) $module->workload_minutes - (int) ($remainingByModule[$module->id] ?? 0));
-            $index = 0;
+        return $modules->mapWithKeys(function (CourseModule $module) use ($remainingByModule, $consumedLessonIdsByModule) {
+            $lessons = collect($this->planningLessonsForModule($module))->values()->all();
+            $index = $this->lessonStateIndexFromConsumedLessonIds(
+                $lessons,
+                $consumedLessonIdsByModule[$module->id] ?? [],
+            );
 
-            while ($index < count($lessons) && $completedMinutes >= (int) $lessons[$index]['minutes']) {
-                $completedMinutes -= (int) $lessons[$index]['minutes'];
-                $index++;
-            }
+            if ($index === 0) {
+                $completedMinutes = max(0, $this->plannedMinutesForModule($module) - (int) ($remainingByModule[$module->id] ?? 0));
 
-            if ($completedMinutes > 0 && $index < count($lessons)) {
-                $lessons[$index]['minutes'] = max(1, (int) $lessons[$index]['minutes'] - $completedMinutes);
-                $lessons[$index]['name'] = 'Continuação: '.$lessons[$index]['name'];
+                while ($index < count($lessons) && $completedMinutes >= (int) $lessons[$index]['minutes']) {
+                    $completedMinutes -= (int) $lessons[$index]['minutes'];
+                    $index++;
+                }
             }
 
             return [$module->id => [
@@ -1391,19 +2105,76 @@ class StudyPlanGenerator
         })->all();
     }
 
+    protected function consumedLessonIdsByModule(Collection $items, array $moduleIds): array
+    {
+        $allowedModuleIds = collect($moduleIds)
+            ->map(fn ($moduleId): int => (int) $moduleId)
+            ->flip();
+
+        return $items
+            ->filter(fn (StudyPlanItem $item): bool => filled($item->course_module_id) && $allowedModuleIds->has((int) $item->course_module_id))
+            ->groupBy('course_module_id')
+            ->map(function (Collection $moduleItems): array {
+                return $moduleItems
+                    ->sortBy([
+                        ['scheduled_date', 'asc'],
+                        ['sort_order', 'asc'],
+                        ['id', 'asc'],
+                    ])
+                    ->flatMap(fn (StudyPlanItem $item): Collection => $item->relationLoaded('lessons') ? $item->lessons : $item->lessons()->get())
+                    ->pluck('id')
+                    ->map(fn ($lessonId): int => (int) $lessonId)
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->all();
+            })
+            ->all();
+    }
+
+    protected function lessonStateIndexFromConsumedLessonIds(array $lessons, array $consumedLessonIds): int
+    {
+        $consumed = collect($consumedLessonIds)
+            ->map(fn ($lessonId): int => (int) $lessonId)
+            ->filter()
+            ->flip();
+
+        if ($consumed->isEmpty()) {
+            return 0;
+        }
+
+        $index = 0;
+
+        while ($index < count($lessons)) {
+            $lessonId = (int) ($lessons[$index]['lesson_id'] ?? 0);
+
+            if ($lessonId <= 0 || ! $consumed->has($lessonId)) {
+                break;
+            }
+
+            $index++;
+        }
+
+        return $index;
+    }
+
     protected function buildLessonBlock(CourseModule $module, int $availableMinutes, ?array $state): array
     {
-        $state ??= ['lessons' => $module->planning_lessons, 'index' => 0];
+        $state ??= ['lessons' => $this->planningLessonsForModule($module), 'index' => 0];
         $lessons = $state['lessons'] ?? [];
         $index = (int) ($state['index'] ?? 0);
-        $maxBlockMinutes = min(90, $availableMinutes);
+        $maxBlockMinutes = $availableMinutes;
         $lessonNames = [];
+        $lessonIds = [];
+        $trackNames = [];
+        $currentTrackName = null;
         $totalMinutes = 0;
         $consumedLessons = 0;
 
         while (($index + $consumedLessons) < count($lessons)) {
             $lesson = $lessons[$index + $consumedLessons];
             $lessonMinutes = (int) ($lesson['minutes'] ?? 0);
+            $lessonTrackName = trim((string) ($lesson['track_name'] ?? ''));
 
             if ($lessonMinutes <= 0) {
                 $consumedLessons++;
@@ -1411,26 +2182,21 @@ class StudyPlanGenerator
                 continue;
             }
 
+            if ($totalMinutes > 0 && $currentTrackName !== null && $lessonTrackName !== '' && $lessonTrackName !== $currentTrackName) {
+                break;
+            }
+
+            if ($currentTrackName === null && $lessonTrackName !== '') {
+                $currentTrackName = $lessonTrackName;
+            }
+
             if (($totalMinutes + $lessonMinutes) > $maxBlockMinutes) {
-                if (blank($module->lessons)) {
-                    $remainingBlockMinutes = $maxBlockMinutes - $totalMinutes;
-
-                    if ($remainingBlockMinutes <= 0) {
-                        break;
-                    }
-
-                    $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
-                    $totalMinutes += $remainingBlockMinutes;
-                    $lessons[$index + $consumedLessons]['minutes'] = $lessonMinutes - $remainingBlockMinutes;
-                    $state['lessons'] = $lessons;
-
-                    break;
-                }
-
                 break;
             }
 
             $lessonNames[] = (string) ($lesson['name'] ?? $module->name);
+            $lessonIds[] = $lesson['lesson_id'] ?? null;
+            $trackNames[] = $lessonTrackName;
             $totalMinutes += $lessonMinutes;
             $consumedLessons++;
         }
@@ -1449,9 +2215,85 @@ class StudyPlanGenerator
         return [
             'minutes' => $totalMinutes,
             'lesson_names' => $lessonNames,
+            'lesson_ids' => collect($lessonIds)->filter()->values()->all(),
+            'track_names' => collect($trackNames)->filter()->unique()->values()->all(),
             'completed_module' => $state['index'] >= count($lessons),
             'state' => $state,
         ];
+    }
+
+    protected function planningLessonsForModule(CourseModule $module): array
+    {
+        $trackLessons = $this->planningLessonsFromTracks($module);
+
+        return $trackLessons !== [] ? $trackLessons : $module->planning_lessons;
+    }
+
+    protected function planningLessonsFromTracks(CourseModule $module): array
+    {
+        $tracks = $module->relationLoaded('tracks')
+            ? $module->tracks
+            : $module->tracks()
+                ->where('status', 'published')
+                ->with(['lessons' => fn ($query) => $query->where('lessons.status', '!=', 'archived')])
+                ->orderBy('sort_order')
+                ->orderBy('name')
+                ->get();
+
+        return $tracks
+            ->sortBy([
+                ['sort_order', 'asc'],
+                ['name', 'asc'],
+            ])
+            ->flatMap(function ($track): Collection {
+                $lessons = $track->relationLoaded('lessons') ? $track->lessons : $track->lessons()->get();
+
+                return $lessons
+                    ->map(function (Lesson $lesson, int $index) use ($track): array {
+                        return [
+                            'lesson_id' => $lesson->id,
+                            'name' => trim((string) $lesson->title) ?: ($track->name.' - Aula '.($index + 1)),
+                            'minutes' => max(1, (int) $lesson->duration_minutes),
+                            'track_name' => (string) $track->name,
+                        ];
+                    })
+                    ->filter(fn (array $lesson): bool => $lesson['minutes'] > 0)
+                    ->values();
+            })
+            ->unique(fn (array $lesson): string => filled($lesson['lesson_id'] ?? null)
+                ? 'id:'.$lesson['lesson_id']
+                : 'name:'.$this->normalizeLessonName((string) ($lesson['name'] ?? '')))
+            ->values()
+            ->all();
+    }
+
+    protected function planItemSubjectName(string $type, CourseModule $module, array $lessonBlock): string
+    {
+        $moduleName = trim((string) $module->name);
+        $typeLabel = $this->makeTypeLabel($type);
+
+        if ($moduleName !== '' && $this->normalizeLessonName($moduleName) !== $this->normalizeLessonName($typeLabel)) {
+            return $moduleName;
+        }
+
+        $trackName = collect($lessonBlock['track_names'] ?? [])
+            ->map(fn ($name): string => trim((string) $name))
+            ->filter()
+            ->first();
+
+        return $trackName ?: $moduleName ?: $typeLabel;
+    }
+
+    protected function makeTypeLabel(string $type): string
+    {
+        return match ($type) {
+            'basic' => 'Matéria Básica',
+            'specific' => 'Conhecimentos Específicos',
+            'complementary' => 'Conhecimentos Complementares',
+            'review' => 'Revisão',
+            'questions' => 'Resolução de Questões',
+            default => $type,
+        };
     }
 
     protected function pickReserveContext(
@@ -1459,22 +2301,15 @@ class StudyPlanGenerator
         Collection $orderedModules,
         array $remainingByModule,
         array $completedModules,
-        array $dailyTheoryModules,
         int $blockNumber,
         string $dayKey,
         int $plannedMinutes,
     ): array {
-        $dailyModules = collect($dailyTheoryModules)->values();
-        $currentModule = $dailyModules->first()
-            ?? $orderedModules->first(fn (CourseModule $module) => ($remainingByModule[$module->id] ?? 0) > 0);
-        $referenceModuleName = $dailyModules->isNotEmpty()
-            ? $this->summarizeReserveModules($dailyModules)
-            : ($currentModule?->name ?? collect($completedModules)->last());
+        $currentModule = $orderedModules->first(fn (CourseModule $module) => ($remainingByModule[$module->id] ?? 0) > 0);
+        $referenceModuleName = $currentModule?->name ?? collect($completedModules)->last();
 
         if ($type === 'review') {
-            $topic = $dailyModules->isNotEmpty()
-                ? $this->summarizeReserveModules($dailyModules)
-                : collect($completedModules)->take(-2)->implode(' e ');
+            $topic = collect($completedModules)->take(-2)->implode(' e ');
 
             return [
                 $currentModule,
@@ -1500,33 +2335,6 @@ class StudyPlanGenerator
             'Bloco '.$blockNumber.' · Bloco complementar',
             'Reserva de até '.$plannedMinutes.' minutos para reforçar o conteúdo mais relevante da sua trilha.',
         ];
-    }
-
-    protected function summarizeReserveModules(Collection $modules): string
-    {
-        return $modules
-            ->map(fn (CourseModule $module) => $this->reserveModuleLabel($module))
-            ->filter()
-            ->unique()
-            ->take(2)
-            ->implode(' e ');
-    }
-
-    protected function reserveModuleLabel(CourseModule $module): string
-    {
-        $name = trim($module->name);
-
-        if (str_contains($name, ' - ')) {
-            return trim(Str::afterLast($name, ' - '));
-        }
-
-        $lessonNames = collect($module->planning_lessons)
-            ->pluck('name')
-            ->filter()
-            ->take(2)
-            ->implode(' e ');
-
-        return $lessonNames !== '' ? $lessonNames : $name;
     }
 
     protected function makeItemTitle(string $type, string $moduleName, int $blockNumber): string
@@ -1566,8 +2374,7 @@ class StudyPlanGenerator
         return match (count($lessonNames)) {
             0 => '',
             1 => $lessonNames[0],
-            2 => $lessonNames[0].' e '.$lessonNames[1],
-            default => implode(', ', array_slice($lessonNames, 0, -1)).' e '.$lessonNames[array_key_last($lessonNames)],
+            default => implode('; ', $lessonNames),
         };
     }
 

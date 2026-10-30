@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
-use App\Services\UserImpersonation;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -40,12 +39,6 @@ class AuthenticatedSessionController extends Controller
      */
     public function destroy(Request $request): RedirectResponse
     {
-        if ($request->session()->has(UserImpersonation::SESSION_KEY)) {
-            app(UserImpersonation::class)->stop($request);
-
-            return redirect('/admin');
-        }
-
         $wasAdmin = $request->user()?->isAdmin() ?? false;
 
         Auth::guard('web')->logout();

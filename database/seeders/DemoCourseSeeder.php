@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\Course;
+use App\Models\CourseModule;
 use App\Models\StudyTrack;
 use Illuminate\Database\Seeder;
 
@@ -59,13 +60,26 @@ class DemoCourseSeeder extends Seeder
             ['name' => 'Conhecimentos Específicos - Primeiros Socorros', 'type' => 'specific', 'workload_minutes' => $this->estimateMinutes(2), 'sort_order' => 27],
         ];
 
-        $course->modules()->where('name', 'Apresentação e Boas-Vindas')->delete();
+        CourseModule::query()
+            ->where('course_id', $course->id)
+            ->where('name', 'Apresentação e Boas-Vindas')
+            ->delete();
 
         foreach ($modules as $moduleData) {
-            $course->modules()->updateOrCreate(
-                ['name' => $moduleData['name']],
-                $moduleData + ['is_active' => true],
+            $module = CourseModule::query()->updateOrCreate(
+                [
+                    'course_id' => $course->id,
+                    'name' => $moduleData['name'],
+                ],
+                $moduleData + [
+                    'course_id' => $course->id,
+                    'is_active' => true,
+                ],
             );
+
+            $course->modules()->syncWithoutDetaching([
+                $module->id => ['sort_order' => (int) $module->sort_order],
+            ]);
         }
 
         $track = StudyTrack::updateOrCreate(

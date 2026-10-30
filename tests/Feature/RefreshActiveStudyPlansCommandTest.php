@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\CourseModuleTrack;
+use App\Models\Lesson;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Models\StudyTrack;
@@ -15,6 +17,77 @@ use Tests\TestCase;
 class RefreshActiveStudyPlansCommandTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_sync_active_lessons_command_updates_lesson_links_without_regenerating_the_plan(): void
+    {
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->for($course)->create([
+            'name' => 'Português',
+            'type' => 'basic',
+            'workload_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Classes de Palavras',
+            'slug' => 'classes-de-palavras',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $track->courses()->syncWithoutDetaching([$course->id => ['sort_order' => 1]]);
+        $lessons = collect([
+            ['Classes de Palavras - Substantivo e Adjetivo', 10],
+            ['Classes de Palavras - Advérbio', 11],
+            ['Classes de palavras - Conjunção subordinativa adverbial', 16],
+            ['Classes de palavras - Conjunção integrante', 8],
+        ])->map(fn (array $payload, int $index): Lesson => Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => $payload[0],
+            'duration_seconds' => $payload[1] * 60,
+            'sort_order' => $index + 1,
+            'status' => 'published',
+        ]));
+
+        foreach ($lessons as $index => $lesson) {
+            $track->lessons()->attach($lesson->id, ['sort_order' => $index + 1]);
+        }
+
+        $student = User::factory()->create();
+        $student->courses()->attach($course, ['source' => 'manual']);
+        $plan = StudyPlan::factory()->for($student, 'user')->for($course)->create([
+            'status' => 'active',
+        ]);
+        $item = StudyPlanItem::factory()->create([
+            'study_plan_id' => $plan->id,
+            'course_module_id' => $module->id,
+            'scheduled_date' => '2026-09-10',
+            'week_number' => 1,
+            'day_of_week' => 'thursday',
+            'title' => 'Bloco 1 · Matéria Básica: Português',
+            'description' => 'Bloco de até 45 minutos para estudar Português. Aulas do bloco: '.$lessons->pluck('title')->join(', ').'.',
+            'type' => 'basic',
+            'estimated_minutes' => 45,
+            'sort_order' => 1,
+        ]);
+
+        $this->artisan('study-plans:sync-active-lessons', [
+            '--dry-run' => true,
+        ])->assertExitCode(0);
+
+        $this->assertSame([], $item->fresh()->lessons()->pluck('lessons.id')->all());
+
+        $this->artisan('study-plans:sync-active-lessons')
+            ->expectsOutput('Planos ativos sincronizados: 1 de 1.')
+            ->assertExitCode(0);
+
+        $this->assertSame(
+            $lessons->pluck('id')->all(),
+            $item->fresh()->lessons()->pluck('lessons.id')->all(),
+        );
+        $this->assertTrue($item->fresh()->scheduled_date->isSameDay('2026-09-10'));
+    }
 
     public function test_command_refreshes_active_plans_with_current_official_track(): void
     {

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Course;
 use App\Models\CourseModule;
+use App\Models\Lesson;
 use App\Models\StudyPlan;
 use App\Models\StudyPlanItem;
 use App\Services\StudyPlanGenerator;
@@ -18,6 +19,31 @@ use Illuminate\Validation\Rule;
 
 class StudyPlanController extends Controller
 {
+    public function index(): View
+    {
+        $user = request()->user();
+
+        abort_unless($user?->canAccessStudentArea(), 403);
+
+        $plans = $user->studyPlans()
+            ->with(['course', 'items'])
+            ->latest()
+            ->get();
+        $plannedCourseIds = $plans
+            ->where('status', 'active')
+            ->pluck('course_id')
+            ->filter()
+            ->unique();
+        $canCreatePlan = $user->availableCoursesQuery()
+            ->whereNotIn('courses.id', $plannedCourseIds)
+            ->exists();
+
+        return view('dashboard.study-plans.index', [
+            'plans' => $plans,
+            'canCreatePlan' => $canCreatePlan,
+        ]);
+    }
+
     public function create(): View
     {
         abort_unless(request()->user()?->canAccessStudentArea(), 403);
@@ -54,8 +80,6 @@ class StudyPlanController extends Controller
             $parsedAvailability,
             $data['intensity'],
         );
-
-        sleep(2);
 
         return redirect()->route('study-plans.show', $plan);
     }
@@ -100,8 +124,6 @@ class StudyPlanController extends Controller
             now()->addWeek()->startOfWeek(CarbonInterface::MONDAY)->toDateString(),
         );
 
-        sleep(2);
-
         return redirect()
             ->route('study-plans.show', $plan)
             ->with('status', 'Plano atualizado com sucesso. Reorganizamos o restante do ciclo sem perder o progresso já concluído.');
@@ -114,11 +136,24 @@ class StudyPlanController extends Controller
 
         $plan = $generator->smartRebalance($studyPlan);
 
-        sleep(2);
-
         return redirect()
             ->route('study-plans.show', $plan)
             ->with('status', 'Reajuste concluído. Preservamos o que você já concluiu e reorganizamos automaticamente só o restante do plano a partir de hoje.');
+    }
+
+    public function syncLessons(StudyPlan $studyPlan, StudyPlanGenerator $generator): RedirectResponse
+    {
+        $this->authorize('update', $studyPlan);
+        abort_unless(request()->user()?->canAccessStudentArea(), 403);
+
+        $generator->syncPublishedLessonsForPlan($studyPlan);
+        $studyPlan->forceFill([
+            'lessons_reprocessed_at' => now(),
+        ])->save();
+
+        return redirect()
+            ->route('study-plans.show', $studyPlan)
+            ->with('status', 'Curso atualizado. Reprocessamos seu plano de estudos com as aulas disponíveis sem perder os dias já concluídos.');
     }
 
     public function show(StudyPlan $studyPlan): View
@@ -126,7 +161,7 @@ class StudyPlanController extends Controller
         $this->authorize('view', $studyPlan);
 
         return view('dashboard.study-plans.show', [
-            'studyPlan' => $studyPlan,
+            'studyPlan' => $studyPlan->load(['items.courseModule', 'items.lessons', 'course', 'studyTrack']),
         ]);
     }
 
@@ -138,6 +173,41 @@ class StudyPlanController extends Controller
         $item->toggleCompleted();
 
         return back();
+    }
+
+    public function lesson(StudyPlan $studyPlan, StudyPlanItem $item, Lesson $lesson): RedirectResponse
+    {
+        $this->authorize('view', $studyPlan);
+        abort_unless($item->study_plan_id === $studyPlan->id, 404);
+
+        abort_unless($studyPlan->course, 404);
+        abort_unless($this->lessonBelongsToPlanItem($item, $lesson), 404);
+
+        return redirect()->route('courses.lessons.show', [
+            $studyPlan->course->slug,
+            $lesson,
+            'plan_id' => $studyPlan->id,
+            'plan_item_id' => $item->id,
+        ]);
+    }
+
+    protected function lessonBelongsToPlanItem(StudyPlanItem $item, Lesson $lesson): bool
+    {
+        if ($item->lessons()->whereKey($lesson->id)->exists()) {
+            return true;
+        }
+
+        if (! $item->course_module_id) {
+            return false;
+        }
+
+        if ((int) $lesson->course_module_id === (int) $item->course_module_id) {
+            return true;
+        }
+
+        return $lesson->modules()
+            ->whereKey($item->course_module_id)
+            ->exists();
     }
 
     public function destroy(StudyPlan $studyPlan): RedirectResponse

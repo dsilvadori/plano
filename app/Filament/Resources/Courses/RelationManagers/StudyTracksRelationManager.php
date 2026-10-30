@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Courses\RelationManagers;
 
+use App\Services\ActiveStudyPlanRefresher;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
@@ -14,6 +15,8 @@ use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Enums\FiltersLayout;
+use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 
 class StudyTracksRelationManager extends RelationManager
@@ -53,18 +56,37 @@ class StudyTracksRelationManager extends RelationManager
                 TextColumn::make('modules_count')->label('Módulos')->counts('modules'),
                 IconColumn::make('is_active')->label('Ativa')->boolean(),
             ])
+            ->filters([
+                SelectFilter::make('course_module_id')
+                    ->label('Módulo')
+                    ->options(fn (): array => $this->getOwnerRecord()
+                        ->modules()
+                        ->orderBy('course_modules.name')
+                        ->pluck('name', 'course_modules.id')
+                        ->all())
+                    ->searchable()
+                    ->preload()
+                    ->query(fn ($query, array $data) => filled($data['value'] ?? null)
+                        ? $query->whereHas('modules', fn ($query) => $query->whereKey($data['value']))
+                        : $query),
+            ], layout: FiltersLayout::AboveContent)
+            ->filtersFormColumns(1)
             ->headerActions([
                 CreateAction::make()
                     ->mutateDataUsing(fn (array $data): array => $data + [
                         'course_id' => $this->getOwnerRecord()->getKey(),
-                    ]),
+                    ])
+                    ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),
             ])
             ->recordActions([
-                EditAction::make(),
-                DeleteAction::make(),
+                EditAction::make()
+                    ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),
+                DeleteAction::make()
+                    ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),
             ])
             ->toolbarActions([
-                DeleteBulkAction::make(),
+                DeleteBulkAction::make()
+                    ->after(fn (): int => app(ActiveStudyPlanRefresher::class)->refreshCourseFromNextWeek($this->getOwnerRecord())),
             ]);
     }
 }
