@@ -1,0 +1,96 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - plano-de-estudos
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: 177.136.229.37
+  DEPLOY_HOST_KEY: "177.136.229.37 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICqJkw3+7pjGC0PZAPegypT+yNv5O9AlkMbta2rP1FPQ"
+
+jobs:
+  deploy:
+    if: github.ref_name == 'main' || github.ref_name == 'plano-de-estudos'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Definir destino pela branch
+        run: |
+          case "${{ github.ref_name }}" in
+            main)
+              echo "DEPLOY_USER=napoleon3" >> "$GITHUB_ENV"
+              echo "DEPLOY_PATH=/home/vencendoconcursos-app/htdocs/app.vencendoconcursos.com.br" >> "$GITHUB_ENV"
+              ;;
+            plano-de-estudos)
+              echo "DEPLOY_USER=napoleon2" >> "$GITHUB_ENV"
+              echo "DEPLOY_PATH=/home/vencendoconcursos-plano/htdocs/plano.vencendoconcursos.com.br" >> "$GITHUB_ENV"
+              ;;
+          esac
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          tools: composer:v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Instalar dependências de produção
+        run: composer install --no-dev --no-interaction --no-progress --no-scripts --optimize-autoloader
+
+      - name: Compilar assets
+        run: |
+          npm ci
+          npm run build
+
+      - name: Configurar SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_HOST_KEY" > ~/.ssh/known_hosts
+        env:
+          DEPLOY_KEY: ${{ github.ref_name == 'main' && secrets.DEPLOY_KEY_APP || secrets.DEPLOY_KEY_PLANO }}
+
+      - name: Enviar arquivos
+        run: |
+          rsync -rlzc --delete --no-perms --no-owner --no-group --omit-dir-times \
+            --exclude='/.git' \
+            --exclude='/.github' \
+            --exclude='/.env' \
+            --exclude='/.env.*' \
+            --exclude='/node_modules' \
+            --exclude='/storage' \
+            --exclude='/bootstrap/cache' \
+            --exclude='/public/storage' \
+            --exclude='/public/hot' \
+            --exclude='/database/*.sqlite' \
+            --exclude='/tests' \
+            --exclude='/docs' \
+            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes" \
+            ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Atualizar aplicação
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$DEPLOY_USER@$DEPLOY_HOST" "bash -se" <<REMOTE
+          cd "$DEPLOY_PATH"
+          php artisan package:discover --ansi
+          php artisan migrate --force
+          php artisan optimize:clear
+          php artisan config:cache
+          php artisan route:cache
+          php artisan view:cache
+          php artisan queue:restart
+          REMOTE
