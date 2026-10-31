@@ -14,16 +14,34 @@ use App\Models\Teacher;
 use App\Models\Video;
 use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Throwable;
 
 class CourseSpreadsheetImporter
 {
     protected ?Collection $reusableLessonCandidates = null;
 
-    protected array $reusableLessonCandidateCache = [];
+    protected ?Collection $reusableVideoCandidates = null;
+
+    protected array $lessonIndex = [];
+
+    protected array $videoIndex = [];
+
+    protected array $lessonIdsByVideo = [];
+
+    protected array $trackLessonIds = [];
+
+    protected ?int $targetCourseId = null;
+
+    protected ?array $courseLessonIds = null;
+
+    protected array $folderIds = [];
+
+    protected array $matchScoreCache = [];
 
     protected array $matchKeyCache = [];
 
@@ -41,20 +59,40 @@ class CourseSpreadsheetImporter
         $this->ensurePayloadHasImportableStructure($payload);
         $this->resetImportCaches();
         $targetCourse = $course ?: Course::query()->where('slug', $payload['course_slug'])->first();
+        $this->targetCourseId = $targetCourse?->id;
         $moduleStats = ['create' => 0, 'update' => 0];
-        $lessonStats = ['create' => 0, 'update' => 0];
+        $lessonStats = ['create' => 0, 'update' => 0, 'with_media' => 0, 'without_media' => 0];
 
         foreach ($payload['modules'] as $moduleData) {
-            $module = $targetCourse ? $this->resolveModuleForCourse($targetCourse, $moduleData['name']) : $this->resolveReusableModule($moduleData['name']);
+            $moduleName = (string) $moduleData['name'];
+            $existingModule = $targetCourse ? $this->findCourseModule($targetCourse, $moduleName) : null;
+            $module = $existingModule ?? new CourseModule(['name' => $moduleName]);
 
-            $module ? $moduleStats['update']++ : $moduleStats['create']++;
+            $existingModule ? $moduleStats['update']++ : $moduleStats['create']++;
 
-            foreach ($this->lessonsFromModuleData($moduleData) as $index => $lessonData) {
-                $slug = $this->lessonSlug((string) ($lessonData['name'] ?? ''), $index + 1);
+            foreach ($this->tracksFromModuleData($moduleData) as $trackData) {
+                $trackName = trim((string) ($trackData['name'] ?? '')) ?: 'Aulas';
+                $track = ($existingModule ? $this->resolveTrackForModule($existingModule, $trackName, $this->trackSlug($trackName, (int) ($trackData['sort_order'] ?? 1))) : null)
+                    ?? new CourseModuleTrack(['name' => $trackName]);
+                $usedLessonIds = [];
 
-                $lesson = $module ? $this->resolveReusableLesson($module, (string) ($lessonData['name'] ?? ''), $slug, $lessonData) : null;
+                foreach (array_values($trackData['lessons'] ?? []) as $index => $lessonData) {
+                    $title = trim((string) ($lessonData['name'] ?? ''));
 
-                $lesson ? $lessonStats['update']++ : $lessonStats['create']++;
+                    if ($title === '') {
+                        continue;
+                    }
+
+                    $slug = $this->lessonSlug($title, (int) ($lessonData['sort_order'] ?? ($index + 1)));
+                    $lesson = $this->resolveReusableLesson($module, $title, $slug, $lessonData, $track, $usedLessonIds);
+
+                    $lesson?->exists ? $lessonStats['update']++ : $lessonStats['create']++;
+                    $lesson && $this->lessonHasReadyMedia($lesson) ? $lessonStats['with_media']++ : $lessonStats['without_media']++;
+
+                    if ($lesson?->exists) {
+                        $usedLessonIds[] = $lesson->id;
+                    }
+                }
             }
         }
 
@@ -262,6 +300,36 @@ class CourseSpreadsheetImporter
         Storage::disk('local')->delete($run->stored_path);
 
         return $run->fresh();
+    }
+
+    /**
+     * Roda um passo da importação dentro do polling da tela. Uma falha fica registrada na própria
+     * importação: se subisse como exceção, a página daria 500 a cada 5 segundos sem dizer o motivo.
+     */
+    public function processImportRunExclusively(CourseSpreadsheetImportRun $run): CourseSpreadsheetImportRun
+    {
+        $lock = Cache::lock('course-spreadsheet-import-run-'.$run->id, 300);
+
+        if (! $lock->get()) {
+            return $run;
+        }
+
+        try {
+            return $this->processImportRun($run);
+        } catch (Throwable $exception) {
+            report($exception);
+
+            $run->forceFill([
+                'status' => 'failed',
+                'latest_message' => 'A importação falhou.',
+                'error_message' => Str::limit($exception->getMessage(), 500),
+                'finished_at' => now(),
+            ])->save();
+
+            return $run->fresh();
+        } finally {
+            $lock->release();
+        }
     }
 
     protected function recoverCompletedRunIfPossible(CourseSpreadsheetImportRun $run): CourseSpreadsheetImportRun
@@ -738,6 +806,7 @@ class CourseSpreadsheetImporter
     protected function importLessons(Course $course, CourseModule $module, CourseModuleTrack $track, array $lessons): void
     {
         $usedLessonIds = [];
+        $this->targetCourseId = (int) $course->id;
 
         foreach (array_values($lessons) as $index => $lessonData) {
             $title = trim((string) ($lessonData['name'] ?? ''));
@@ -760,6 +829,7 @@ class CourseSpreadsheetImporter
                         'slug' => $slug,
                     ]));
             $lessonExists = $lesson->exists;
+            $usedByOtherCourse = $lessonExists && $this->lessonIsUsedByOtherCourse($lesson, $course);
             $matchedStandaloneLibraryLesson = $lessonExists
                 && blank($lesson->course_id)
                 && blank($lesson->course_module_id)
@@ -774,37 +844,46 @@ class CourseSpreadsheetImporter
                 || filled($lesson->video?->embed_url)
                 || filled($lesson->video?->player_url);
             $previousMetadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+            // A aula com vídeo ou usada em outro curso pertence à biblioteca: reaproveitar não pode
+            // mudar o que os outros cursos exibem nem a pasta que identifica o contexto dela.
+            $keepsLibraryData = $lessonExists && ($usedByOtherCourse || $this->lessonHasReadyMedia($lesson));
             $libraryFolderPath = collect([$module->name, $track->name])->filter()->join(' / ');
-            $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'spreadsheet']);
+            $lessonFolderId = $keepsLibraryData
+                ? $lesson->lesson_folder_id
+                : $this->libraryFolderId($libraryFolderPath);
+            $importMetadata = $keepsLibraryData
+                ? []
+                : [
+                    'source' => 'spreadsheet',
+                    'library_folder_name' => $track->name,
+                    'library_folder_path' => $libraryFolderPath,
+                ];
 
             $lesson->fill([
                 'course_id' => null,
-                'lesson_folder_id' => $lessonFolder?->id,
+                'lesson_folder_id' => $lessonFolderId,
                 'course_module_id' => $this->resolveLessonModuleId($lesson, $module),
                 'course_module_track_id' => $this->resolveLessonTrackId($lesson, $track),
-                'title' => $title,
+                'title' => $usedByOtherCourse ? $lesson->title : $title,
                 'slug' => $lessonExists ? $lesson->slug : $slug,
                 'description' => $lessonExists && $lesson->description !== 'Aula importada por planilha.'
                     ? $lesson->description
                     : null,
                 'type' => $this->normalizeLessonType((string) ($lessonData['type'] ?? 'video')),
                 'thumbnail_url' => $lessonData['thumbnail_url'] ?? $lesson->thumbnail_url,
-                'duration_seconds' => $minutes * 60,
-                'sort_order' => $sortOrder,
+                'duration_seconds' => $keepsLibraryData && (int) $lesson->duration_seconds > 0 ? $lesson->duration_seconds : $minutes * 60,
+                'sort_order' => $usedByOtherCourse ? $lesson->sort_order : $sortOrder,
                 'status' => $this->spreadsheetLessonStatus($hasReadyMedia),
                 'panda_video_id' => $pandaVideoId ?: $lesson->panda_video_id,
                 'panda_embed_url' => $lessonData['panda_embed_url'] ?? $lesson->panda_embed_url,
                 'panda_player_url' => $lessonData['panda_player_url'] ?? $lesson->panda_player_url,
                 'google_doc_url' => $lessonData['google_doc_url'] ?? $lesson->google_doc_url,
-                'source_status' => $this->spreadsheetLessonSourceStatus($hasReadyMedia),
-                'metadata' => array_merge($previousMetadata, [
-                    'source' => 'spreadsheet',
+                'source_status' => $this->spreadsheetLessonSourceStatus($lesson, $hasReadyMedia),
+                'metadata' => array_merge($previousMetadata, $importMetadata, [
                     'matched_existing_lesson' => $lessonExists,
                     'matched_standalone_library_lesson' => $matchedStandaloneLibraryLesson,
                     'matched_by_name' => $lessonExists && $this->lessonNamesMatch($lesson->title, $title),
                     'matched_by_duration' => $lessonExists && $this->lessonDurationMatchesImport($lesson, $lessonData),
-                    'library_folder_name' => $track->name,
-                    'library_folder_path' => $libraryFolderPath,
                     'imported_at' => now()->toIso8601String(),
                 ]),
             ]);
@@ -852,6 +931,55 @@ class CourseSpreadsheetImporter
             ->where('course_module_track_id', $track->id)
             ->when($usedLessonIds !== [], fn ($query) => $query->whereNotIn('lesson_id', $usedLessonIds))
             ->delete();
+
+        $this->detachLessonsOutsideAnyCourseScope($module, $track, $usedLessonIds);
+    }
+
+    /**
+     * Tira da trilha as aulas que nenhum curso usa mais nela, como o placeholder trocado por uma
+     * aula com vídeo. Sem isso, a aula antiga continuaria aparecendo na trilha.
+     */
+    protected function detachLessonsOutsideAnyCourseScope(CourseModule $module, CourseModuleTrack $track, array $usedLessonIds): void
+    {
+        $orphanLessonIds = DB::table('course_module_track_lessons')
+            ->where('course_module_track_id', $track->id)
+            ->when($usedLessonIds !== [], fn ($query) => $query->whereNotIn('lesson_id', $usedLessonIds))
+            ->whereNotExists(fn ($query) => $query
+                ->selectRaw('1')
+                ->from('course_module_track_lesson_course')
+                ->whereColumn('course_module_track_lesson_course.lesson_id', 'course_module_track_lessons.lesson_id')
+                ->where('course_module_track_lesson_course.course_module_track_id', $track->id))
+            ->pluck('lesson_id');
+
+        if ($orphanLessonIds->isEmpty()) {
+            return;
+        }
+
+        $track->lessons()->detach($orphanLessonIds->all());
+
+        $lessonIdsInOtherTracks = DB::table('course_module_track_lessons')
+            ->whereIn('course_module_track_id', $module->tracks()->pluck('id'))
+            ->whereIn('lesson_id', $orphanLessonIds)
+            ->pluck('lesson_id');
+
+        $module->onlineLessons()->detach($orphanLessonIds->diff($lessonIdsInOtherTracks)->all());
+    }
+
+    protected function lessonIsUsedByOtherCourse(Lesson $lesson, Course $course): bool
+    {
+        return DB::table('course_module_track_lesson_course')
+            ->where('lesson_id', $lesson->id)
+            ->where('course_id', '!=', $course->id)
+            ->exists();
+    }
+
+    protected function libraryFolderId(string $path): ?int
+    {
+        if (array_key_exists($path, $this->folderIds)) {
+            return $this->folderIds[$path];
+        }
+
+        return $this->folderIds[$path] = LessonFolder::findOrCreatePath($path, ['source' => 'spreadsheet'])?->id;
     }
 
     protected function spreadsheetLessonStatus(bool $hasReadyMedia): string
@@ -859,8 +987,13 @@ class CourseSpreadsheetImporter
         return 'published';
     }
 
-    protected function spreadsheetLessonSourceStatus(bool $hasReadyMedia): string
+    protected function spreadsheetLessonSourceStatus(Lesson $lesson, bool $hasReadyMedia): string
     {
+        // Envio e processamento em andamento não podem ser apagados por uma reimportação.
+        if ($lesson->exists && in_array($lesson->source_status, ['uploading', 'upload_queued', 'upload_failed', 'panda_processing'], true)) {
+            return $lesson->source_status;
+        }
+
         return $hasReadyMedia ? 'media_ready' : 'awaiting_media';
     }
 
@@ -898,44 +1031,26 @@ class CourseSpreadsheetImporter
         return in_array($status, ['draft', 'published', 'archived'], true) ? $status : 'published';
     }
 
-    protected function resolveModuleForCourse(Course $course, string $moduleName): ?CourseModule
-    {
-        return $course->modules()
-            ->where('course_modules.name', $moduleName)
-            ->first()
-            ?? CourseModule::query()
-                ->when($this->removedStructureModuleIds !== [], fn ($query) => $query->whereNotIn('id', $this->removedStructureModuleIds))
-                ->where('name', $moduleName)
-                ->get()
-                ->first(fn (CourseModule $module): bool => $this->normalizeName($module->name) === $this->normalizeName($moduleName));
-    }
-
-    protected function resolveReusableModule(string $moduleName): ?CourseModule
-    {
-        $normalizedName = $this->normalizeName($moduleName);
-
-        return CourseModule::query()
-            ->when($this->removedStructureModuleIds !== [], fn ($query) => $query->whereNotIn('id', $this->removedStructureModuleIds))
-            ->orderBy('id')
-            ->get()
-            ->first(fn (CourseModule $module) => $this->normalizeName($module->name) === $normalizedName);
-    }
-
     protected function resolveModuleForImport(Course $course, array $moduleData): CourseModule
     {
         $moduleName = (string) $moduleData['name'];
 
+        return $this->findCourseModule($course, $moduleName)
+            ?? new CourseModule([
+                'course_id' => null,
+                'name' => $moduleName,
+            ]);
+    }
+
+    protected function findCourseModule(Course $course, string $moduleName): ?CourseModule
+    {
         return $course->modules()
             ->where('course_modules.name', $moduleName)
             ->first()
             ?? CourseModule::query()
                 ->where('course_id', $course->id)
                 ->where('name', $moduleName)
-                ->first()
-            ?? new CourseModule([
-            'course_id' => null,
-            'name' => $moduleName,
-        ]);
+                ->first();
     }
 
     protected function cloneReusableModuleForImport(CourseModule $sourceModule, array $moduleData): CourseModule
@@ -1126,17 +1241,19 @@ class CourseSpreadsheetImporter
             $fallbackLesson ??= $lesson;
         }
 
-        $matchedLesson = $this->reusableLessonCandidatesFor($title, $module, $track, $lessonData)
+        $lessonIdsInUse = $this->lessonIdsInUse($track);
+        $matchedLesson = $this->reusableLessonCandidatesFor($title, $module, $track)
             ->when($excludeLessonIds !== [], fn (Collection $lessons) => $lessons->whereNotIn('id', $excludeLessonIds))
             ->map(fn (Lesson $lesson): array => [
                 'lesson' => $lesson,
                 'score' => $this->lessonMatchScore($lesson, $title, $module, $track, $lessonData),
                 'media_priority' => $this->lessonMediaPriority($lesson),
+                'in_use' => isset($lessonIdsInUse[$lesson->id]),
             ])
             ->filter(fn (array $candidate): bool => $candidate['score'] >= 72)
             ->sort(function (array $left, array $right): int {
-                return [$right['media_priority'], $right['score'], -$right['lesson']->id]
-                    <=> [$left['media_priority'], $left['score'], -$left['lesson']->id];
+                return [$right['media_priority'], $right['in_use'], $right['score'], -$right['lesson']->id]
+                    <=> [$left['media_priority'], $left['in_use'], $left['score'], -$left['lesson']->id];
             });
 
         $exactMatchedCandidate = $this->isGenericLessonTitle($title)
@@ -1155,10 +1272,7 @@ class CourseSpreadsheetImporter
     {
         $candidate = $this->reusableVideoCandidatesFor($title, $module, $track)
             ->map(function (Video $video) use ($title, $module, $track, $lessonData, $excludeLessonIds): array {
-                $lesson = $video->lessons()
-                    ->with('video')
-                    ->orderBy('id')
-                    ->first();
+                $lesson = $this->firstLessonForVideo($video);
 
                 if ($lesson && in_array((int) $lesson->id, array_map('intval', $excludeLessonIds), true)) {
                     return ['video' => $video, 'lesson' => null, 'score' => 0.0];
@@ -1233,6 +1347,15 @@ class CourseSpreadsheetImporter
         ]);
     }
 
+    protected function tracksFromModuleData(array $moduleData): array
+    {
+        return array_values($moduleData['tracks'] ?? [[
+            'name' => $moduleData['track_name'] ?? 'Aulas',
+            'sort_order' => 1,
+            'lessons' => $moduleData['lessons'] ?? [],
+        ]]);
+    }
+
     protected function lessonsFromModuleData(array $moduleData): array
     {
         if (! empty($moduleData['tracks'])) {
@@ -1268,7 +1391,8 @@ class CourseSpreadsheetImporter
     protected function lessonMatchScore(Lesson $lesson, string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $lessonData = []): float
     {
         $titleKey = $this->matchKey($title);
-        [$lessonKey, $score] = $this->bestLessonTitleMatch($lesson, $titleKey);
+        [$lessonKey, $score, $matchedTitle] = $this->bestLessonTitleMatch($lesson, $titleKey);
+        $titleScore = $score;
 
         if ($score <= 0) {
             return 0;
@@ -1276,10 +1400,15 @@ class CourseSpreadsheetImporter
 
         $lessonNumber = $this->leadingNumber($lesson->title, 'lesson-title-'.$lesson->id);
         $titleNumber = $this->leadingNumber($title);
-        $lessonPartNumber = $this->partNumber($lesson->title);
+        // A parte vem do título que casou: a aula pode ter nome solto e um vídeo de outra parte.
+        $lessonPartNumber = $this->partNumber($matchedTitle);
         $titlePartNumber = $this->partNumber($title);
 
         $sameContextualNumber = $lessonNumber && $titleNumber && $lessonNumber === $titleNumber;
+
+        if ($lessonNumber && $titleNumber && ! $sameContextualNumber && $lessonKey === $titleKey && $this->isGenericLessonTitle($title)) {
+            return 0;
+        }
 
         if ($lessonNumber && $titleNumber) {
             $score += $lessonNumber === $titleNumber ? 8 : 0;
@@ -1293,20 +1422,23 @@ class CourseSpreadsheetImporter
             $score += 12;
         }
 
-        if (! $this->isGenericLessonTitle($title) && ! $this->titleCoresAreCompatible($lessonKey, $titleKey)) {
+        if (! $this->isGenericLessonTitle($title) && ! $this->titleCoresAreCompatible($lessonKey, $titleKey, $lessonPartNumber === $titlePartNumber)) {
             return 0;
         }
 
         $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
         $path = $this->matchKey((string) ($metadata['library_folder_path'] ?? $metadata['drive_source_folder_path'] ?? $lesson->folder?->path ?? ''), 'lesson-path-'.$lesson->id);
-        $trackKey = $track ? $this->matchKey($track->name, 'track-'.$track->id) : '';
-        $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
+        $trackKey = $track ? $this->contextKey($track->name, 'track', $track->id) : '';
+        $moduleKey = $this->contextKey($module->name, 'module', $module->id);
         $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
         $pathMatchesModule = $moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey);
         $lessonProduct = $this->contentProduct($lessonKey) ?? $this->contentProduct($path);
         $trackProduct = $this->contentProduct($trackKey);
 
-        if (! $this->lessonMatchesImportContext($lesson, $module, $track, $path)) {
+        // Aula que o curso já usa não precisa provar contexto: a pasta dela pode vir de outra importação.
+        $alreadyInUse = isset($this->lessonIdsInUse($track)[$lesson->id]);
+
+        if (! $alreadyInUse && ! $this->lessonMatchesImportContext($lesson, $module, $track, $path)) {
             return 0;
         }
 
@@ -1318,7 +1450,7 @@ class CourseSpreadsheetImporter
             return 0;
         }
 
-        if ($this->isGenericLessonTitle($title) && $lessonKey !== $titleKey && ! $pathMatchesTrack) {
+        if (! $alreadyInUse && $this->isGenericLessonTitle($title) && $lessonKey !== $titleKey && ! $pathMatchesTrack) {
             return 0;
         }
 
@@ -1334,25 +1466,30 @@ class CourseSpreadsheetImporter
             $score += 4;
         }
 
-        if ($this->isGenericLessonTitle($title) && $path !== '' && $trackKey !== '' && ! $this->pathMatchesContext($path, $trackKey)) {
+        if (! $alreadyInUse && $this->isGenericLessonTitle($title) && $path !== '' && $trackKey !== '' && ! $this->pathMatchesContext($path, $trackKey)) {
             return 0;
         }
 
         $durationScore = $this->lessonDurationMatchPercent($lesson, $lessonData);
 
-        if ($durationScore !== null) {
-            if ($durationScore >= 90) {
-                $score += 10;
-            } elseif ($durationScore >= 75) {
-                $score += 4;
-            } elseif ($durationScore < 50) {
-                $score -= 30;
-            } else {
-                $score -= 12;
-            }
-        }
+        $score += $this->durationAdjustment($durationScore, $titleScore);
 
         return round($score, 4);
+    }
+
+    /**
+     * Duração é um desempate. Quando o título já casou bem, ela não elimina a aula sozinha:
+     * a carga da planilha costuma ser estimada e diverge do vídeo real.
+     */
+    protected function durationAdjustment(?float $durationScore, float $titleScore): float
+    {
+        return match (true) {
+            $durationScore === null => 0.0,
+            $durationScore >= 90 => 10.0,
+            $durationScore >= 75 => 4.0,
+            $durationScore < 50 && $titleScore < 85 => -30.0,
+            default => -12.0,
+        };
     }
 
     protected function lessonDurationMatchPercent(Lesson $lesson, array $lessonData): ?float
@@ -1418,13 +1555,17 @@ class CourseSpreadsheetImporter
         return count(array_filter(explode(' ', $this->matchKey($title)))) <= 2;
     }
 
+    /**
+     * Carrega a biblioteca inteira uma vez por importação. A busca antes parava nos 250 primeiros
+     * resultados de um LIKE, e aulas com palavras comuns podiam ficar de fora.
+     */
     protected function reusableLessonCandidates(): Collection
     {
         if ($this->reusableLessonCandidates instanceof Collection) {
             return $this->reusableLessonCandidates;
         }
 
-        return $this->reusableLessonCandidates = Lesson::query()
+        $this->reusableLessonCandidates = Lesson::query()
             ->select([
                 'id',
                 'course_id',
@@ -1447,140 +1588,165 @@ class CourseSpreadsheetImporter
                 'source_status',
                 'metadata',
             ])
-            ->with('video')
+            ->with(['video', 'folder'])
             ->orderBy('id')
-            ->get();
+            ->get()
+            ->keyBy('id');
+
+        foreach ($this->reusableLessonCandidates as $lesson) {
+            $this->indexLesson($lesson);
+        }
+
+        return $this->reusableLessonCandidates;
     }
 
-    protected function reusableLessonCandidatesFor(string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $lessonData = []): Collection
+    protected function reusableVideoCandidates(): Collection
     {
-        $cacheKey = implode('|', [
-            $this->matchKey($title),
-            $this->matchKey($module->name, 'module-'.$module->id),
-            $track ? $this->matchKey($track->name, 'track-'.$track->id) : '',
-            (string) max(0, (int) ($lessonData['minutes'] ?? 0)),
-        ]);
-
-        if (array_key_exists($cacheKey, $this->reusableLessonCandidateCache)) {
-            return $this->reusableLessonCandidateCache[$cacheKey];
+        if ($this->reusableVideoCandidates instanceof Collection) {
+            return $this->reusableVideoCandidates;
         }
 
-        $titleTokens = $this->candidateTitleSearchTokens($title);
-        $contextTokens = count($titleTokens) < 2 ? $this->candidateContextSearchTokens($module, $track) : [];
-
-        if ($titleTokens === [] && $contextTokens === []) {
-            return $this->reusableLessonCandidateCache[$cacheKey] = collect();
-        }
-
-        return $this->reusableLessonCandidateCache[$cacheKey] = Lesson::query()
-            ->select([
-                'id',
-                'course_id',
-                'lesson_folder_id',
-                'video_id',
-                'course_module_id',
-                'course_module_track_id',
-                'title',
-                'slug',
-                'description',
-                'type',
-                'thumbnail_url',
-                'duration_seconds',
-                'sort_order',
-                'status',
-                'panda_video_id',
-                'panda_embed_url',
-                'panda_player_url',
-                'google_doc_url',
-                'source_status',
-                'metadata',
-            ])
-            ->with('video')
-            ->when($titleTokens !== [], function ($query) use ($titleTokens): void {
-                $query->where(function ($query) use ($titleTokens): void {
-                    foreach ($titleTokens as $token) {
-                        $query->orWhere('title', 'like', '%'.$token.'%')
-                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
-                            ->orWhereHas('video', function ($query) use ($token): void {
-                                $query->where('title', 'like', '%'.$token.'%')
-                                    ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
-                                    ->orWhere('provider_video_id', 'like', '%'.$token.'%');
-                            });
-                    }
-                });
-            })
-            ->when($titleTokens === [] && $contextTokens !== [], function ($query) use ($contextTokens): void {
-                $query->where(function ($query) use ($contextTokens): void {
-                    foreach ($contextTokens as $token) {
-                        $query->orWhere('title', 'like', '%'.$token.'%')
-                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
-                            ->orWhere('metadata->drive_source_folder_path', 'like', '%'.$token.'%')
-                            ->orWhere('metadata->library_folder_path', 'like', '%'.$token.'%')
-                            ->orWhereHas('folder', fn ($query) => $query->where('path', 'like', '%'.$token.'%'))
-                            ->orWhereHas('video', function ($query) use ($token): void {
-                                $query->where('title', 'like', '%'.$token.'%')
-                                    ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
-                                    ->orWhere('metadata->drive_source_folder_path', 'like', '%'.$token.'%')
-                                    ->orWhere('metadata->library_folder_path', 'like', '%'.$token.'%');
-                            });
-                    }
-                });
-            })
-            ->orderByRaw("(case when panda_video_id is not null or panda_embed_url is not null or panda_player_url is not null or exists (select 1 from videos where videos.id = lessons.video_id and (videos.provider_video_id is not null or videos.embed_url is not null or videos.player_url is not null)) then 0 when source_status = 'media_ready' then 1 else 2 end)")
-            ->orderBy('id')
-            ->limit(250)
-            ->get();
-    }
-
-    protected function reusableVideoCandidatesFor(string $title, CourseModule $module, ?CourseModuleTrack $track = null): Collection
-    {
-        $titleTokens = $this->candidateTitleSearchTokens($title);
-        $contextTokens = count($titleTokens) < 2 ? $this->candidateContextSearchTokens($module, $track) : [];
-
-        if ($titleTokens === [] && $contextTokens === []) {
-            return collect();
-        }
-
-        return Video::query()
-            ->with(['folder', 'lessons'])
+        $this->reusableVideoCandidates = Video::query()
+            ->with('folder')
             ->where(function ($query): void {
                 $query->whereNotNull('provider_video_id')
                     ->orWhereNotNull('embed_url')
                     ->orWhereNotNull('player_url')
                     ->orWhere('source_status', 'media_ready');
             })
-            ->when($titleTokens !== [], function ($query) use ($titleTokens): void {
-                $query->where(function ($query) use ($titleTokens): void {
-                    foreach ($titleTokens as $token) {
-                        $query->orWhere('title', 'like', '%'.$token.'%')
-                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
-                            ->orWhere('provider_video_id', 'like', '%'.$token.'%');
-                    }
-                });
-            })
-            ->when($titleTokens === [] && $contextTokens !== [], function ($query) use ($contextTokens): void {
-                $query->where(function ($query) use ($contextTokens): void {
-                    foreach ($contextTokens as $token) {
-                        $query->orWhere('title', 'like', '%'.$token.'%')
-                            ->orWhere('slug', 'like', '%'.Str::slug($token).'%')
-                            ->orWhere('metadata->drive_source_folder_path', 'like', '%'.$token.'%')
-                            ->orWhere('metadata->library_folder_path', 'like', '%'.$token.'%')
-                            ->orWhereHas('folder', fn ($query) => $query->where('path', 'like', '%'.$token.'%'));
-                    }
-                });
-            })
-            ->orderByRaw('(case when provider_video_id is not null or embed_url is not null or player_url is not null then 0 when source_status = ? then 1 else 2 end)', ['media_ready'])
             ->orderBy('id')
-            ->limit(250)
-            ->get();
+            ->get()
+            ->keyBy('id');
+
+        foreach ($this->reusableVideoCandidates as $video) {
+            $metadata = is_array($video->metadata) ? $video->metadata : [];
+
+            $this->addToIndex($this->videoIndex, $video->id, 'title', [$video->title, $video->provider_video_id]);
+            $this->addToIndex($this->videoIndex, $video->id, 'context', [$metadata['library_folder_path'] ?? null, $metadata['drive_source_folder_path'] ?? null, $video->folder?->path]);
+        }
+
+        return $this->reusableVideoCandidates;
+    }
+
+    protected function indexLesson(Lesson $lesson): void
+    {
+        $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+
+        $this->addToIndex($this->lessonIndex, $lesson->id, 'title', [$lesson->title, $lesson->video?->title, $lesson->video?->provider_video_id]);
+        $this->addToIndex($this->lessonIndex, $lesson->id, 'context', [$lesson->title, $metadata['library_folder_path'] ?? null, $metadata['drive_source_folder_path'] ?? null, $lesson->folder?->path]);
+
+        if (filled($lesson->video_id)) {
+            $current = $this->lessonIdsByVideo[$lesson->video_id] ?? null;
+            $this->lessonIdsByVideo[$lesson->video_id] = $current === null ? (int) $lesson->id : min($current, (int) $lesson->id);
+        }
+    }
+
+    protected function addToIndex(array &$index, int|string $id, string $kind, array $values): void
+    {
+        foreach ($values as $value) {
+            if (blank($value)) {
+                continue;
+            }
+
+            foreach ($this->indexStems((string) $value) as $stem) {
+                $index[$kind][$stem][$id] = true;
+            }
+        }
+    }
+
+    /**
+     * Radical de cada palavra, para "função" e "funções" caírem na mesma entrada do índice.
+     */
+    protected function indexStems(string $value): array
+    {
+        return collect($this->comparisonTokens($this->matchKey($value)))
+            ->map(fn (string $token): string => mb_substr($token, 0, 5))
+            ->unique()
+            ->all();
+    }
+
+    protected function indexedIds(array $index, string $kind, array $tokens): array
+    {
+        $ids = [];
+
+        foreach ($tokens as $token) {
+            $ids += $index[$kind][mb_substr($token, 0, 5)] ?? [];
+        }
+
+        return array_keys($ids);
+    }
+
+    protected function reusableLessonCandidatesFor(string $title, CourseModule $module, ?CourseModuleTrack $track = null): Collection
+    {
+        $lessons = $this->reusableLessonCandidates();
+
+        return $lessons->only($this->libraryCandidateIds($this->lessonIndex, $title, $module, $track));
+    }
+
+    protected function reusableVideoCandidatesFor(string $title, CourseModule $module, ?CourseModuleTrack $track = null): Collection
+    {
+        $videos = $this->reusableVideoCandidates();
+
+        return $videos->only($this->libraryCandidateIds($this->videoIndex, $title, $module, $track));
+    }
+
+    protected function libraryCandidateIds(array $index, string $title, CourseModule $module, ?CourseModuleTrack $track): array
+    {
+        $titleTokens = $this->candidateTitleSearchTokens($title);
+
+        if ($titleTokens !== []) {
+            return $this->indexedIds($index, 'title', $titleTokens);
+        }
+
+        return $this->indexedIds($index, 'context', $this->candidateContextSearchTokens($module, $track));
+    }
+
+    protected function firstLessonForVideo(Video $video): ?Lesson
+    {
+        $this->reusableLessonCandidates();
+
+        $lessonId = $this->lessonIdsByVideo[$video->id] ?? null;
+
+        return $lessonId !== null ? $this->reusableLessonCandidates->get($lessonId) : null;
+    }
+
+    /**
+     * Aulas que o curso já usa ganham das duplicatas do mesmo vídeo: o progresso dos alunos fica
+     * preso à aula, e trocá-la numa reimportação zeraria esse histórico.
+     */
+    protected function lessonIdsInUse(?CourseModuleTrack $track): array
+    {
+        $this->courseLessonIds ??= $this->targetCourseId
+            ? DB::table('course_module_track_lesson_course')
+                ->where('course_id', $this->targetCourseId)
+                ->pluck('lesson_id')
+                ->flip()
+                ->all()
+            : [];
+
+        if (! $track?->exists) {
+            return $this->courseLessonIds;
+        }
+
+        $this->trackLessonIds[$track->id] ??= $track->lessons()->pluck('lessons.id')->flip()->all();
+
+        return $this->courseLessonIds + $this->trackLessonIds[$track->id];
     }
 
     protected function videoMatchScore(Video $video, string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $lessonData = []): float
     {
         $titleKey = $this->matchKey($title);
         [$videoKey, $score] = $this->bestVideoTitleMatch($video, $titleKey);
+        $titleScore = $score;
 
         if ($score <= 0) {
+            return 0.0;
+        }
+
+        $videoNumber = $this->leadingNumber((string) $video->title);
+        $titleNumber = $this->leadingNumber($title);
+
+        if ($videoNumber && $titleNumber && $videoNumber !== $titleNumber && $videoKey === $titleKey && $this->isGenericLessonTitle($title)) {
             return 0.0;
         }
 
@@ -1595,15 +1761,15 @@ class CourseSpreadsheetImporter
             $score += 12;
         }
 
-        if (! $this->isGenericLessonTitle($title) && ! $this->titleCoresAreCompatible($videoKey, $titleKey)) {
+        if (! $this->isGenericLessonTitle($title) && ! $this->titleCoresAreCompatible($videoKey, $titleKey, $videoPartNumber === $titlePartNumber)) {
             return 0.0;
         }
 
         $metadata = is_array($video->metadata) ? $video->metadata : [];
         $rawPath = (string) ($metadata['library_folder_path'] ?? $metadata['drive_source_folder_path'] ?? $video->folder?->path ?? '');
         $path = $this->matchKey($rawPath, 'video-path-'.$video->id);
-        $trackKey = $track ? $this->matchKey($track->name, 'track-'.$track->id) : '';
-        $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
+        $trackKey = $track ? $this->contextKey($track->name, 'track', $track->id) : '';
+        $moduleKey = $this->contextKey($module->name, 'module', $module->id);
         $pathMatchesTrack = $trackKey !== '' && $this->pathMatchesContext($path, $trackKey);
         $pathMatchesModule = $moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey);
         $videoProduct = $this->contentProduct($path) ?? $this->contentProduct($videoKey);
@@ -1635,17 +1801,7 @@ class CourseSpreadsheetImporter
 
         $durationScore = $this->videoDurationMatchPercent($video, $lessonData);
 
-        if ($durationScore !== null) {
-            if ($durationScore >= 90) {
-                $score += 10;
-            } elseif ($durationScore >= 75) {
-                $score += 4;
-            } elseif ($durationScore < 50) {
-                $score -= 30;
-            } else {
-                $score -= 12;
-            }
-        }
+        $score += $this->durationAdjustment($durationScore, $titleScore);
 
         return round($score, 4);
     }
@@ -1692,29 +1848,28 @@ class CourseSpreadsheetImporter
         return $this->filterCandidateSearchTokens([
             ...$this->comparisonTokens($this->matchKey($title)),
             ...$this->knownAcronymSearchTokens($title),
-        ], 4);
+        ]);
     }
 
     protected function candidateContextSearchTokens(CourseModule $module, ?CourseModuleTrack $track = null): array
     {
-        $tokens = $track ? $this->comparisonTokens($this->matchKey($track->name, 'track-'.$track->id)) : [];
-        $tokens = array_merge($tokens, $this->comparisonTokens($this->matchKey($module->name, 'module-'.$module->id)));
+        $tokens = $track ? $this->comparisonTokens($this->contextKey($track->name, 'track', $track->id)) : [];
+        $tokens = array_merge($tokens, $this->comparisonTokens($this->contextKey($module->name, 'module', $module->id)));
         $tokens = array_merge($tokens, $track ? $this->knownAcronymSearchTokens($track->name) : []);
         $tokens = array_merge($tokens, $this->knownAcronymSearchTokens($module->name));
 
-        return $this->filterCandidateSearchTokens($tokens, 3);
+        return $this->filterCandidateSearchTokens($tokens);
     }
 
-    protected function filterCandidateSearchTokens(array $tokens, int $limit): array
+    protected function filterCandidateSearchTokens(array $tokens): array
     {
         $knownAcronyms = ['lia', 'lai', 'lgpd', 'eca'];
 
         return collect($tokens)
             ->map(fn (string $token): string => trim($token))
             ->reject(fn (string $token): bool => in_array($token, ['aula', 'video', 'modulo', 'trilha'], true))
-            ->filter(fn (string $token): bool => mb_strlen($token) >= 4 || in_array($token, $knownAcronyms, true))
+            ->filter(fn (string $token): bool => mb_strlen($token) >= 3 || in_array($token, $knownAcronyms, true))
             ->unique()
-            ->take($limit)
             ->values()
             ->all();
     }
@@ -1745,36 +1900,34 @@ class CourseSpreadsheetImporter
 
     protected function rememberReusableLessonCandidate(?Lesson $lesson): void
     {
-        if (! $lesson || ! $this->reusableLessonCandidates instanceof Collection) {
-            foreach ($this->reusableLessonCandidateCache as $key => $candidates) {
-                if (! $candidates instanceof Collection) {
-                    continue;
-                }
-
-                $this->reusableLessonCandidateCache[$key] = $candidates
-                    ->reject(fn (Lesson $candidate): bool => (int) $candidate->id === (int) $lesson->id)
-                    ->push($lesson)
-                    ->sortBy('id')
-                    ->values();
-            }
-
+        if (! $lesson) {
             return;
         }
 
-        $this->reusableLessonCandidates = $this->reusableLessonCandidates
-            ->reject(fn (Lesson $candidate): bool => (int) $candidate->id === (int) $lesson->id)
-            ->push($lesson)
-            ->sortBy('id')
-            ->values();
+        $this->reusableLessonCandidates()->put($lesson->id, $lesson->load(['video', 'folder']));
+        $this->indexLesson($lesson);
     }
 
     protected function resetImportCaches(): void
     {
         $this->reusableLessonCandidates = null;
-        $this->reusableLessonCandidateCache = [];
+        $this->reusableVideoCandidates = null;
+        $this->lessonIndex = [];
+        $this->videoIndex = [];
+        $this->lessonIdsByVideo = [];
+        $this->trackLessonIds = [];
+        $this->targetCourseId = null;
+        $this->courseLessonIds = null;
+        $this->folderIds = [];
+        $this->matchScoreCache = [];
         $this->matchKeyCache = [];
         $this->leadingNumberCache = [];
         $this->removedStructureModuleIds = [];
+    }
+
+    protected function contextKey(string $value, string $type, mixed $id): string
+    {
+        return $this->matchKey($value, filled($id) ? $type.'-'.$id : null);
     }
 
     protected function matchKey(string $value, ?string $cacheKey = null): string
@@ -1801,6 +1954,11 @@ class CourseSpreadsheetImporter
             return 100.0;
         }
 
+        return $this->matchScoreCache[$leftKey."\0".$rightKey] ??= $this->calculateMatchScore($leftKey, $rightKey);
+    }
+
+    protected function calculateMatchScore(string $leftKey, string $rightKey): float
+    {
         similar_text($leftKey, $rightKey, $percent);
 
         return max($this->tokenOverlapPercent($leftKey, $rightKey), $percent);
@@ -1824,10 +1982,11 @@ class CourseSpreadsheetImporter
                 return [
                     $lessonKey,
                     max($titleScore, $directionalTitleScore >= 80 ? min(98, $directionalTitleScore + 8) : $titleScore),
+                    $value,
                 ];
             })
             ->sortByDesc(fn (array $match): float => $match[1])
-            ->first() ?? ['', 0.0];
+            ->first() ?? ['', 0.0, ''];
     }
 
     protected function tokenOverlapPercent(string $leftKey, string $rightKey): float
@@ -1845,8 +2004,11 @@ class CourseSpreadsheetImporter
         return count($union) > 0 ? (count($intersection) / count($union)) * 100 : 0.0;
     }
 
-    protected function titleCoresAreCompatible(string $leftKey, string $rightKey): bool
+    protected function titleCoresAreCompatible(string $candidateKey, string $titleKey, bool $samePart = true): bool
     {
+        $leftKey = $candidateKey;
+        $rightKey = $titleKey;
+
         if ($leftKey === '' || $rightKey === '') {
             return false;
         }
@@ -1862,13 +2024,20 @@ class CourseSpreadsheetImporter
             return true;
         }
 
-        return $this->tokenOverlapPercent($leftCore, $rightCore) >= 75;
+        if ($this->tokenOverlapPercent($leftCore, $rightCore) >= 75) {
+            return true;
+        }
+
+        // O título da biblioteca costuma vir com prefixos do Panda: basta conter todo o título da planilha.
+        return $samePart
+            && count($this->comparisonTokens($rightCore)) >= 3
+            && $this->directionalTokenMatchPercent($rightCore, $leftCore) === 100.0;
     }
 
     protected function titleCoreKey(string $key): string
     {
         return Str::of($key)
-            ->replaceMatches('/\bparte\s+0*\d{1,3}\b/u', '')
+            ->replaceMatches('/\b(?:parte|bloco)\s+0*\d{1,3}\b/u', '')
             ->replaceMatches('/\b0*\d{1,3}\b/u', '')
             ->squish()
             ->value();
@@ -1918,7 +2087,7 @@ class CourseSpreadsheetImporter
             ->squish()
             ->value();
 
-        if (preg_match('/\bparte\s+0*(\d{1,3})\b/u', $key, $matches) !== 1) {
+        if (preg_match('/\b(?:parte|bloco)\s+0*(\d{1,3})\b/u', $key, $matches) !== 1) {
             return null;
         }
 
@@ -2012,8 +2181,8 @@ class CourseSpreadsheetImporter
             return true;
         }
 
-        $trackKey = $this->matchKey($track->name, 'track-'.$track->id);
-        $moduleKey = $this->matchKey($module->name, 'module-'.$module->id);
+        $trackKey = $this->contextKey($track->name, 'track', $track->id);
+        $moduleKey = $this->contextKey($module->name, 'module', $module->id);
 
         return $this->mediaPathMatchesImportContext($rawPath, $path, $moduleKey, $trackKey);
     }
@@ -2024,11 +2193,16 @@ class CourseSpreadsheetImporter
             return true;
         }
 
-        if ($trackKey !== '') {
-            return $this->pathMatchesContext($path, $trackKey);
+        if ($trackKey !== '' && $this->pathMatchesContext($path, $trackKey)) {
+            return true;
         }
 
-        return $moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey);
+        // Pasta só do módulo não identifica trilha. Com subpasta, a aula é de outra trilha do módulo.
+        if ($moduleKey === '' || preg_match('#[/\\\\]#', $rawPath) === 1) {
+            return $trackKey === '' && $moduleKey !== '' && $this->pathMatchesContext($path, $moduleKey);
+        }
+
+        return $this->pathMatchesContext($path, $moduleKey);
     }
 
     protected function contentProduct(string $value): ?string

@@ -7,8 +7,6 @@ use App\Models\CourseSpreadsheetImportRun;
 use App\Services\CourseSpreadsheetImporter;
 use Filament\Widgets\Concerns\CanPoll;
 use Filament\Widgets\Widget;
-use Illuminate\Database\QueryException;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Attributes\On;
 
@@ -35,19 +33,7 @@ class CourseSpreadsheetImportStatus extends Widget
         $run = $this->latestRun();
 
         if ($run && in_array($run->status, ['queued', 'running', 'failed'], true)) {
-            $lock = Cache::lock('course-spreadsheet-import-run-'.$run->id, 120);
-
-            if ($lock->get()) {
-                try {
-                    $run = app(CourseSpreadsheetImporter::class)->processImportRun($run);
-                } catch (QueryException $exception) {
-                    if (! str_contains($exception->getMessage(), 'database is locked')) {
-                        throw $exception;
-                    }
-                } finally {
-                    $lock->release();
-                }
-            }
+            $run = app(CourseSpreadsheetImporter::class)->processImportRunExclusively($run);
         }
 
         $problemMessage = $run ? $this->problemMessage($run) : null;
