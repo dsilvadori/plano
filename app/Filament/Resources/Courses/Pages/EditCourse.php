@@ -21,6 +21,7 @@ use Filament\Schemas\Components\Utilities\Set;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\HtmlString;
+use Throwable;
 
 class EditCourse extends EditRecord
 {
@@ -122,6 +123,8 @@ class EditCourse extends EditRecord
                             $set('preview_lesson_count', null);
                             $set('preview_lesson_create_count', null);
                             $set('preview_lesson_update_count', null);
+                            $set('preview_lesson_with_media_count', null);
+                            $set('preview_lesson_without_media_count', null);
                             $set('preview_track_count', null);
                             $set('preview_total_minutes', null);
 
@@ -152,7 +155,9 @@ class EditCourse extends EditRecord
                                 $set('preview_lesson_count', $preview['lessons']['total']);
                                 $set('preview_lesson_create_count', $preview['lessons']['create']);
                                 $set('preview_lesson_update_count', $preview['lessons']['update']);
-                                $set('preview_track_count', 1);
+                                $set('preview_lesson_with_media_count', $preview['lessons']['with_media']);
+                                $set('preview_lesson_without_media_count', $preview['lessons']['without_media']);
+                                $set('preview_track_count', self::countPreviewTracks($preview));
                                 $set('preview_total_minutes', $preview['total_minutes']);
                             } catch (Throwable $exception) {
                                 self::logCourseDebug('import.preview_failed', [
@@ -173,6 +178,8 @@ class EditCourse extends EditRecord
                     Hidden::make('preview_lesson_count'),
                     Hidden::make('preview_lesson_create_count'),
                     Hidden::make('preview_lesson_update_count'),
+                    Hidden::make('preview_lesson_with_media_count'),
+                    Hidden::make('preview_lesson_without_media_count'),
                     Hidden::make('preview_track_count'),
                     Hidden::make('preview_total_minutes'),
                     Hidden::make('preview_error'),
@@ -191,6 +198,8 @@ class EditCourse extends EditRecord
                             $lessonCount = (int) ($get('preview_lesson_count') ?? 0);
                             $lessonCreateCount = (int) ($get('preview_lesson_create_count') ?? 0);
                             $lessonUpdateCount = (int) ($get('preview_lesson_update_count') ?? 0);
+                            $lessonWithMediaCount = (int) ($get('preview_lesson_with_media_count') ?? 0);
+                            $lessonWithoutMediaCount = (int) ($get('preview_lesson_without_media_count') ?? 0);
                             $trackCount = (int) ($get('preview_track_count') ?? 0);
                             $totalMinutes = (int) ($get('preview_total_minutes') ?? 0);
 
@@ -199,7 +208,8 @@ class EditCourse extends EditRecord
                                 '<div><strong>Curso na planilha:</strong> '.e($courseName).'</div>',
                                 '<div><strong>Curso destino:</strong> '.e($this->record->name).'</div>',
                                 '<div><strong>Módulos importáveis:</strong> '.e((string) $moduleCount).' ('.e((string) $moduleCreateCount).' novos, '.e((string) $moduleUpdateCount).' atualizados)</div>',
-                                '<div><strong>Aulas importáveis:</strong> '.e((string) $lessonCount).' ('.e((string) $lessonCreateCount).' novas, '.e((string) $lessonUpdateCount).' atualizadas)</div>',
+                                '<div><strong>Aulas importáveis:</strong> '.e((string) $lessonCount).' ('.e((string) $lessonCreateCount).' novas, '.e((string) $lessonUpdateCount).' reaproveitadas)</div>',
+                                '<div><strong>Vídeos encontrados na biblioteca:</strong> '.e((string) $lessonWithMediaCount).' ('.e((string) $lessonWithoutMediaCount).' aulas ficarão sem vídeo)</div>',
                                 '<div><strong>Trilhas oficiais atualizadas:</strong> '.e((string) $trackCount).'</div>',
                                 '<div><strong>Carga total:</strong> '.e(self::formatPreviewMinutes($totalMinutes)).'</div>',
                                 '</div>',

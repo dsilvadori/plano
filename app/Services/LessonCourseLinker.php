@@ -71,7 +71,7 @@ class LessonCourseLinker
                                     continue;
                                 }
 
-                                if (! $this->readyLessonBelongsToTrack($lesson, $module, $track)) {
+                                if (! $hasSpreadsheetScope && ! $this->readyLessonBelongsToTrack($lesson, $module, $track)) {
                                     $track->lessons()->detach($lesson->id);
                                     DB::table('course_module_track_lesson_course')
                                         ->whereIn('course_id', $courseIds)

@@ -120,7 +120,7 @@ return [
 
         'course_debug' => [
             'driver' => 'single',
-            'path' => base_path('course-thumbnail-debug.log'),
+            'path' => storage_path('logs/course-debug.log'),
             'level' => 'debug',
             'replace_placeholders' => true,
         ],

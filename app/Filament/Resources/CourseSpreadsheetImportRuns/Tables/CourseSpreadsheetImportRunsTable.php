@@ -27,7 +27,7 @@ class CourseSpreadsheetImportRunsTable
                     ->label('Status')
                     ->state(function (CourseSpreadsheetImportRun $record): string {
                         if (in_array($record->status, ['queued', 'running', 'failed'], true)) {
-                            $record = app(CourseSpreadsheetImporter::class)->processImportRun($record);
+                            $record = app(CourseSpreadsheetImporter::class)->processImportRunExclusively($record);
                         }
 
                         return (string) $record->status;

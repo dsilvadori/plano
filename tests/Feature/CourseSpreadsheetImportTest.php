@@ -21,6 +21,7 @@ use App\Services\LessonCourseLinker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
@@ -58,6 +59,9 @@ class CourseSpreadsheetImportTest extends TestCase
 
     public function test_course_edit_accepts_stored_spreadsheet_upload_path(): void
     {
+        Storage::fake('local');
+        Storage::disk('local')->put('imports/courses/Administrador.xlsx', 'planilha');
+
         $method = new \ReflectionMethod(EditCourse::class, 'resolveUploadedSpreadsheetPath');
         $method->setAccessible(true);
 
@@ -381,7 +385,7 @@ class CourseSpreadsheetImportTest extends TestCase
             'name' => 'Curso Cache',
             'slug' => 'curso-cache',
         ]);
-        Cache::put("course:{$course->id}:catalog-modules:v2", collect(['stale']), 600);
+        Cache::put("course:{$course->id}:catalog-modules:v3", collect(['stale']), 600);
         Cache::put("course:{$course->id}:published-lessons-count:v2", 99, 600);
 
         $path = tempnam(sys_get_temp_dir(), 'course-import-cache-').'.csv';
@@ -396,7 +400,7 @@ class CourseSpreadsheetImportTest extends TestCase
             @unlink($path);
         }
 
-        $this->assertFalse(Cache::has("course:{$course->id}:catalog-modules:v2"));
+        $this->assertFalse(Cache::has("course:{$course->id}:catalog-modules:v3"));
         $this->assertFalse(Cache::has("course:{$course->id}:published-lessons-count:v2"));
     }
 
@@ -503,9 +507,7 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertSame('Curso Gabaritando CRT', $importedCourse->name);
         $this->assertSame('curso-gabaritando-crt', $importedCourse->slug);
         $this->assertFalse($importedCourse->is_active);
-        $this->assertDatabaseMissing('course_modules', [
-            'id' => $existingModule->id,
-        ]);
+        $this->assertFalse($course->modules()->whereKey($existingModule->id)->exists());
         $this->assertDatabaseHas('course_modules', [
             'course_id' => null,
             'name' => 'Português',
@@ -555,17 +557,13 @@ class CourseSpreadsheetImportTest extends TestCase
         $updatedModule = $course->modules()->where('name', 'Português')->first();
         $officialTrack->refresh();
 
-        $this->assertNotSame($existingImportedModule->id, $updatedModule->id);
+        $this->assertSame($existingImportedModule->id, $updatedModule->id);
         $this->assertSame('basic', $updatedModule->type);
         $this->assertSame(730, $updatedModule->workload_minutes);
         $this->assertNotSame('Conteúdo antigo', $updatedModule->lessons[0]['name']);
         $this->assertTrue($updatedModule->tracks()->where('name', 'Classe de palavras')->exists());
-        $this->assertDatabaseMissing('course_modules', [
-            'id' => $existingImportedModule->id,
-        ]);
-        $this->assertDatabaseMissing('course_modules', [
-            'id' => $staleModule->id,
-        ]);
+        $this->assertFalse($course->modules()->whereKey($staleModule->id)->exists());
+        $this->assertFalse($officialTrack->modules()->whereKey($staleModule->id)->exists());
         $this->assertDatabaseCount('study_tracks', 1);
         $this->assertSame('Trilha Oficial - Nome Antigo', $officialTrack->name);
         $this->assertTrue($officialTrack->modules()->whereKey($updatedModule->id)->exists());
@@ -2146,6 +2144,310 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertFalse($lawTrack->lessons()->whereKey($healthLawLesson->id)->exists());
         $this->assertTrue($judiciaryTrack->lessons()->where('lessons.title', 'Poder Judiciário - Parte 01')->exists());
         $this->assertTrue($lawTrack->lessons()->where('lessons.title', 'Lei Federal nº 10.048')->exists());
+    }
+
+    public function test_course_debug_log_failure_does_not_break_the_course_page(): void
+    {
+        config(['logging.channels.course_debug.path' => '/proc/sem-permissao/course-debug.log']);
+        app('log')->forgetChannel('course_debug');
+
+        $method = new \ReflectionMethod(EditCourse::class, 'logCourseDebug');
+        $method->invoke(null, 'import.preview_success', ['course_id' => 1]);
+
+        $this->addToAssertionCount(1);
+    }
+
+    public function test_course_debug_log_is_written_inside_storage(): void
+    {
+        $this->assertStringStartsWith(storage_path('logs'), config('logging.channels.course_debug.path'));
+    }
+
+    public function test_import_run_failure_is_recorded_instead_of_breaking_the_page(): void
+    {
+        Storage::fake('local');
+        Storage::disk('local')->put('imports/courses/invalida.csv', "coluna_errada\nvalor");
+
+        $run = CourseSpreadsheetImportRun::query()->create([
+            'course_name' => 'Curso Inválido',
+            'file_name' => 'invalida.csv',
+            'stored_path' => 'imports/courses/invalida.csv',
+            'status' => 'queued',
+            'total_modules' => 1,
+            'total_lessons' => 1,
+            'latest_message' => 'Importação na fila.',
+        ]);
+
+        $run = app(CourseSpreadsheetImporter::class)->processImportRunExclusively($run);
+
+        $this->assertSame('failed', $run->status);
+        $this->assertNotEmpty($run->error_message);
+    }
+
+    public function test_preview_reports_library_reuse_for_a_course_that_does_not_exist_yet(): void
+    {
+        $this->readyLesson('Classes de Palavras - Substantivo e Adjetivo', 'panda-substantivo', 'Português / Classe de palavras');
+
+        $path = $this->courseCsv([
+            'Curso Prévia,Português,basic,1,Classe de palavras,Classes de Palavras - Substantivo e Adjetivo,30',
+            'Curso Prévia,Português,basic,1,Classe de palavras,Assunto sem vídeo na biblioteca,30',
+        ]);
+
+        try {
+            $preview = app(CourseSpreadsheetImporter::class)->preview($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertSame(1, $preview['modules']['create']);
+        $this->assertSame(1, $preview['lessons']['update']);
+        $this->assertSame(1, $preview['lessons']['create']);
+        $this->assertSame(1, $preview['lessons']['with_media']);
+        $this->assertSame(1, $preview['lessons']['without_media']);
+    }
+
+    public function test_spreadsheet_import_finds_lesson_outside_the_first_search_results(): void
+    {
+        foreach (range(1, 260) as $number) {
+            $this->readyLesson("Direito Administrativo tema {$number}", "panda-tema-{$number}", 'Conhecimentos / Direito Administrativo');
+        }
+
+        $target = $this->readyLesson('Direito Administrativo Licitações e Contratos', 'panda-licitacoes', 'Conhecimentos / Direito Administrativo');
+
+        $path = $this->courseCsv([
+            'Curso Biblioteca Grande,Conhecimentos,specific,1,Direito Administrativo,Direito Administrativo - Licitações e Contratos,30',
+        ]);
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertTrue($course->linkedLessonsQuery()->whereKey($target->id)->exists());
+        $this->assertSame(261, Lesson::query()->where('title', '!=', 'Comece por aqui')->count());
+    }
+
+    public function test_spreadsheet_import_does_not_change_library_data_of_reused_lesson(): void
+    {
+        $lesson = $this->readyLesson('AULA 1 - GUIA INSERIR', 'panda-guia-inserir', 'Informática / Word 2016', ['duration_seconds' => 1234]);
+        $otherCourse = Course::factory()->create();
+        $otherModule = CourseModule::factory()->create(['course_id' => null]);
+        $otherTrack = CourseModuleTrack::query()->create([
+            'course_module_id' => $otherModule->id,
+            'name' => 'Word 2016',
+            'slug' => 'word-2016',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        DB::table('course_module_track_lesson_course')->insert([
+            'course_id' => $otherCourse->id,
+            'course_module_track_id' => $otherTrack->id,
+            'lesson_id' => $lesson->id,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        $folderId = $lesson->lesson_folder_id;
+
+        $path = $this->courseCsv([
+            'Curso Reuso Biblioteca,Informática,basic,1,Word 2016,Aula 1 - Guia Inserir,40',
+        ]);
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $lesson->refresh();
+
+        $this->assertTrue($course->linkedLessonsQuery()->whereKey($lesson->id)->exists());
+        $this->assertSame('AULA 1 - GUIA INSERIR', $lesson->title);
+        $this->assertSame(1234, (int) $lesson->duration_seconds);
+        $this->assertSame($folderId, $lesson->lesson_folder_id);
+        $this->assertSame('Informática / Word 2016', $lesson->metadata['library_folder_path']);
+    }
+
+    public function test_spreadsheet_import_checks_part_number_on_the_video_that_matched(): void
+    {
+        $video = Video::query()->create([
+            'title' => 'Administração Pública - Parte 01',
+            'slug' => 'administracao-publica-parte-01',
+            'provider' => 'panda',
+            'provider_video_id' => 'panda-adm-parte-01',
+            'duration_seconds' => 1200,
+            'source_status' => 'media_ready',
+        ]);
+        $lesson = Lesson::query()->create([
+            'video_id' => $video->id,
+            'title' => 'Princípios da Administração publica',
+            'slug' => 'principios-da-administracao-publica',
+            'type' => 'video',
+            'duration_seconds' => 1200,
+            'sort_order' => 1,
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => ['library_folder_path' => 'Conhecimentos / Administração Pública'],
+        ]);
+
+        $path = $this->courseCsv([
+            'Curso Partes Vídeo,Conhecimentos,specific,1,Administração Pública,Administração Pública – Parte 06,20',
+        ]);
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertFalse($course->linkedLessonsQuery()->whereKey($lesson->id)->exists());
+        $this->assertSame('Princípios da Administração publica', $lesson->fresh()->title);
+    }
+
+    public function test_spreadsheet_import_does_not_mix_numbered_blocks(): void
+    {
+        $blockOne = $this->readyLesson('Responsabilidade Civil do Estado - Bloco 1', 'panda-bloco-1', 'Direito / Responsabilidade Civil do Estado');
+        $blockTwo = $this->readyLesson('Responsabilidade Civil do Estado - Bloco 2', 'panda-bloco-2', 'Direito / Responsabilidade Civil do Estado');
+
+        $path = $this->courseCsv([
+            'Curso Blocos,Direito,specific,1,Responsabilidade Civil do Estado,Responsabilidade Civil do Estado – Bloco 2,30',
+        ]);
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertTrue($course->linkedLessonsQuery()->whereKey($blockTwo->id)->exists());
+        $this->assertFalse($course->linkedLessonsQuery()->whereKey($blockOne->id)->exists());
+    }
+
+    public function test_spreadsheet_import_does_not_fill_numbered_series_with_another_number(): void
+    {
+        $lesson = $this->readyLesson('5 - Bens Públicos', 'panda-bens-5', 'Conhecimentos / Bens Públicos');
+
+        $path = $this->courseCsv([
+            'Curso Série,Conhecimentos,specific,1,Bens Públicos,6 - Bens Públicos,20',
+        ]);
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertFalse($course->linkedLessonsQuery()->whereKey($lesson->id)->exists());
+    }
+
+    public function test_reimport_keeps_the_lesson_students_already_use_over_duplicate_of_same_video(): void
+    {
+        $older = $this->readyLesson('Tabela de Temporalidade', 'panda-tabela-a', 'Arquivologia / Gestão de documentos');
+        $inUse = $this->readyLesson('Tabela de Temporalidade', 'panda-tabela-b', 'Arquivologia / Gestão de documentos');
+        $course = Course::factory()->create();
+        $module = CourseModule::factory()->create(['course_id' => null, 'name' => 'Arquivologia']);
+        $course->modules()->attach($module->id, ['sort_order' => 1]);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Gestão de documentos',
+            'slug' => 'gestao-de-documentos',
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+        DB::table('course_module_track_lesson_course')->insert([
+            'course_id' => $course->id,
+            'course_module_track_id' => $track->id,
+            'lesson_id' => $inUse->id,
+            'sort_order' => 1,
+            'status' => 'published',
+        ]);
+
+        $path = $this->courseCsv([
+            $course->name.',Arquivologia,specific,1,Gestão de documentos,Aula 3 - Tabela de Temporalidade,20',
+        ]);
+
+        try {
+            app(CourseSpreadsheetImporter::class)->importInto($course, $path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertTrue($course->linkedLessonsQuery()->whereKey($inUse->id)->exists());
+        $this->assertFalse($course->linkedLessonsQuery()->whereKey($older->id)->exists());
+    }
+
+    public function test_spreadsheet_import_keeps_upload_in_progress_status_of_reused_lesson(): void
+    {
+        $lesson = Lesson::query()->create([
+            'title' => 'Conceitos de Arquivologia',
+            'slug' => 'conceitos-de-arquivologia',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => 1,
+            'source_status' => 'upload_queued',
+            'status' => 'published',
+            'metadata' => ['library_folder_path' => 'Arquivologia / Introdução'],
+        ]);
+
+        $path = $this->courseCsv([
+            'Curso Envio,Arquivologia,specific,1,Introdução,Conceitos de Arquivologia,20',
+        ]);
+
+        try {
+            app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $this->assertSame('upload_queued', $lesson->fresh()->source_status);
+    }
+
+    public function test_linker_keeps_ready_lesson_chosen_by_the_spreadsheet(): void
+    {
+        $lesson = $this->readyLesson('Classes de Palavras - Substantivo e Adjetivo', 'panda-modulo', 'Português');
+
+        $path = $this->courseCsv([
+            'Curso Linker,Português,basic,1,Classe de palavras,Classes de Palavras - Substantivo e Adjetivo,30',
+        ]);
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        app(LessonCourseLinker::class)->sync($course);
+
+        $this->assertTrue($course->linkedLessonsQuery()->whereKey($lesson->id)->exists());
+    }
+
+    protected function readyLesson(string $title, string $pandaVideoId, string $folderPath, array $attributes = []): Lesson
+    {
+        return Lesson::query()->create([
+            'lesson_folder_id' => LessonFolder::findOrCreatePath($folderPath)?->id,
+            'title' => $title,
+            'slug' => \Illuminate\Support\Str::slug($title).'-'.$pandaVideoId,
+            'type' => 'video',
+            'duration_seconds' => 1800,
+            'sort_order' => 1,
+            'panda_video_id' => $pandaVideoId,
+            'panda_embed_url' => 'https://player.example.com/'.$pandaVideoId,
+            'source_status' => 'media_ready',
+            'status' => 'published',
+            'metadata' => ['library_folder_path' => $folderPath],
+            ...$attributes,
+        ]);
+    }
+
+    protected function courseCsv(array $rows): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'course-import-').'.csv';
+
+        file_put_contents($path, implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            ...$rows,
+        ]));
+
+        return $path;
     }
 
     protected function createMinimalCourseSpreadsheet(array $options = []): string
