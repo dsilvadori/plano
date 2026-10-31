@@ -92,5 +92,5 @@ jobs:
           php artisan config:cache
           php artisan route:cache
           php artisan view:cache
-          php artisan queue:restart
+          php artisan queue:restart || echo "::warning::queue:restart falhou. Sem worker de fila no servidor, isso nao afeta o deploy."
           REMOTE
