@@ -76,6 +76,7 @@ jobs:
             --exclude='/bootstrap/cache' \
             --exclude='/public/storage' \
             --exclude='/public/hot' \
+            --exclude='/public/vendor' \
             --exclude='/database/*.sqlite' \
             --exclude='/tests' \
             --exclude='/docs' \
@@ -88,6 +89,7 @@ jobs:
           cd "$DEPLOY_PATH"
           php artisan package:discover --ansi
           php artisan migrate --force
+          php artisan vendor:publish --tag=livewire:assets --force
           php artisan optimize:clear
           php artisan config:cache
           php artisan route:cache
