@@ -71,7 +71,7 @@ class EditCourseModule extends EditRecord
 
                         Notification::make()
                             ->title('Aulas importadas da integração de vídeo.')
-                            ->body('Vídeos: '.($run->summary['videos'] ?? 0).'. Criadas: '.($run->summary['created'] ?? 0).'. Atualizadas: '.($run->summary['updated'] ?? 0).'.')
+                            ->body(PandaCourseImporter::summaryMessage($run))
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {

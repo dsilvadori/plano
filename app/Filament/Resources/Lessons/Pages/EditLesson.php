@@ -3,6 +3,8 @@
 namespace App\Filament\Resources\Lessons\Pages;
 
 use App\Filament\Resources\Lessons\LessonResource;
+use App\Filament\Resources\Lessons\PandaVideoUploadForm;
+use App\Services\LessonDirectVideoUploader;
 use App\Services\LessonPandaVideoImporter;
 use App\Services\PandaAiResourceActivator;
 use App\Services\PandaTutorActivator;
@@ -73,6 +75,67 @@ class EditLesson extends EditRecord
 
                         Notification::make()
                             ->title('Não foi possível importar o vídeo do Panda')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
+                }),
+            Action::make('uploadPandaVideo')
+                ->label('Enviar vídeo ao Panda')
+                ->icon('heroicon-o-arrow-up-tray')
+                ->modalHeading('Enviar vídeo desta aula ao Panda')
+                ->modalDescription(fn (): string => trim(
+                    'O arquivo é enviado ao Panda em segundo plano. Quando o Panda terminar de processar, a aula e a Biblioteca de Vídeos são atualizadas automaticamente. '
+                    .(LessonDirectVideoUploader::lessonHasPandaMedia($this->record) ? 'O vídeo atual continua no ar até o novo ser aceito pelo Panda. ' : '')
+                    .(PandaVideoUploadForm::statusDescription($this->record) ?? '')
+                ))
+                ->modalSubmitActionLabel('Enviar ao Panda')
+                ->form(fn (): array => PandaVideoUploadForm::fields($this->record))
+                ->action(function (array $data, LessonDirectVideoUploader $uploader): void {
+                    $path = PandaVideoUploadForm::storedPath($data);
+
+                    if ($path === null) {
+                        Notification::make()
+                            ->title('Selecione um arquivo de vídeo.')
+                            ->danger()
+                            ->send();
+
+                        return;
+                    }
+
+                    try {
+                        $this->record = $uploader->queue(
+                            $this->record,
+                            $path,
+                            PandaVideoUploadForm::originalName($data),
+                            (string) ($data['panda_folder_reference'] ?? ''),
+                            (string) ($data['panda_title'] ?? ''),
+                            (bool) ($data['create_panda_folder'] ?? false),
+                        );
+
+                        $this->refreshFormData([
+                            'type',
+                            'thumbnail_url',
+                            'duration_seconds',
+                            'duration_minutes_preview',
+                            'panda_video_id',
+                            'panda_status',
+                            'panda_embed_url',
+                            'panda_player_url',
+                            'source_status',
+                            'metadata',
+                        ]);
+
+                        Notification::make()
+                            ->title('Vídeo recebido.')
+                            ->body('O envio ao Panda segue em segundo plano. Acompanhe pelo status de origem da aula.')
+                            ->success()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        report($exception);
+
+                        Notification::make()
+                            ->title('Não foi possível enviar o vídeo ao Panda')
                             ->body($exception->getMessage())
                             ->danger()
                             ->send();

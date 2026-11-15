@@ -7,6 +7,7 @@ use App\Models\Lesson;
 use App\Services\ActiveStudyPlanRefresher;
 use App\Services\GoogleDriveTrackImporter;
 use App\Services\LessonCourseLinker;
+use App\Support\PandaUploadErrors;
 use DateTimeInterface;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -154,35 +155,12 @@ class UploadLessonToPanda implements ShouldQueue
 
     protected function isPandaUploadConcurrencyLimit(Throwable $exception): bool
     {
-        $message = strtolower($exception->getMessage());
-
-        return str_contains($message, 'upload concurrency limit')
-            || str_contains($message, 'reached the upload concurrency')
-            || str_contains($message, 'errcode":10')
-            || str_contains($message, 'errcode": 10');
+        return PandaUploadErrors::isConcurrencyLimit($exception);
     }
 
     protected function isRetryablePandaUploadError(Throwable $exception): bool
     {
-        $message = strtolower($exception->getMessage());
-
-        return $this->isPandaUploadConcurrencyLimit($exception)
-            || str_contains($message, 'status 408')
-            || str_contains($message, 'status 409')
-            || str_contains($message, 'status 425')
-            || str_contains($message, 'status 429')
-            || str_contains($message, 'status 500')
-            || str_contains($message, 'status 502')
-            || str_contains($message, 'status 503')
-            || str_contains($message, 'status 504')
-            || str_contains($message, 'timeout')
-            || str_contains($message, 'timed out')
-            || str_contains($message, 'connection')
-            || str_contains($message, 'temporarily')
-            || str_contains($message, 'try again')
-            || str_contains($message, 'too many requests')
-            || str_contains($message, 'rate limit')
-            || str_contains($message, 'server error');
+        return PandaUploadErrors::isRetryable($exception);
     }
 
     protected function backoffSeconds(): int

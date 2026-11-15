@@ -74,7 +74,7 @@ class ListVideos extends ListRecords
 
                         Notification::make()
                             ->title('Vídeos importados do Panda.')
-                            ->body('Vídeos: '.($run->summary['videos'] ?? 0).'. Criados: '.($run->summary['created'] ?? 0).'. Atualizados: '.($run->summary['updated'] ?? 0).'.')
+                            ->body(PandaCourseImporter::summaryMessage($run))
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {

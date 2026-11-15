@@ -919,3 +919,37 @@ Artisan::command('course-modules:sync-drive-media {courseId} {--folder-id= : ID 
 
     return 0;
 })->purpose('Marca aulas dos módulos com mídia importada a partir do Google Drive ou de um manifesto JSON');
+
+Artisan::command('panda:prune-direct-uploads {--hours= : Idade mínima, em horas, dos arquivos removidos}', function () {
+    $disk = Storage::disk(\App\Services\LessonDirectVideoUploader::disk());
+    $directory = \App\Services\LessonDirectVideoUploader::directory();
+    $hours = max(1, (int) ($this->option('hours') ?: config('services.panda.direct_upload_prune_hours', 48)));
+    $threshold = now()->subHours($hours)->getTimestamp();
+
+    // Arquivos ainda aguardando envio continuam protegidos, mesmo que antigos.
+    $pendingPaths = Lesson::query()
+        ->where('metadata', 'like', '%panda_direct_upload%')
+        ->get(['id', 'metadata'])
+        ->map(fn (Lesson $lesson) => data_get($lesson->metadata, 'panda_direct_upload'))
+        ->filter(fn ($upload): bool => is_array($upload) && in_array($upload['status'] ?? null, ['queued', 'uploading'], true))
+        ->pluck('path')
+        ->filter()
+        ->flip();
+
+    $deleted = 0;
+
+    foreach ($disk->allFiles($directory) as $path) {
+        if ($pendingPaths->has($path) || $disk->lastModified($path) > $threshold) {
+            continue;
+        }
+
+        $disk->delete($path);
+        $deleted++;
+    }
+
+    $this->info("{$deleted} arquivo(s) temporário(s) de upload removido(s).");
+
+    return 0;
+})->purpose('Remove vídeos temporários de upload direto ao Panda que ficaram para trás');
+
+\Illuminate\Support\Facades\Schedule::command('panda:prune-direct-uploads')->dailyAt('03:30');

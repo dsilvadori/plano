@@ -43,6 +43,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/dashboard/plano-de-estudos', DashboardController::class)->name('study-plans.dashboard');
     Route::get('/dashboard/cursos', [CourseCatalogController::class, 'index'])->name('courses.index');
     Route::get('/dashboard/meus-cursos', [CourseCatalogController::class, 'mine'])->name('courses.mine');
+    Route::get('/dashboard/busca', [CourseCatalogController::class, 'search'])->name('courses.search');
     Route::get('/dashboard/cursos/{course:slug}', [CourseCatalogController::class, 'show'])->name('courses.show');
     Route::get('/dashboard/cursos/{course:slug}/modulos', [CourseCatalogController::class, 'modules'])->name('courses.modules.index');
     Route::get('/dashboard/cursos/{course:slug}/modulos/{module}/trilhas', [CourseCatalogController::class, 'moduleTracks'])->name('courses.modules.tracks.index');

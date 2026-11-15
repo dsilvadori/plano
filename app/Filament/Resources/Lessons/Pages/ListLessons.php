@@ -3,10 +3,13 @@
 namespace App\Filament\Resources\Lessons\Pages;
 
 use App\Filament\Resources\Lessons\LessonResource;
+use App\Filament\Resources\Lessons\PandaVideoUploadForm;
 use App\Jobs\ImportGoogleDriveLessons;
 use App\Models\CourseModule;
 use App\Models\CourseModuleTrack;
 use App\Models\GoogleDriveImportRun;
+use App\Models\Lesson;
+use App\Services\LessonDirectVideoUploader;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
 use Filament\Forms\Components\Select;
@@ -16,6 +19,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -124,6 +128,136 @@ class ListLessons extends ListRecords
                             ->danger()
                             ->send();
                     }
+                }),
+            Action::make('createLessonFromVideo')
+                ->label('Nova aula com vídeo')
+                ->icon('heroicon-o-arrow-up-tray')
+                ->modalHeading('Criar aula enviando um vídeo ao Panda')
+                ->modalDescription('A aula é criada na hora e o vídeo segue para o Panda em segundo plano. Quando o Panda terminar de processar, a aula e a Biblioteca de Vídeos são atualizadas automaticamente.')
+                ->modalSubmitActionLabel('Criar aula e enviar')
+                ->form(fn (): array => [
+                    TextInput::make('title')
+                        ->label('Título da aula')
+                        ->required()
+                        ->maxLength(255),
+                    Select::make('course_module_id')
+                        ->label('Pasta')
+                        ->options(fn (): array => $this->moduleOptions(null))
+                        ->getSearchResultsUsing(fn (?string $search): array => $this->moduleSearchResults(null, $search))
+                        ->getOptionLabelUsing(fn ($value): ?string => $this->moduleOptionLabel($value))
+                        ->searchable()
+                        ->preload()
+                        ->live()
+                        ->nullable()
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma pasta nova.')
+                        ->afterStateUpdated(fn (Set $set) => $set('course_module_track_id', null)),
+                    Select::make('course_module_track_id')
+                        ->label('Subpasta')
+                        ->options(fn (Get $get): array => $this->trackOptions($get('course_module_id')))
+                        ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->trackSearchResults($get('course_module_id'), $search))
+                        ->getOptionLabelUsing(fn ($value): ?string => $this->trackOptionLabel($value))
+                        ->searchable()
+                        ->preload()
+                        ->nullable()
+                        ->helperText('Opcional. Vincula a aula a esta subpasta.')
+                        ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
+                    Select::make('lesson_status')
+                        ->label('Status da aula')
+                        ->options([
+                            'draft' => 'Rascunho',
+                            'published' => 'Publicado',
+                        ])
+                        ->default('draft')
+                        ->required(),
+                    ...PandaVideoUploadForm::fields(null, folderRequired: false),
+                ])
+                ->action(function (array $data, LessonDirectVideoUploader $uploader): void {
+                    $path = PandaVideoUploadForm::storedPath($data);
+
+                    if ($path === null) {
+                        Notification::make()
+                            ->title('Selecione um arquivo de vídeo.')
+                            ->danger()
+                            ->send();
+
+                        return;
+                    }
+
+                    try {
+                        [$module, $track] = $this->resolveImportStructure($data, null);
+
+                        $folderReference = filled($data['panda_folder_reference'] ?? null)
+                            ? (string) $data['panda_folder_reference']
+                            : ($track?->panda_folder_id ?: $module?->panda_folder_id);
+
+                        // Valida a pasta antes de criar a aula, para não deixar aula órfã quando a pasta não existe.
+                        $folderId = $uploader->resolveFolderId($folderReference, (bool) ($data['create_panda_folder'] ?? false));
+                    } catch (Throwable $exception) {
+                        Storage::disk(LessonDirectVideoUploader::disk())->delete($path);
+
+                        Notification::make()
+                            ->title('Não foi possível enviar o vídeo ao Panda')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+
+                        return;
+                    }
+
+                    $title = trim((string) $data['title']);
+
+                    $lesson = Lesson::query()->create([
+                        'course_id' => null,
+                        'course_module_id' => null,
+                        'course_module_track_id' => null,
+                        'title' => $title,
+                        'slug' => Str::slug($title) ?: 'aula-'.Str::lower(Str::random(6)),
+                        'description' => 'Aula em vídeo.',
+                        'type' => 'video',
+                        'duration_seconds' => 0,
+                        'sort_order' => $track ? ((int) $track->lessons()->max('course_module_track_lessons.sort_order')) + 1 : 1,
+                        'status' => in_array($data['lesson_status'] ?? null, ['draft', 'published'], true) ? $data['lesson_status'] : 'draft',
+                        'source_status' => 'awaiting_media',
+                    ]);
+
+                    if ($track) {
+                        $lesson->tracks()->syncWithoutDetaching([
+                            $track->id => ['sort_order' => (int) $lesson->sort_order],
+                        ]);
+                    } elseif ($module) {
+                        $lesson->modules()->syncWithoutDetaching([
+                            $module->id => ['sort_order' => (int) $lesson->sort_order],
+                        ]);
+                    }
+
+                    LessonResource::syncPrimaryCatalogLinks($lesson);
+                    LessonResource::forgetCatalogCachesForLesson($lesson);
+
+                    try {
+                        $uploader->queue(
+                            $lesson,
+                            $path,
+                            PandaVideoUploadForm::originalName($data),
+                            $folderId,
+                            (string) ($data['panda_title'] ?? ''),
+                        );
+
+                        Notification::make()
+                            ->title('Aula criada e vídeo recebido.')
+                            ->body('O envio ao Panda segue em segundo plano. Acompanhe pelo status de origem da aula.')
+                            ->success()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        report($exception);
+
+                        Notification::make()
+                            ->title('A aula foi criada, mas o envio ao Panda falhou')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
+
+                    $this->redirect(LessonResource::getUrl('edit', ['record' => $lesson]));
                 }),
             CreateAction::make(),
         ];

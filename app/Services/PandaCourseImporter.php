@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Jobs\SyncPandaVideoStatus;
 use App\Models\AiArtifact;
 use App\Models\Course;
 use App\Models\CourseModule;
@@ -14,6 +15,7 @@ use App\Support\LessonTitleNormalizer;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Throwable;
 
 class PandaCourseImporter
 {
@@ -46,88 +48,99 @@ class PandaCourseImporter
 
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));
+            $stats = $this->emptyImportStats();
+            $libraryFolderPath = collect([$module?->name, $track?->name])->filter()->join(' / ');
+            $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
 
-            DB::transaction(function () use ($module, $track, $folderId, $folderReference, $run, $videos): void {
-                $created = 0;
-                $updated = 0;
-                $libraryFolderPath = collect([$module?->name, $track?->name])->filter()->join(' / ');
-                $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
+            foreach ($videos->values() as $index => $pandaVideo) {
+                $sortOrder = $index + 1;
+                $normalizedTitle = LessonTitleNormalizer::normalize($pandaVideo['title'], $sortOrder);
+                $providerVideoId = filled($pandaVideo['panda_video_id']) ? (string) $pandaVideo['panda_video_id'] : null;
 
-                foreach ($videos->values() as $index => $pandaVideo) {
-                    $sortOrder = $index + 1;
-                    $normalizedTitle = LessonTitleNormalizer::normalize($pandaVideo['title'], $sortOrder);
-                    $video = $this->resolveVideoForPandaVideo($pandaVideo, $normalizedTitle);
-                    $wasRecentlyCreated = ! $video->exists;
-                    $metadata = is_array($video->metadata) ? $video->metadata : [];
-                    $providerVideoId = filled($pandaVideo['panda_video_id']) ? (string) $pandaVideo['panda_video_id'] : null;
+                if ($this->client->videoIsFailed($pandaVideo)) {
+                    $this->recordSkippedVideo($run, $pandaVideo, 'video', $normalizedTitle);
+                    $stats['skipped']++;
 
-                    $video->fill([
-                        'lesson_folder_id' => $lessonFolder?->id,
-                        'title' => $normalizedTitle,
-                        'slug' => $video->exists ? $video->slug : $this->lessonSlug($normalizedTitle, $sortOrder),
-                        'description' => $pandaVideo['description'] ?: 'Vídeo importado do Panda.',
-                        'provider' => 'panda',
-                        'provider_video_id' => $providerVideoId,
-                        'provider_status' => $pandaVideo['panda_status'],
-                        'embed_url' => $pandaVideo['panda_embed_url'],
-                        'player_url' => $pandaVideo['panda_player_url'],
-                        'thumbnail_url' => $pandaVideo['thumbnail_url'],
-                        'duration_seconds' => $pandaVideo['duration_seconds'],
-                        'source_status' => $this->client->videoIsReady($pandaVideo) ? 'media_ready' : 'panda_processing',
-                        'metadata' => array_replace_recursive($metadata, [
-                            'source' => 'panda',
-                            'folder_id' => $folderId,
-                            'folder_reference' => $folderReference,
-                            'library_folder_name' => $track?->name ?? $module?->name,
-                            'library_folder_path' => $libraryFolderPath,
-                            'import_context_module_id' => $module?->id,
-                            'import_context_track_id' => $track?->id,
-                            'payload' => $pandaVideo['payload'],
-                            'last_imported_at' => now()->toIso8601String(),
-                        ]),
-                    ]);
-                    $video->save();
-
-                    $this->syncPandaVideoAiArtifacts($video, $pandaVideo['ai_artifacts'] ?? [], $pandaVideo['payload']);
-
-                    $run->items()->create([
-                        'external_type' => 'video',
-                        'external_id' => $providerVideoId ?: $normalizedTitle,
-                        'local_type' => 'video',
-                        'local_id' => $video->id,
-                        'status' => $wasRecentlyCreated ? 'created' : 'updated',
-                        'payload' => $pandaVideo['payload'],
-                    ]);
-
-                    $wasRecentlyCreated ? $created++ : $updated++;
+                    continue;
                 }
 
-                if ($module) {
-                    $module->forceFill(['panda_folder_id' => $folderId])->save();
+                try {
+                    [$video, $wasRecentlyCreated] = DB::transaction(function () use ($pandaVideo, $normalizedTitle, $sortOrder, $providerVideoId, $lessonFolder, $module, $track, $folderId, $folderReference, $libraryFolderPath): array {
+                        $video = $this->resolveVideoForPandaVideo($pandaVideo, $normalizedTitle);
+                        $wasRecentlyCreated = ! $video->exists;
+                        $metadata = is_array($video->metadata) ? $video->metadata : [];
+                        $durationSeconds = (int) ($pandaVideo['duration_seconds'] ?? 0);
+
+                        $video->fill([
+                            'lesson_folder_id' => $lessonFolder?->id,
+                            'title' => $normalizedTitle,
+                            'slug' => $video->exists ? $video->slug : $this->lessonSlug($normalizedTitle, $sortOrder),
+                            'description' => $pandaVideo['description'] ?: ($video->description ?: 'Vídeo importado do Panda.'),
+                            'provider' => 'panda',
+                            'provider_video_id' => $providerVideoId,
+                            'provider_status' => $pandaVideo['panda_status'],
+                            'embed_url' => $pandaVideo['panda_embed_url'],
+                            'player_url' => $pandaVideo['panda_player_url'],
+                            'thumbnail_url' => $pandaVideo['thumbnail_url'] ?: $video->thumbnail_url,
+                            'duration_seconds' => $durationSeconds > 0 ? $durationSeconds : (int) $video->duration_seconds,
+                            'source_status' => $this->sourceStatusForPandaVideo($pandaVideo),
+                            'metadata' => array_replace_recursive($metadata, [
+                                'source' => 'panda',
+                                'folder_id' => $folderId,
+                                'folder_reference' => $folderReference,
+                                'library_folder_name' => $track?->name ?? $module?->name,
+                                'library_folder_path' => $libraryFolderPath,
+                                'import_context_module_id' => $module?->id,
+                                'import_context_track_id' => $track?->id,
+                                'payload' => $pandaVideo['payload'],
+                                'last_imported_at' => now()->toIso8601String(),
+                            ]),
+                        ]);
+                        $video->save();
+
+                        $this->syncPandaVideoAiArtifacts($video, $pandaVideo['ai_artifacts'] ?? [], $pandaVideo['payload']);
+
+                        return [$video, $wasRecentlyCreated];
+                    });
+                } catch (Throwable $exception) {
+                    report($exception);
+                    $this->recordFailedVideo($run, $pandaVideo, 'video', $normalizedTitle, $exception);
+                    $stats['failed']++;
+                    $stats['errors'][] = ['title' => $normalizedTitle, 'message' => $exception->getMessage()];
+
+                    continue;
                 }
 
-                if ($track) {
-                    $track->forceFill(['panda_folder_id' => $folderId])->save();
-                }
+                $run->items()->create([
+                    'external_type' => 'video',
+                    'external_id' => $providerVideoId ?: $normalizedTitle,
+                    'local_type' => 'video',
+                    'local_id' => $video->id,
+                    'status' => $wasRecentlyCreated ? 'created' : 'updated',
+                    'payload' => $pandaVideo['payload'],
+                ]);
 
-                $run->forceFill([
-                    'status' => 'finished',
-                    'summary' => [
-                        'module_id' => $module?->id,
-                        'track_id' => $track?->id,
-                        'videos' => $videos->count(),
-                        'created' => $created,
-                        'updated' => $updated,
-                    ],
-                    'finished_at' => now(),
-                ])->save();
-            });
-        } catch (\Throwable $exception) {
-            $run->forceFill([
-                'status' => 'failed',
-                'error_message' => $exception->getMessage(),
-                'finished_at' => now(),
-            ])->save();
+                $wasRecentlyCreated ? $stats['created']++ : $stats['updated']++;
+
+                if ($video->source_status === 'panda_processing') {
+                    $stats['processing']++;
+                }
+            }
+
+            if ($module) {
+                $module->forceFill(['panda_folder_id' => $folderId])->save();
+            }
+
+            if ($track) {
+                $track->forceFill(['panda_folder_id' => $folderId])->save();
+            }
+
+            $this->finishRun($run, $videos, $stats, [
+                'module_id' => $module?->id,
+                'track_id' => $track?->id,
+            ]);
+        } catch (Throwable $exception) {
+            $this->failRun($run, $exception);
 
             throw $exception;
         }
@@ -150,7 +163,7 @@ class PandaCourseImporter
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
-            DB::transaction(function () use ($course, $folderId, $folderReference, $moduleName, $lessonStatus, $moduleType, $run, $videos): void {
+            [$module, $track] = DB::transaction(function () use ($course, $folderId, $folderReference, $moduleName, $moduleType, $videos): array {
                 $resolvedModuleName = $moduleName
                     ?: (string) ($videos->first()['folder_name'] ?? null)
                     ?: 'Pasta de vídeos '.$folderId;
@@ -174,90 +187,26 @@ class PandaCourseImporter
                     ],
                 );
 
-                $created = 0;
-                $updated = 0;
-                $planningLessons = [];
                 $track = $this->ensureTrackForModule($module, $course, $resolvedModuleName, $folderId);
                 $module->courses()->syncWithoutDetaching([
                     $course->id => ['sort_order' => (int) $module->sort_order],
                 ]);
 
-                foreach ($videos->values() as $index => $video) {
-                    $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $index + 1);
-                    $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, null);
-                    $wasRecentlyCreated = ! $lesson->exists;
-                    $libraryFolderPath = collect([$module->name, $track->name])->filter()->join(' / ');
-                    $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
-
-                    $lesson->fill([
-                        'course_id' => null,
-                        'lesson_folder_id' => $lessonFolder?->id,
-                        'course_module_id' => null,
-                        'course_module_track_id' => null,
-                        'title' => $normalizedTitle,
-                        'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $index + 1),
-                        'description' => $video['description'] ?: 'Aula em vídeo.',
-                        'type' => 'video',
-                        'thumbnail_url' => $video['thumbnail_url'],
-                        'duration_seconds' => $video['duration_seconds'],
-                        'sort_order' => $index + 1,
-                        'status' => $this->statusForReadyPandaLesson($lessonStatus),
-                        'panda_video_id' => $video['panda_video_id'],
-                        'panda_status' => $video['panda_status'],
-                        'panda_embed_url' => $video['panda_embed_url'],
-                        'panda_player_url' => $video['panda_player_url'],
-                        'source_status' => 'media_ready',
-                        'metadata' => [
-                            'source' => 'panda',
-                            'folder_id' => $folderId,
-                            'library_folder_name' => $track->name,
-                            'library_folder_path' => $libraryFolderPath,
-                            'import_context_module_id' => $module->id,
-                            'import_context_track_id' => $track->id,
-                            'payload' => $video['payload'],
-                            'last_imported_at' => now()->toIso8601String(),
-                        ],
-                    ]);
-                    $lesson->save();
-                    $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
-                    $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
-
-                    $run->items()->create([
-                        'external_type' => 'video',
-                        'external_id' => $video['panda_video_id'],
-                        'local_type' => 'lesson',
-                        'local_id' => $lesson->id,
-                        'status' => $wasRecentlyCreated ? 'created' : 'updated',
-                        'payload' => $video['payload'],
-                    ]);
-
-                    $wasRecentlyCreated ? $created++ : $updated++;
-                }
-
-                $this->syncModulePlanningLessons($module, $planningLessons);
-
-                $run->forceFill([
-                    'status' => 'finished',
-                    'summary' => [
-                        'module_id' => $module->id,
-                        'videos' => $videos->count(),
-                        'created' => $created,
-                        'updated' => $updated,
-                    ],
-                    'finished_at' => now(),
-                ])->save();
+                return [$module, $track];
             });
-        } catch (\Throwable $exception) {
-            $run->forceFill([
-                'status' => 'failed',
-                'error_message' => $exception->getMessage(),
-                'finished_at' => now(),
-            ])->save();
+
+            $result = $this->importPandaVideosAsLessons($videos, $run, $course, $module, null, $track, $folderId, null, $lessonStatus);
+
+            $this->syncModulePlanningLessons($module, $result['planning_lessons']);
+            $this->finishRun($run, $videos, $result['stats'], ['module_id' => $module->id]);
+        } catch (Throwable $exception) {
+            $this->failRun($run, $exception);
 
             throw $exception;
         }
 
         $this->lessonCourseLinker->sync($course);
+        $this->queueStatusSyncForProcessingLessons($result['processing_lesson_ids']);
 
         return $run->fresh(['items']);
     }
@@ -277,7 +226,7 @@ class PandaCourseImporter
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
-            DB::transaction(function () use ($module, $course, $folderId, $folderReference, $lessonStatus, $moduleType, $run, $videos): void {
+            $track = DB::transaction(function () use ($module, $course, $folderId, $folderReference, $moduleType, $videos): CourseModuleTrack {
                 $module->forceFill([
                     'panda_folder_id' => $folderId,
                     'type' => $moduleType ? $this->normalizeModuleType($moduleType) : $module->type,
@@ -289,87 +238,21 @@ class PandaCourseImporter
                     ],
                 ])->save();
 
-                $created = 0;
-                $updated = 0;
-                $planningLessons = [];
-                $track = $this->ensureTrackForModule($module, $course, $module->name, $folderId);
-
-                foreach ($videos->values() as $index => $video) {
-                    $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $index + 1);
-                    $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, null);
-                    $wasRecentlyCreated = ! $lesson->exists;
-                    $libraryFolderPath = collect([$module->name, $track->name])->filter()->join(' / ');
-                    $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
-
-                    $lesson->fill([
-                        'course_id' => null,
-                        'lesson_folder_id' => $lessonFolder?->id,
-                        'course_module_id' => null,
-                        'course_module_track_id' => null,
-                        'title' => $normalizedTitle,
-                        'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $index + 1),
-                        'description' => $video['description'] ?: 'Aula em vídeo.',
-                        'type' => 'video',
-                        'thumbnail_url' => $video['thumbnail_url'],
-                        'duration_seconds' => $video['duration_seconds'],
-                        'sort_order' => $index + 1,
-                        'status' => $this->statusForReadyPandaLesson($lessonStatus),
-                        'panda_video_id' => $video['panda_video_id'],
-                        'panda_status' => $video['panda_status'],
-                        'panda_embed_url' => $video['panda_embed_url'],
-                        'panda_player_url' => $video['panda_player_url'],
-                        'source_status' => 'media_ready',
-                        'metadata' => [
-                            'source' => 'panda',
-                            'folder_id' => $folderId,
-                            'library_folder_name' => $track->name,
-                            'library_folder_path' => $libraryFolderPath,
-                            'import_context_module_id' => $module->id,
-                            'import_context_track_id' => $track->id,
-                            'payload' => $video['payload'],
-                            'last_imported_at' => now()->toIso8601String(),
-                        ],
-                    ]);
-                    $lesson->save();
-                    $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
-                    $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
-
-                    $run->items()->create([
-                        'external_type' => 'video',
-                        'external_id' => $video['panda_video_id'],
-                        'local_type' => 'lesson',
-                        'local_id' => $lesson->id,
-                        'status' => $wasRecentlyCreated ? 'created' : 'updated',
-                        'payload' => $video['payload'],
-                    ]);
-
-                    $wasRecentlyCreated ? $created++ : $updated++;
-                }
-
-                $this->syncModulePlanningLessons($module, $planningLessons);
-
-                $run->forceFill([
-                    'status' => 'finished',
-                    'summary' => [
-                        'module_id' => $module->id,
-                        'videos' => $videos->count(),
-                        'created' => $created,
-                        'updated' => $updated,
-                    ],
-                    'finished_at' => now(),
-                ])->save();
+                return $this->ensureTrackForModule($module, $course, $module->name, $folderId);
             });
-        } catch (\Throwable $exception) {
-            $run->forceFill([
-                'status' => 'failed',
-                'error_message' => $exception->getMessage(),
-                'finished_at' => now(),
-            ])->save();
+
+            $result = $this->importPandaVideosAsLessons($videos, $run, $course, $module, null, $track, $folderId, null, $lessonStatus);
+
+            $this->syncModulePlanningLessons($module, $result['planning_lessons']);
+            $this->finishRun($run, $videos, $result['stats'], ['module_id' => $module->id]);
+        } catch (Throwable $exception) {
+            $this->failRun($run, $exception);
 
             throw $exception;
         }
 
         $this->lessonCourseLinker->sync($course ?? $module->courses()->first());
+        $this->queueStatusSyncForProcessingLessons($result['processing_lesson_ids']);
 
         return $run->fresh(['items']);
     }
@@ -411,104 +294,309 @@ class PandaCourseImporter
         try {
             $videos = $this->sortVideosNaturally($this->client->videos($folderId));
 
-            DB::transaction(function () use ($course, $module, $track, $folderId, $folderReference, $lessonStatus, $run, $videos): void {
-                $created = 0;
-                $updated = 0;
-                $planningLessons = [];
+            $result = $this->importPandaVideosAsLessons($videos, $run, $course, $module, $track, $track, $folderId, $folderReference, $lessonStatus);
 
-                foreach ($videos->values() as $index => $video) {
-                    $sortOrder = $index + 1;
-                    $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $sortOrder);
-                    $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, $track);
-                    $wasRecentlyCreated = ! $lesson->exists;
-                    $libraryFolderPath = collect([$module?->name, $track?->name])->filter()->join(' / ');
-                    $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
+            if ($module) {
+                $module->forceFill(['panda_folder_id' => $folderId])->save();
+                $this->syncModulePlanningLessons($module, $result['planning_lessons']);
+            }
 
-                    $lesson->fill([
-                        'course_id' => null,
-                        'lesson_folder_id' => $lessonFolder?->id,
-                        'course_module_id' => null,
-                        'course_module_track_id' => null,
-                        'title' => $normalizedTitle,
-                        'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $sortOrder),
-                        'description' => $video['description'] ?: 'Aula em vídeo.',
-                        'type' => 'video',
-                        'thumbnail_url' => $video['thumbnail_url'],
-                        'duration_seconds' => $video['duration_seconds'],
-                        'sort_order' => $sortOrder,
-                        'status' => $this->statusForReadyPandaLesson($lessonStatus),
-                        'panda_video_id' => $video['panda_video_id'],
-                        'panda_status' => $video['panda_status'],
-                        'panda_embed_url' => $video['panda_embed_url'],
-                        'panda_player_url' => $video['panda_player_url'],
-                        'source_status' => 'media_ready',
-                        'metadata' => [
-                            'source' => 'panda',
-                            'folder_id' => $folderId,
-                            'folder_reference' => $folderReference,
-                            'library_folder_name' => $track?->name ?? $module?->name,
-                            'library_folder_path' => $libraryFolderPath,
-                            'import_context_module_id' => $module?->id,
-                            'import_context_track_id' => $track?->id,
-                            'payload' => $video['payload'],
-                            'last_imported_at' => now()->toIso8601String(),
-                        ],
-                    ]);
-                    $lesson->save();
+            if ($track) {
+                $track->forceFill(['panda_folder_id' => $folderId])->save();
+            }
 
-                    if ($module) {
-                        $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
-                    }
-
-                    $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
-
-                    $run->items()->create([
-                        'external_type' => 'video',
-                        'external_id' => $video['panda_video_id'],
-                        'local_type' => 'lesson',
-                        'local_id' => $lesson->id,
-                        'status' => $wasRecentlyCreated ? 'created' : 'updated',
-                        'payload' => $video['payload'],
-                    ]);
-
-                    $wasRecentlyCreated ? $created++ : $updated++;
-                }
-
-                if ($module) {
-                    $module->forceFill(['panda_folder_id' => $folderId])->save();
-                    $this->syncModulePlanningLessons($module, $planningLessons);
-                }
-
-                if ($track) {
-                    $track->forceFill(['panda_folder_id' => $folderId])->save();
-                }
-
-                $run->forceFill([
-                    'status' => 'finished',
-                    'summary' => [
-                        'course_id' => $course?->id,
-                        'module_id' => $module?->id,
-                        'track_id' => $track?->id,
-                        'videos' => $videos->count(),
-                        'created' => $created,
-                        'updated' => $updated,
-                    ],
-                    'finished_at' => now(),
-                ])->save();
-            });
-        } catch (\Throwable $exception) {
-            $run->forceFill([
-                'status' => 'failed',
-                'error_message' => $exception->getMessage(),
-                'finished_at' => now(),
-            ])->save();
+            $this->finishRun($run, $videos, $result['stats'], [
+                'course_id' => $course?->id,
+                'module_id' => $module?->id,
+                'track_id' => $track?->id,
+            ]);
+        } catch (Throwable $exception) {
+            $this->failRun($run, $exception);
 
             throw $exception;
         }
 
         $this->lessonCourseLinker->sync($course);
+        $this->queueStatusSyncForProcessingLessons($result['processing_lesson_ids']);
 
         return $run->fresh(['items']);
+    }
+
+    /**
+     * Texto curto com o resultado de uma importação, usado nas notificações do admin.
+     */
+    public static function summaryMessage(PandaImportRun $run): string
+    {
+        $summary = is_array($run->summary) ? $run->summary : [];
+
+        $parts = [
+            'Vídeos: '.($summary['videos'] ?? 0),
+            'Criados: '.($summary['created'] ?? 0),
+            'Atualizados: '.($summary['updated'] ?? 0),
+        ];
+
+        if (($summary['processing'] ?? 0) > 0) {
+            $parts[] = 'Ainda processando no Panda: '.$summary['processing'];
+        }
+
+        if (($summary['skipped'] ?? 0) > 0) {
+            $parts[] = 'Ignorados (falha no Panda): '.$summary['skipped'];
+        }
+
+        if (($summary['failed'] ?? 0) > 0) {
+            $parts[] = 'Com erro: '.$summary['failed'];
+        }
+
+        $message = implode('. ', $parts).'.';
+
+        $errors = collect($summary['errors'] ?? [])->take(3);
+
+        if ($errors->isNotEmpty()) {
+            $message .= ' '.$errors->map(fn (array $error): string => ($error['title'] ?? 'Vídeo').': '.($error['message'] ?? ''))->join(' | ');
+        }
+
+        return $message;
+    }
+
+    /**
+     * Importa cada vídeo como aula de forma isolada: um vídeo com problema
+     * não desfaz nem bloqueia a importação dos demais.
+     *
+     * @return array{stats: array<string, mixed>, planning_lessons: array<int, array>, processing_lesson_ids: array<int, int>}
+     */
+    protected function importPandaVideosAsLessons(
+        Collection $videos,
+        PandaImportRun $run,
+        ?Course $course,
+        ?CourseModule $module,
+        ?CourseModuleTrack $matchTrack,
+        ?CourseModuleTrack $libraryTrack,
+        string $folderId,
+        ?string $folderReference,
+        string $lessonStatus,
+    ): array {
+        $stats = $this->emptyImportStats();
+        $planningLessons = [];
+        $processingLessonIds = [];
+        $libraryFolderPath = collect([$module?->name, $libraryTrack?->name])->filter()->join(' / ');
+        $lessonFolder = LessonFolder::findOrCreatePath($libraryFolderPath, ['source' => 'panda']);
+
+        foreach ($videos->values() as $index => $video) {
+            $sortOrder = $index + 1;
+            $normalizedTitle = LessonTitleNormalizer::normalize($video['title'], $sortOrder);
+
+            if ($this->client->videoIsFailed($video)) {
+                $this->recordSkippedVideo($run, $video, 'lesson', $normalizedTitle);
+                $stats['skipped']++;
+
+                continue;
+            }
+
+            try {
+                [$lesson, $wasRecentlyCreated] = DB::transaction(fn (): array => $this->upsertLessonFromPandaVideo(
+                    $video,
+                    $sortOrder,
+                    $normalizedTitle,
+                    $course,
+                    $module,
+                    $matchTrack,
+                    $libraryTrack,
+                    $lessonFolder,
+                    $libraryFolderPath,
+                    $folderId,
+                    $folderReference,
+                    $lessonStatus,
+                ));
+            } catch (Throwable $exception) {
+                report($exception);
+                $this->recordFailedVideo($run, $video, 'lesson', $normalizedTitle, $exception);
+                $stats['failed']++;
+                $stats['errors'][] = ['title' => $normalizedTitle, 'message' => $exception->getMessage()];
+
+                continue;
+            }
+
+            if ($module) {
+                $planningLessons[] = $this->planningLessonFromVideo($video, $index, $normalizedTitle);
+            }
+
+            $run->items()->create([
+                'external_type' => 'video',
+                'external_id' => $video['panda_video_id'],
+                'local_type' => 'lesson',
+                'local_id' => $lesson->id,
+                'status' => $wasRecentlyCreated ? 'created' : 'updated',
+                'payload' => $video['payload'],
+            ]);
+
+            $wasRecentlyCreated ? $stats['created']++ : $stats['updated']++;
+
+            if ($lesson->source_status === 'panda_processing') {
+                $stats['processing']++;
+                $processingLessonIds[] = (int) $lesson->id;
+            }
+        }
+
+        return [
+            'stats' => $stats,
+            'planning_lessons' => $planningLessons,
+            'processing_lesson_ids' => $processingLessonIds,
+        ];
+    }
+
+    /**
+     * @return array{0: Lesson, 1: bool}
+     */
+    protected function upsertLessonFromPandaVideo(
+        array $video,
+        int $sortOrder,
+        string $normalizedTitle,
+        ?Course $course,
+        ?CourseModule $module,
+        ?CourseModuleTrack $matchTrack,
+        ?CourseModuleTrack $libraryTrack,
+        ?LessonFolder $lessonFolder,
+        string $libraryFolderPath,
+        string $folderId,
+        ?string $folderReference,
+        string $lessonStatus,
+    ): array {
+        $lesson = $this->resolveLessonForPandaVideo($video, $normalizedTitle, $course, $module, $matchTrack);
+        $wasRecentlyCreated = ! $lesson->exists;
+        $metadata = is_array($lesson->metadata) ? $lesson->metadata : [];
+        $durationSeconds = (int) ($video['duration_seconds'] ?? 0);
+
+        $lesson->fill([
+            'course_id' => null,
+            'lesson_folder_id' => $lessonFolder?->id,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => $normalizedTitle,
+            'slug' => $lesson->exists ? $lesson->slug : $this->lessonSlug($normalizedTitle, $sortOrder),
+            // Reimportar não deve apagar descrição, capa ou duração que o Panda não devolveu.
+            'description' => filled($video['description'] ?? null)
+                ? $video['description']
+                : (filled($lesson->description) ? $lesson->description : 'Aula em vídeo.'),
+            'type' => 'video',
+            'thumbnail_url' => filled($video['thumbnail_url'] ?? null) ? $video['thumbnail_url'] : $lesson->thumbnail_url,
+            'duration_seconds' => $durationSeconds > 0 ? $durationSeconds : (int) $lesson->duration_seconds,
+            'sort_order' => $sortOrder,
+            'status' => $this->statusForReadyPandaLesson($lessonStatus),
+            'panda_video_id' => $video['panda_video_id'],
+            'panda_status' => $video['panda_status'],
+            'panda_embed_url' => $video['panda_embed_url'],
+            'panda_player_url' => $video['panda_player_url'],
+            'source_status' => $this->sourceStatusForPandaVideo($video),
+            // Mescla com o que já existia para não perder dados de outras origens (planilha, Drive, IA).
+            'metadata' => array_replace($metadata, array_filter([
+                'source' => 'panda',
+                'folder_id' => $folderId,
+                'panda_folder_id' => $folderId,
+                'folder_reference' => $folderReference,
+                'library_folder_name' => $libraryTrack?->name ?? $module?->name,
+                'library_folder_path' => $libraryFolderPath,
+                'import_context_module_id' => $module?->id,
+                'import_context_track_id' => $libraryTrack?->id,
+                'payload' => $video['payload'],
+                'last_imported_at' => now()->toIso8601String(),
+            ], fn ($value): bool => $value !== null)),
+        ]);
+        $lesson->save();
+
+        $this->syncPandaAiArtifacts($lesson, $video['ai_artifacts'] ?? [], $video['payload']);
+
+        return [$lesson, $wasRecentlyCreated];
+    }
+
+    /**
+     * Vídeo pronto (ou sem status informado, como em contas legadas) vira mídia pronta;
+     * vídeo com status explícito de processamento fica aguardando o Panda.
+     */
+    protected function sourceStatusForPandaVideo(array $video): string
+    {
+        if ($this->client->videoIsReady($video)) {
+            return 'media_ready';
+        }
+
+        return blank($video['panda_status'] ?? null) ? 'media_ready' : 'panda_processing';
+    }
+
+    protected function queueStatusSyncForProcessingLessons(array $lessonIds): void
+    {
+        $delaySeconds = max(0, (int) config('services.panda.video_status_sync_delay_seconds', 300));
+
+        foreach (array_unique($lessonIds) as $lessonId) {
+            $dispatch = SyncPandaVideoStatus::dispatch((int) $lessonId)
+                ->delay(now()->addSeconds($delaySeconds));
+
+            if (config('queue.default') === 'sync') {
+                $dispatch->afterResponse();
+            }
+        }
+    }
+
+    protected function emptyImportStats(): array
+    {
+        return [
+            'created' => 0,
+            'updated' => 0,
+            'processing' => 0,
+            'skipped' => 0,
+            'failed' => 0,
+            'errors' => [],
+        ];
+    }
+
+    protected function recordSkippedVideo(PandaImportRun $run, array $video, string $localType, string $title): void
+    {
+        $run->items()->create([
+            'external_type' => 'video',
+            'external_id' => (string) ($video['panda_video_id'] ?: $title),
+            'local_type' => $localType,
+            'local_id' => null,
+            'status' => 'skipped',
+            'payload' => $video['payload'] ?? [],
+            'error_message' => 'O vídeo está com falha no Panda (status '.($video['panda_status'] ?? 'desconhecido').') e não foi importado.',
+        ]);
+    }
+
+    protected function recordFailedVideo(PandaImportRun $run, array $video, string $localType, string $title, Throwable $exception): void
+    {
+        $run->items()->create([
+            'external_type' => 'video',
+            'external_id' => (string) ($video['panda_video_id'] ?: $title),
+            'local_type' => $localType,
+            'local_id' => null,
+            'status' => 'failed',
+            'payload' => $video['payload'] ?? [],
+            'error_message' => mb_substr($exception->getMessage(), 0, 1000),
+        ]);
+    }
+
+    protected function finishRun(PandaImportRun $run, Collection $videos, array $stats, array $context): void
+    {
+        $errors = array_slice($stats['errors'] ?? [], 0, 20);
+        unset($stats['errors']);
+
+        $run->forceFill([
+            'status' => 'finished',
+            'summary' => array_merge($context, [
+                'videos' => $videos->count(),
+            ], $stats, $errors !== [] ? ['errors' => $errors] : []),
+            'error_message' => $errors !== []
+                ? collect($errors)->map(fn (array $error): string => $error['title'].': '.$error['message'])->join("\n")
+                : null,
+            'finished_at' => now(),
+        ])->save();
+    }
+
+    protected function failRun(PandaImportRun $run, Throwable $exception): void
+    {
+        $run->forceFill([
+            'status' => 'failed',
+            'error_message' => $exception->getMessage(),
+            'finished_at' => now(),
+        ])->save();
     }
 
     public function importReplacingModuleByName(?Course $fallbackCourse, string $moduleName, string $folderId, string $lessonStatus = 'draft', string $moduleType = 'specific'): PandaImportRun

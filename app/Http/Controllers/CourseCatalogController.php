@@ -37,6 +37,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Throwable;
 use Illuminate\Support\Facades\Notification as MailNotification;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -48,6 +49,10 @@ class CourseCatalogController extends Controller
     protected const PANDA_AI_REQUEST_RETRY_MINUTES = 60;
 
     protected const COURSE_CATALOG_CACHE_SECONDS = 600;
+
+    protected const SEARCH_COURSE_LIMIT = 24;
+
+    protected const SEARCH_LESSON_LIMIT = 60;
 
     public function index(): View
     {
@@ -136,6 +141,58 @@ class CourseCatalogController extends Controller
             'courses' => $courses,
             'courseProgress' => $this->progressForCourses($courses, $user),
             'activePlansByCourse' => $this->activePlansByCourse($user),
+        ]);
+    }
+
+    public function search(Request $request): View
+    {
+        $user = $request->user();
+
+        abort_unless($user->canAccessStudentArea(), 403);
+
+        $term = Str::of((string) $request->query('q', ''))->squish()->substr(0, 100)->value();
+        $tokens = $this->searchTokens($term);
+        $courses = new EloquentCollection;
+        $lessonResults = collect();
+        $accessibleCourseIds = collect();
+
+        if ($tokens !== []) {
+            $accessibleCourseIds = $user->availableCoursesQuery()->pluck('courses.id');
+
+            $courses = $this->publishedCourses()
+                ->with(['sphere', 'educationLevel'])
+                ->withCount(['modules', 'lessons'])
+                ->where(function (Builder $query) use ($tokens): void {
+                    foreach ($tokens as $token) {
+                        $like = $this->likePattern($token);
+
+                        $query->where(function (Builder $query) use ($like): void {
+                            $query
+                                ->where('name', 'like', $like)
+                                ->orWhere('description', 'like', $like)
+                                ->orWhere('combo_name', 'like', $like)
+                                ->orWhereHas('sphere', fn (Builder $query) => $query->where('name', 'like', $like))
+                                ->orWhereHas('educationLevel', fn (Builder $query) => $query->where('name', 'like', $like));
+                        });
+                    }
+                })
+                ->orderBy('sort_order')
+                ->orderBy('name')
+                ->limit(self::SEARCH_COURSE_LIMIT)
+                ->get();
+
+            $lessonResults = $this->searchLessonsInAccessibleCourses($tokens, $accessibleCourseIds, $user);
+        }
+
+        return view('dashboard.courses.search', [
+            'term' => $term,
+            'hasValidTerm' => $tokens !== [],
+            'courses' => $courses,
+            'lessonResults' => $lessonResults,
+            'lessonResultsCount' => $lessonResults->sum(fn (array $group): int => $group['lessons']->count()),
+            'accessibleCourseIds' => $accessibleCourseIds,
+            'courseProgress' => $this->progressForCourses($courses, $user),
+            'activePlansByCourse' => $courses->isNotEmpty() ? $this->activePlansByCourse($user) : collect(),
         ]);
     }
 
@@ -495,6 +552,108 @@ class CourseCatalogController extends Controller
 
             return back()->with('error', 'Não foi possível sincronizar a IA da aula: '.$exception->getMessage());
         }
+    }
+
+    /**
+     * Aulas cujo título contém todos os termos, restritas aos cursos que o aluno pode abrir
+     * e às mesmas regras de publicação usadas na navegação do curso.
+     */
+    protected function searchLessonsInAccessibleCourses(array $tokens, Collection $accessibleCourseIds, User $user): Collection
+    {
+        if ($accessibleCourseIds->isEmpty()) {
+            return collect();
+        }
+
+        $candidateLessonIds = Lesson::query()
+            ->where('status', '!=', 'archived')
+            ->where(function (Builder $query) use ($tokens): void {
+                foreach ($tokens as $token) {
+                    $query->where('title', 'like', $this->likePattern($token));
+                }
+            })
+            ->orderBy('id')
+            ->limit(500)
+            ->pluck('id');
+
+        if ($candidateLessonIds->isEmpty()) {
+            return collect();
+        }
+
+        $remaining = self::SEARCH_LESSON_LIMIT;
+        $groups = collect();
+
+        $searchableCourses = $this->publishedCourses()
+            ->whereIn('id', $accessibleCourseIds)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+
+        foreach ($searchableCourses as $course) {
+            if ($remaining <= 0) {
+                break;
+            }
+
+            $lessons = $this->publishedLessonsForCourse($course)
+                ->addSelect(['course_module_tracks.name as search_track_name'])
+                ->whereIn('lessons.id', $candidateLessonIds)
+                ->limit($remaining * 3)
+                ->get()
+                ->unique('id')
+                ->take($remaining)
+                ->values();
+
+            if ($lessons->isEmpty()) {
+                continue;
+            }
+
+            $remaining -= $lessons->count();
+            $groups->push([
+                'course' => $course,
+                'lessons' => $lessons,
+            ]);
+        }
+
+        if ($groups->isEmpty()) {
+            return $groups;
+        }
+
+        $completedPairs = LessonProgress::query()
+            ->where('user_id', $user->id)
+            ->where('status', 'completed')
+            ->whereIn('lesson_id', $groups->flatMap(fn (array $group) => $group['lessons']->pluck('id'))->unique())
+            ->get(['course_id', 'lesson_id'])
+            ->map(fn (LessonProgress $progress): string => $progress->course_id.':'.$progress->lesson_id)
+            ->flip();
+
+        return $groups->map(fn (array $group): array => [
+            ...$group,
+            'completed_lesson_ids' => $group['lessons']
+                ->filter(fn (Lesson $lesson): bool => $completedPairs->has($group['course']->id.':'.$lesson->id))
+                ->pluck('id'),
+        ]);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function searchTokens(string $term): array
+    {
+        if (mb_strlen($term) < 2) {
+            return [];
+        }
+
+        return collect(preg_split('/\s+/u', $term) ?: [])
+            ->map(fn (string $token): string => trim($token, " \t\n\r\0\x0B.,;:!?\"'()[]{}"))
+            ->filter(fn (string $token): bool => mb_strlen($token) >= 2)
+            ->unique(fn (string $token): string => mb_strtolower($token))
+            ->take(6)
+            ->values()
+            ->all();
+    }
+
+    protected function likePattern(string $token): string
+    {
+        return '%'.addcslashes($token, '\\%_').'%';
     }
 
     protected function publishedCourses(Builder|Relation|null $query = null): Builder|Relation
