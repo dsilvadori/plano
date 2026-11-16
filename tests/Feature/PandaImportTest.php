@@ -305,7 +305,7 @@ class PandaImportTest extends TestCase
         ]);
 
         Http::fake([
-            'https://panda.test/videos?folder_id=folder-1' => Http::response([
+            'https://panda.test/videos?folder_id=folder-1*' => Http::response([
                 'data' => [[
                     'id' => 'deleting-video',
                     'title' => 'Aula teste',
@@ -330,7 +330,7 @@ class PandaImportTest extends TestCase
         ]);
 
         Http::fake([
-            'https://panda.test/videos?folder_id=folder-1' => Http::response([
+            'https://panda.test/videos?folder_id=folder-1*' => Http::response([
                 'data' => [[
                     'id' => 'existing-video',
                     'title' => '01-anaytics.mp4',
@@ -357,7 +357,7 @@ class PandaImportTest extends TestCase
         ]);
 
         Http::fake([
-            'https://panda.test/videos?folder_id=folder-1' => Http::response([
+            'https://panda.test/videos?folder_id=folder-1*' => Http::response([
                 'data' => [[
                     'id' => 'draft-video',
                     'title' => 'Aula teste.mp4',
@@ -1379,7 +1379,7 @@ class PandaImportTest extends TestCase
         $folderUrl = 'https://dashboard.pandavideo.com.br/#/folders/'.$folderId;
 
         Http::fake([
-            'panda.test/videos?folder_id='.$folderId => Http::response([
+            'panda.test/videos?folder_id='.$folderId.'*' => Http::response([
                 'data' => [
                     [
                         'id' => 'standalone-url-video-1',
@@ -1608,5 +1608,115 @@ class PandaImportTest extends TestCase
         $this->assertTrue($track->fresh()->lessons()->whereKey($lesson->id)->exists());
         $this->assertSame('panda-folder-windows', $module->fresh()->panda_folder_id);
         $this->assertSame('panda-folder-windows', $track->fresh()->panda_folder_id);
+    }
+
+    public function test_panda_import_skips_failed_videos_and_keeps_processing_ones_pending(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    ['id' => 'ok-video', 'title' => '01 - Aula Pronta', 'status' => 'CONVERTED', 'duration_seconds' => 600, 'embed_url' => 'https://player.test/ok-video'],
+                    ['id' => 'processing-video', 'title' => '02 - Aula Processando', 'status' => 'CONVERTING'],
+                    ['id' => 'broken-video', 'title' => '03 - Aula Quebrada', 'status' => 'FAILED'],
+                ],
+            ]),
+        ]);
+
+        $run = app(PandaCourseImporter::class)->importLessons(null, null, null, 'panda-folder-mixed', 'published');
+
+        $this->assertSame('finished', $run->status);
+        $this->assertSame(3, $run->summary['videos']);
+        $this->assertSame(2, $run->summary['created']);
+        $this->assertSame(1, $run->summary['processing']);
+        $this->assertSame(1, $run->summary['skipped']);
+        $this->assertSame(0, $run->summary['failed']);
+
+        $this->assertSame('media_ready', Lesson::query()->where('panda_video_id', 'ok-video')->value('source_status'));
+        $this->assertSame('panda_processing', Lesson::query()->where('panda_video_id', 'processing-video')->value('source_status'));
+        $this->assertFalse(Lesson::query()->where('panda_video_id', 'broken-video')->exists());
+        $this->assertTrue($run->items->contains(fn ($item): bool => $item->external_id === 'broken-video' && $item->status === 'skipped'));
+        $this->assertStringContainsString('Ignorados (falha no Panda): 1', PandaCourseImporter::summaryMessage($run));
+    }
+
+    public function test_panda_reimport_preserves_existing_metadata_description_and_thumbnail(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+        ]);
+
+        $lesson = Lesson::factory()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'title' => '01 - Aula Existente',
+            'description' => 'Descrição escrita pelo professor.',
+            'thumbnail_url' => 'https://thumb.test/manual.jpg',
+            'panda_video_id' => 'existing-video',
+            'metadata' => ['spreadsheet_row' => 7, 'ai_summary_requested' => true],
+        ]);
+
+        Http::fake([
+            'panda.test/videos*' => Http::response([
+                'data' => [
+                    ['id' => 'existing-video', 'title' => '01 - Aula Existente', 'status' => 'CONVERTED', 'duration_seconds' => 900, 'embed_url' => 'https://player.test/existing-video'],
+                ],
+            ]),
+        ]);
+
+        $run = app(PandaCourseImporter::class)->importLessons(null, null, null, 'panda-folder-existing', 'published');
+
+        $lesson->refresh();
+
+        $this->assertSame(1, $run->summary['updated']);
+        $this->assertSame('Descrição escrita pelo professor.', $lesson->description);
+        $this->assertSame('https://thumb.test/manual.jpg', $lesson->thumbnail_url);
+        $this->assertSame(7, $lesson->metadata['spreadsheet_row']);
+        $this->assertTrue($lesson->metadata['ai_summary_requested']);
+        $this->assertSame('panda-folder-existing', $lesson->metadata['folder_id']);
+        $this->assertSame('panda-folder-existing', $lesson->metadata['panda_folder_id']);
+    }
+
+    public function test_panda_video_listing_reads_every_page_of_the_folder(): void
+    {
+        config([
+            'services.panda.api_key' => 'test-key',
+            'services.panda.base_url' => 'https://panda.test',
+            'services.panda.videos_path' => '/videos',
+            'services.panda.videos_page_size' => 2,
+        ]);
+
+        Http::fake(function ($request) {
+            parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+            $page = (int) ($query['page'] ?? 1);
+
+            $this->assertSame('2', (string) ($query['limit'] ?? null));
+
+            $videos = [
+                1 => [
+                    ['id' => 'page-video-1', 'title' => '01 - Primeira'],
+                    ['id' => 'page-video-2', 'title' => '02 - Segunda'],
+                ],
+                2 => [
+                    ['id' => 'page-video-3', 'title' => '03 - Terceira'],
+                ],
+            ];
+
+            return Http::response([
+                'videos' => $videos[$page] ?? [],
+                'pages' => 2,
+                'total' => 3,
+            ]);
+        });
+
+        $videos = app(PandaVideoClient::class)->videos('folder-paged');
+
+        $this->assertSame(['page-video-1', 'page-video-2', 'page-video-3'], $videos->pluck('panda_video_id')->all());
     }
 }

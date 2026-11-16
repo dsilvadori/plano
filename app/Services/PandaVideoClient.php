@@ -138,13 +138,19 @@ class PandaVideoClient
     {
         $folderQueryParam = (string) config('services.panda.folder_query_param', 'folder_id');
         $folderId = filled($folderId) ? ($this->folderIdFromReference((string) $folderId) ?? (string) $folderId) : null;
-        $response = $this->getWithAuthFallback($this->path('videos_path'), filled($folderId) ? [
-            $folderQueryParam => $folderId,
-        ] : []);
+        $query = filled($folderId) ? [$folderQueryParam => $folderId] : [];
+        $pageSize = (int) config('services.panda.videos_page_size', 0);
+        $pageSizeParam = trim((string) config('services.panda.videos_page_size_param', 'limit'));
 
-        return $this->extractItems($response)
+        if ($pageSize > 0 && $pageSizeParam !== '') {
+            $query[$pageSizeParam] = $pageSize;
+        }
+
+        return $this->getAllWithAuthFallback($this->path('videos_path'), $query, 'videos_page_size')
+            ->filter(fn ($video): bool => is_array($video))
             ->map(fn (array $video) => $this->normalizeVideo($video, $folderId))
             ->filter(fn (array $video) => filled($video['panda_video_id']) && filled($video['title']))
+            ->unique('panda_video_id')
             ->values();
     }
 
@@ -1071,13 +1077,18 @@ class PandaVideoClient
             ?? Arr::get($response, 'meta.current_page');
         $lastPage = Arr::get($response, 'last_page')
             ?? Arr::get($response, 'total_pages')
+            ?? Arr::get($response, 'pages')
             ?? Arr::get($response, 'pagination.last_page')
             ?? Arr::get($response, 'pagination.total_pages')
             ?? Arr::get($response, 'meta.last_page')
             ?? Arr::get($response, 'meta.total_pages');
 
-        if (is_numeric($currentPage) && is_numeric($lastPage) && (int) $currentPage < (int) $lastPage) {
-            return array_merge($query, ['page' => (int) $currentPage + 1]);
+        if (is_numeric($lastPage) && $pageItemCount > 0) {
+            $page = is_numeric($currentPage) ? (int) $currentPage : (int) ($query['page'] ?? 1);
+
+            return $page < (int) $lastPage
+                ? array_merge($query, ['page' => $page + 1])
+                : null;
         }
 
         $total = Arr::get($response, 'total')

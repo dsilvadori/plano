@@ -78,6 +78,7 @@ class SyncPandaVideoStatus implements ShouldQueue
             'panda_embed_url' => $video['panda_embed_url'] ?? $lesson->panda_embed_url,
             'panda_player_url' => $video['panda_player_url'] ?? $lesson->panda_player_url,
             'panda_status' => $video['panda_status'] ?? $lesson->panda_status,
+            'thumbnail_url' => filled($video['thumbnail_url'] ?? null) ? $video['thumbnail_url'] : $lesson->thumbnail_url,
             'duration_seconds' => $this->durationSecondsFromPandaVideo($video, $lesson),
             'source_status' => $panda->videoIsReady($video) ? 'media_ready' : 'panda_processing',
             'metadata' => [

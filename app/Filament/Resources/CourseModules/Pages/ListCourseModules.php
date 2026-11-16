@@ -65,7 +65,7 @@ class ListCourseModules extends ListRecords
 
                         Notification::make()
                             ->title('Módulo importado da integração de vídeo.')
-                            ->body('Vídeos: '.($run->summary['videos'] ?? 0).'. Criadas: '.($run->summary['created'] ?? 0).'. Atualizadas: '.($run->summary['updated'] ?? 0).'.')
+                            ->body(PandaCourseImporter::summaryMessage($run))
                             ->success()
                             ->send();
                     } catch (Throwable $exception) {

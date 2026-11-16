@@ -59,7 +59,11 @@
                 @endif
             </div>
 
-            <div class="mt-8 space-y-2">
+            @if (Auth::user()->canAccessStudentArea())
+                @include('dashboard.courses.partials.search-form', ['searchInputId' => 'course-search-desktop', 'formClass' => 'mt-6'])
+            @endif
+
+            <div class="mt-6 space-y-2">
                 @if (Auth::user()->canAccessStudentArea())
                     <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard', 'courses.index', 'courses.show', 'courses.lessons.show') ? 'nav-pill-active' : '' }}">Início</a>
                     <a href="{{ route('courses.mine') }}" class="nav-pill {{ request()->routeIs('courses.mine') ? 'nav-pill-active' : '' }}">Meus cursos</a>
@@ -109,6 +113,7 @@
                 </div>
             @endif
             @if (Auth::user()->canAccessStudentArea())
+                @include('dashboard.courses.partials.search-form', ['searchInputId' => 'course-search-mobile', 'formClass' => 'pb-2'])
                 <a href="{{ route('dashboard') }}" class="nav-pill {{ request()->routeIs('dashboard', 'courses.index', 'courses.show', 'courses.lessons.show') ? 'nav-pill-active' : '' }}">Início</a>
                 <a href="{{ route('courses.mine') }}" class="nav-pill {{ request()->routeIs('courses.mine') ? 'nav-pill-active' : '' }}">Meus cursos</a>
                 <a href="{{ route('study-plans.dashboard') }}" class="nav-pill {{ request()->routeIs('study-plans.dashboard') ? 'nav-pill-active' : '' }}">Plano de Estudos</a>
