@@ -26,7 +26,12 @@ class TutoryWebhookProcessor
                 ? WebhookEvent::where('provider', 'tutory')->where('event_id', $eventId)->first()
                 : null;
 
-            if ($existing && in_array($existing->status, ['processed', 'ignored'], true)) {
+            $approved = $this->isApproved($payload);
+
+            // A Tutory reutiliza o id do pedido em todos os eventos dele (ex.: pagamento pendente e,
+            // depois, pagamento aprovado). Só um evento já processado é duplicado; um ignorado
+            // precisa ser reprocessado quando a aprovação do mesmo pedido chegar.
+            if ($existing && ($existing->status === 'processed' || ($existing->status === 'ignored' && ! $approved))) {
                 return $existing;
             }
 
@@ -38,7 +43,7 @@ class TutoryWebhookProcessor
                 'payload' => $payload,
             ]);
 
-            if (! $this->isApproved($payload)) {
+            if (! $approved) {
                 $event->update([
                     'status' => 'ignored',
                     'processed_at' => now(),
