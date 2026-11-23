@@ -29,12 +29,41 @@ class CourseAccessResolver
             return collect();
         }
 
+        // Cursos arquivados saem do combo; rascunhos continuam, para o aluno já ter o curso quando ele for publicado.
         return Course::query()
             ->where('is_active', true)
+            ->where(fn ($query) => $query->whereNull('status')->orWhere('status', '!=', 'archived'))
             ->whereNotNull('combo_name')
             ->get()
-            ->filter(fn (Course $course): bool => in_array($normalizedComboName, $this->normalizedComboNames((string) $course->combo_name), true))
+            ->filter(fn (Course $course): bool => collect($this->normalizedComboNames((string) $course->combo_name))
+                ->contains(fn (string $courseComboName): bool => $this->comboNamesMatch($normalizedComboName, $courseComboName)))
             ->values();
+    }
+
+    /**
+     * Nomes de combo iguais após a normalização, ou quase iguais: tolera um erro de digitação
+     * pequeno (até 2 letras, em nomes longos) entre o produto da Tutory e o campo Combo do curso,
+     * como "Agnte de Transportes" x "Agente de Transportes". Números precisam ser idênticos,
+     * para que combos como "Turma 1" e "Turma 2" nunca se misturem.
+     */
+    protected function comboNamesMatch(string $normalizedProductName, string $normalizedComboName): bool
+    {
+        if ($normalizedProductName === $normalizedComboName) {
+            return true;
+        }
+
+        if (mb_strlen($normalizedProductName) < 20 || mb_strlen($normalizedComboName) < 20) {
+            return false;
+        }
+
+        preg_match_all('/\d+/', $normalizedProductName, $productNumbers);
+        preg_match_all('/\d+/', $normalizedComboName, $comboNumbers);
+
+        if ($productNumbers[0] !== $comboNumbers[0]) {
+            return false;
+        }
+
+        return levenshtein($normalizedProductName, $normalizedComboName) <= 2;
     }
 
     public function courseForProduct(?string $productId, ?string $productName): ?Course
