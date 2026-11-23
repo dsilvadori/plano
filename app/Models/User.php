@@ -20,7 +20,7 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
-#[Fillable(['name', 'email', 'password', 'role', 'phone', 'tutory_customer_id', 'last_login_at'])]
+#[Fillable(['name', 'email', 'password', 'role', 'access_expires_at', 'phone', 'tutory_customer_id', 'last_login_at'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable implements FilamentUser
 {
@@ -37,6 +37,7 @@ class User extends Authenticatable implements FilamentUser
         return [
             'email_verified_at' => 'datetime',
             'last_login_at' => 'datetime',
+            'access_expires_at' => 'datetime',
             'password' => 'hashed',
         ];
     }
@@ -99,14 +100,60 @@ class User extends Authenticatable implements FilamentUser
         return $this->email === 'aluno@teste.com';
     }
 
+    /**
+     * Assinante com prazo em dia (ou sem prazo definido pelo admin).
+     */
+    public function hasActiveSubscription(): bool
+    {
+        return $this->isSubscriber()
+            && ($this->access_expires_at === null || $this->access_expires_at->isFuture());
+    }
+
+    public function subscriptionExpired(): bool
+    {
+        return $this->isSubscriber() && ! $this->hasActiveSubscription();
+    }
+
+    /**
+     * Renova a assinatura para 1 ano a partir de agora, sem encurtar o prazo atual.
+     * Quem acabou de virar assinante sempre recebe o prazo; um assinante que o admin
+     * deixou sem prazo continua sem prazo.
+     */
+    public function renewSubscriberAccess(bool $wasSubscriber): void
+    {
+        if ($wasSubscriber && $this->access_expires_at === null) {
+            return;
+        }
+
+        $renewed = StudentCourse::defaultExpiration();
+
+        if ($this->access_expires_at === null || $renewed->greaterThan($this->access_expires_at)) {
+            $this->forceFill(['access_expires_at' => $renewed])->save();
+        }
+    }
+
+    /**
+     * Cursos do aluno cujo prazo de acesso já venceu.
+     *
+     * @return Collection<int, Course>
+     */
+    public function expiredCourses(): Collection
+    {
+        return $this->courses()
+            ->whereNotNull('student_courses.expires_at')
+            ->where('student_courses.expires_at', '<=', now())
+            ->orderBy('courses.name')
+            ->get(['courses.id', 'courses.name', 'courses.slug']);
+    }
+
     public function availableCoursesQuery(): Builder
     {
-        if ($this->isAdmin() || $this->isSubscriber()) {
+        if ($this->isAdmin() || $this->hasActiveSubscription()) {
             return Course::query()
                 ->where('is_active', true);
         }
 
-        $linkedCourses = $this->courses()
+        $linkedCourses = $this->activeCourses()
             ->select(['courses.id', 'courses.name', 'courses.slug', 'courses.tutory_product_id', 'courses.combo_name'])
             ->get();
 
@@ -119,7 +166,9 @@ class User extends Authenticatable implements FilamentUser
         return Course::query()
             ->where('is_active', true)
             ->where(function (Builder $query) use ($linkedCourseIds, $linkedProductIds, $linkedNames, $linkedSlugs, $linkedComboNames): void {
-                $query->whereHas('students', fn (Builder $query) => $query->whereKey($this->getKey()));
+                $query->whereHas('studentCourses', fn (Builder $query) => $query
+                    ->where('student_courses.user_id', $this->getKey())
+                    ->active());
 
                 if ($linkedCourseIds !== []) {
                     $query->orWhereIn('id', $linkedCourseIds);
@@ -151,8 +200,19 @@ class User extends Authenticatable implements FilamentUser
     public function courses(): BelongsToMany
     {
         return $this->belongsToMany(Course::class, 'student_courses')
-            ->withPivot(['source', 'external_purchase_id'])
+            ->using(StudentCourse::class)
+            ->withPivot(['id', 'source', 'external_purchase_id', 'expires_at'])
             ->withTimestamps();
+    }
+
+    /**
+     * Cursos vinculados com prazo de acesso em dia.
+     */
+    public function activeCourses(): BelongsToMany
+    {
+        return $this->courses()->where(fn (Builder $query) => $query
+            ->whereNull('student_courses.expires_at')
+            ->orWhere('student_courses.expires_at', '>', now()));
     }
 
     public function studyPlans(): HasMany
