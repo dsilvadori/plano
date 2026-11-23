@@ -59,7 +59,9 @@ class TutoryWebhookProcessor
             $purchaseData = $payload['purchase'] ?? [];
             $productId = $purchaseData['product_id'] ?? data_get($payload, 'product.id') ?? data_get($payload, 'produto.id');
             $purchaseId = $purchaseData['id'] ?? $payload['id'] ?? null;
-            $existingUser = User::findByEmail($studentData['email'] ?? null) !== null;
+            $previousUser = User::findByEmail($studentData['email'] ?? null);
+            $existingUser = $previousUser !== null;
+            $wasSubscriber = (bool) $previousUser?->isSubscriber();
 
             $user = $this->upsertUser(
                 studentData: $studentData,
@@ -68,6 +70,11 @@ class TutoryWebhookProcessor
             );
 
             $linkedCourses = collect();
+            $warning = null;
+
+            if ($user->isSubscriber()) {
+                $user->renewSubscriberAccess($wasSubscriber);
+            }
 
             if ($user->isStudent()) {
                 $courses = $this->coursesForPurchase($payload, $productId);
@@ -80,10 +87,22 @@ class TutoryWebhookProcessor
 
                     if ($studentCourse->wasRecentlyCreated) {
                         $linkedCourses->push($course);
+
+                        continue;
+                    }
+
+                    // Nova compra do mesmo curso: renova 1 ano a partir de agora.
+                    // Se o acesso já tinha vencido, o aluno é avisado como num curso novo.
+                    $wasExpired = $studentCourse->isExpired();
+                    $studentCourse->renew();
+
+                    if ($wasExpired) {
+                        $linkedCourses->push($course);
                     }
                 }
 
                 $this->removeStaleProvisionalCourses($user, $courses, $purchaseId);
+                $warning = $this->visibilityWarning($courses, $this->productName($payload), $productId);
             }
 
             if (($user->isStudent() || $user->isSubscriber()) && ! $existingUser) {
@@ -99,6 +118,7 @@ class TutoryWebhookProcessor
                 'status' => 'processed',
                 'processed_at' => now(),
                 'payload' => $payload,
+                'error_message' => $warning,
             ]);
 
             return $event;
@@ -121,8 +141,33 @@ class TutoryWebhookProcessor
         } catch (Throwable $exception) {
             report($exception);
 
-            $event->update(['error_message' => 'Falha ao enviar e-mail de acesso: '.Str::limit($exception->getMessage(), 200)]);
+            $event->update(['error_message' => collect([
+                $event->error_message,
+                'Falha ao enviar e-mail de acesso: '.Str::limit($exception->getMessage(), 200),
+            ])->filter()->implode(' | ')]);
         }
+    }
+
+    /**
+     * Alerta para o admin quando a compra não liberou nenhum curso que o aluno consiga ver
+     * (produto sem curso ou combo correspondente, ou curso ainda inativo/não publicado).
+     */
+    protected function visibilityWarning($courses, string $productName, ?string $productId): ?string
+    {
+        $visible = $courses->contains(fn (Course $course): bool => $course->is_active && $course->status === 'published');
+
+        if ($visible) {
+            return null;
+        }
+
+        $product = trim($productName.' (id: '.($productId ?: '-').')');
+
+        if ($courses->isEmpty()) {
+            return "ATENÇÃO: nenhum curso liberado. Produto {$product} sem curso correspondente.";
+        }
+
+        return "ATENÇÃO: aluno vinculado a curso inativo ou não publicado ({$courses->pluck('name')->implode(', ')}). "
+            ."Produto {$product}: publique o curso ou ajuste o ID do produto/combo e vincule o aluno manualmente.";
     }
 
     public function isApproved(array $payload): bool

@@ -50,6 +50,7 @@
             @endisset
 
             <main class="mx-auto {{ $pageWidthClass }} px-4 py-8 sm:px-6 lg:px-8">
+                <x-access-expired-notice />
                 {{ $slot }}
             </main>
         </div>

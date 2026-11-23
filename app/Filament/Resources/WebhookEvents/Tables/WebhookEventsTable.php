@@ -6,6 +6,7 @@ use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 
@@ -34,6 +35,13 @@ class WebhookEventsTable
                         'failed' => 'Falhou',
                         default => $state,
                     }),
+                TextColumn::make('error_message')
+                    ->label('Alerta')
+                    ->placeholder('-')
+                    ->color('danger')
+                    ->wrap()
+                    ->limit(120)
+                    ->tooltip(fn ($record): ?string => $record->error_message),
                 TextColumn::make('processed_at')->label('Processado em')->dateTime('d/m/Y H:i', 'America/Sao_Paulo'),
                 TextColumn::make('created_at')->label('Recebido em')->dateTime('d/m/Y H:i', 'America/Sao_Paulo'),
             ])
@@ -45,6 +53,9 @@ class WebhookEventsTable
                         'ignored' => 'Ignorado',
                         'failed' => 'Falhou',
                     ]),
+                Filter::make('with_alert')
+                    ->label('Somente com alerta')
+                    ->query(fn ($query) => $query->whereNotNull('error_message')),
             ])
             ->recordActions([
                 EditAction::make(),

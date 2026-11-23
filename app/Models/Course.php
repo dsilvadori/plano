@@ -43,6 +43,7 @@ class Course extends Model
                 $course->id => [
                     'source' => 'manual',
                     'external_purchase_id' => null,
+                    'expires_at' => null,
                 ],
             ]);
         });
@@ -187,8 +188,14 @@ class Course extends Model
     public function students(): BelongsToMany
     {
         return $this->belongsToMany(User::class, 'student_courses')
-            ->withPivot(['source', 'external_purchase_id'])
+            ->using(StudentCourse::class)
+            ->withPivot(['id', 'source', 'external_purchase_id', 'expires_at'])
             ->withTimestamps();
+    }
+
+    public function studentCourses(): HasMany
+    {
+        return $this->hasMany(StudentCourse::class);
     }
 
     public function studyPlans(): HasMany
