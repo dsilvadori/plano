@@ -482,4 +482,36 @@ class TutoryWebhookTest extends TestCase
 
         $this->assertSame('subscriber', $student->fresh()->role);
     }
+
+    public function test_approved_event_after_pending_event_of_same_order_creates_student(): void
+    {
+        Notification::fake();
+        $headers = ['Authorization' => 'Bearer secret-local'];
+        $course = Course::factory()->create([
+            'name' => 'Gabaritando Santos - Inspetor de Alunos',
+            'tutory_product_id' => 'curso-santos',
+            'is_active' => true,
+        ]);
+        $order = [
+            'id' => 'pedido_pix_123',
+            'sessao' => 'sessao_pix_123',
+            'nome' => 'Ana Pix',
+            'email' => 'ana@example.com',
+            'produto' => ['id' => 'curso-santos', 'nome' => 'Gabaritando Santos - Inspetor de Alunos'],
+        ];
+
+        $this->postJson('/webhooks/tutory', $order + ['evento' => 'pagamento_pendente', 'status' => 'pending'], $headers)
+            ->assertOk()
+            ->assertJsonPath('status', 'ignored');
+
+        $this->postJson('/webhooks/tutory', $order + ['evento' => 'pagamento_aprovado', 'status' => 'paid'], $headers)
+            ->assertOk()
+            ->assertJsonPath('status', 'processed');
+
+        $user = User::findByEmail('ana@example.com');
+
+        $this->assertNotNull($user);
+        $this->assertTrue($user->courses()->whereKey($course)->exists());
+        Notification::assertSentTo($user, SetPasswordNotification::class);
+    }
 }
