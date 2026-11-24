@@ -43,26 +43,41 @@ class CourseComboMatchingTest extends TestCase
         ];
     }
 
-    public function test_jundiai_combo_with_tutory_typo_links_all_three_courses(): void
+    public function test_combo_requires_exact_name_and_does_not_tolerate_typos(): void
     {
-        $courses = $this->jundiaiCourses();
+        [$tecnico, $servicos, $transportes] = $this->jundiaiCourses();
 
         $this->purchase(self::JUNDIAI_TUTORY);
 
-        $this->assertEqualsCanonicalizing(
-            collect($courses)->pluck('id')->all(),
+        $this->assertSame(
+            [$servicos->id],
             User::findByEmail('aluno@example.com')->courses()->pluck('courses.id')->all(),
         );
     }
 
-    public function test_jundiai_combo_with_corrected_name_also_links_all_three_courses(): void
+    public function test_combo_with_corrected_name_links_only_courses_with_that_exact_combo(): void
     {
-        $courses = $this->jundiaiCourses();
+        [$tecnico, $servicos, $transportes] = $this->jundiaiCourses();
 
         $this->purchase(self::JUNDIAI_CORRIGIDO);
 
-        $this->assertCount(3, User::findByEmail('aluno@example.com')->courses()->pluck('courses.id'));
-        $this->assertEqualsCanonicalizing(collect($courses)->pluck('id')->all(), User::findByEmail('aluno@example.com')->courses()->pluck('courses.id')->all());
+        $this->assertEqualsCanonicalizing(
+            [$tecnico->id, $transportes->id],
+            User::findByEmail('aluno@example.com')->courses()->pluck('courses.id')->all(),
+        );
+    }
+
+    public function test_combo_name_ignores_case_accents_and_extra_spaces(): void
+    {
+        $courses = collect([
+            Course::factory()->create(['name' => 'Jundiaí A', 'combo_name' => 'Gabaritando Câmara de Jundiaí']),
+            Course::factory()->create(['name' => 'Jundiaí B', 'combo_name' => 'Outro Combo, Gabaritando Câmara de Jundiaí']),
+        ]);
+
+        $this->assertEqualsCanonicalizing(
+            $courses->pluck('id')->all(),
+            app(CourseAccessResolver::class)->coursesForCombo('  GABARITANDO camara de  jundiai ')->pluck('id')->all(),
+        );
     }
 
     public function test_setec_combo_links_published_courses_and_skips_archived_one(): void
@@ -71,7 +86,7 @@ class CourseComboMatchingTest extends TestCase
         $published = collect(['Agente Administrativo', 'Agente de Fiscalização', 'Motorista Especializado'])
             ->map(fn (string $cargo) => Course::factory()->create(['name' => "Gabaritando SETEC - {$cargo}", 'combo_name' => 'Gabaritando SETEC Campinas']));
 
-        $this->purchase('Gabaritando SETEC Campinas - COMBO');
+        $this->purchase('Gabaritando SETEC Campinas');
 
         $linked = User::findByEmail('aluno@example.com')->courses()->pluck('courses.id');
         $this->assertEqualsCanonicalizing($published->pluck('id')->all(), $linked->all());

@@ -167,7 +167,7 @@ class TutoryWebhookProcessor
         }
 
         return "ATENÇÃO: aluno vinculado a curso inativo ou não publicado ({$courses->pluck('name')->implode(', ')}). "
-            ."Produto {$product}: publique o curso ou ajuste o ID do produto/combo e vincule o aluno manualmente.";
+            ."Produto {$product}: publique o curso ou ajuste o nome do curso/combo e vincule o aluno manualmente.";
     }
 
     public function isApproved(array $payload): bool
@@ -213,15 +213,12 @@ class TutoryWebhookProcessor
 
     protected function coursesForPurchase(array $payload, ?string $productId)
     {
-        $courses = $this->courseAccessResolver->coursesForProduct($productId, $this->productName($payload));
+        $courses = $this->courseAccessResolver->coursesForProduct($this->productName($payload));
 
         if ($courses->isNotEmpty()) {
-            return $courses->map(function (Course $course) use ($productId): Course {
-                $course = $this->courseAccessResolver->publishedEquivalentFor($course) ?? $course;
-                $this->courseAccessResolver->rememberProductId($course, $productId);
-
-                return $course;
-            });
+            return $courses->map(
+                fn (Course $course): Course => $this->courseAccessResolver->publishedEquivalentFor($course) ?? $course,
+            );
         }
 
         return collect(array_filter([$this->createPlaceholderCourseForPurchase($payload, $productId)]));
@@ -229,11 +226,11 @@ class TutoryWebhookProcessor
 
     protected function createPlaceholderCourseForPurchase(array $payload, ?string $productId): ?Course
     {
-        if (! $productId) {
+        $productName = trim($this->productName($payload));
+
+        if ($productName === '') {
             return null;
         }
-
-        $productName = $this->productName($payload) ?: 'Curso aguardando importação';
 
         return Course::create([
             'name' => $productName,
