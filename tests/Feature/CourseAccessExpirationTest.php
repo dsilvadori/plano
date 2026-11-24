@@ -60,7 +60,7 @@ class CourseAccessExpirationTest extends TestCase
         $monitor = Course::factory()->create(['name' => 'Gabaritando SETEC Campinas - Monitor', 'combo_name' => 'Combo Campinas, Gabaritando SETEC Campinas']);
         $outro = Course::factory()->create(['name' => 'Gabaritando Contagem - Assistente', 'combo_name' => 'Gabaritando Contagem']);
 
-        $this->postJson('/webhooks/tutory', $this->purchase('setec', 'Gabaritando SETEC Campinas - COMBO'), $this->headers)->assertOk();
+        $this->postJson('/webhooks/tutory', $this->purchase('setec', 'Gabaritando SETEC Campinas'), $this->headers)->assertOk();
 
         $user = User::findByEmail('aluno@example.com');
         $this->assertEqualsCanonicalizing([$agente->id, $monitor->id], $user->courses()->pluck('courses.id')->all());

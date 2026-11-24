@@ -103,7 +103,8 @@ class CourseForm
                     ->default('published')
                     ->required(),
                 TextInput::make('tutory_product_id')
-                    ->label('ID do produto na Tutory'),
+                    ->label('ID do produto na Tutory')
+                    ->helperText('Apenas informativo: a liberação do curso na compra é feita pelo nome do produto, não por este ID.'),
                 TextInput::make('combo_name')
                     ->label('Combo')
                     ->helperText('Use vírgula para mais de um combo. Quando o produto comprado/importado tiver um desses nomes, o aluno será vinculado a todos os cursos ativos desse combo. Ex.: Gabaritando Prefeitura de Santos, Combo Santos.'),

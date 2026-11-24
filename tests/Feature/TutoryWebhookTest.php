@@ -208,7 +208,7 @@ class TutoryWebhookTest extends TestCase
         $this->assertTrue($user->courses()->exists());
     }
 
-    public function test_approved_webhook_links_to_published_course_by_normalized_name_and_stores_product_id(): void
+    public function test_approved_webhook_links_to_published_course_by_normalized_name_without_storing_product_id(): void
     {
         Notification::fake();
 
@@ -232,11 +232,73 @@ class TutoryWebhookTest extends TestCase
         $user = User::where('email', 'joao@email.com')->firstOrFail();
 
         $this->assertTrue($user->courses()->whereKey($course)->exists());
-        $this->assertSame('produto-tutory-123', $course->fresh()->tutory_product_id);
+        $this->assertNull($course->fresh()->tutory_product_id);
         $this->assertSame(1, Course::query()->count());
     }
 
-    public function test_webhook_ignores_stale_product_id_when_product_name_matches_another_published_course(): void
+    public function test_webhook_matches_course_by_name_and_ignores_product_id(): void
+    {
+        Notification::fake();
+
+        $setec = Course::factory()->create([
+            'name' => 'Gabaritando SETEC Campinas - Agente',
+            'tutory_product_id' => 'produto-123',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+
+        $praiaGrande = Course::factory()->create([
+            'name' => 'Gabaritando Prefeitura de Praia Grande',
+            'tutory_product_id' => null,
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload([
+            'event_id' => 'evt_praia_grande',
+            'purchase' => [
+                'id' => 'purchase_praia_grande',
+                'product_id' => 'produto-123',
+                'product_name' => 'Gabaritando Prefeitura de Praia Grande',
+            ],
+        ]), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'joao@email.com')->firstOrFail();
+
+        $this->assertSame([$praiaGrande->id], $user->courses()->pluck('courses.id')->all());
+        $this->assertFalse($user->courses()->whereKey($setec)->exists());
+    }
+
+    public function test_similar_product_name_does_not_link_a_different_course(): void
+    {
+        Notification::fake();
+
+        $setec = Course::factory()->create([
+            'name' => 'Gabaritando Prefeitura Setec',
+            'status' => 'published',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/webhooks/tutory', $this->payload([
+            'event_id' => 'evt_praia_grande_sem_curso',
+            'purchase' => [
+                'id' => 'purchase_praia_grande_sem_curso',
+                'product_id' => 'qualquer-id',
+                'product_name' => 'Gabaritando Prefeitura Praia Grande',
+            ],
+        ]), [
+            'Authorization' => 'Bearer secret-local',
+        ])->assertOk();
+
+        $user = User::where('email', 'joao@email.com')->firstOrFail();
+
+        $this->assertFalse($user->courses()->whereKey($setec)->exists());
+        $this->assertSame(['Gabaritando Prefeitura Praia Grande'], $user->courses()->pluck('courses.name')->all());
+    }
+
+    public function test_webhook_replaces_provisional_course_when_product_name_matches_published_course(): void
     {
         Notification::fake();
 
@@ -270,7 +332,7 @@ class TutoryWebhookTest extends TestCase
             'purchase' => [
                 'id' => 'purchase_contagem',
                 'product_id' => 'produto-tutory-contagem',
-                'product_name' => 'Gabaritando Contagem',
+                'product_name' => 'Gabaritando Contagem - Assistente Administrativo',
             ],
         ]), [
             'Authorization' => 'Bearer secret-local',
@@ -280,7 +342,6 @@ class TutoryWebhookTest extends TestCase
 
         $this->assertTrue($student->courses()->whereKey($contagemCourse)->exists());
         $this->assertFalse($student->courses()->whereKey($staleCourse)->exists());
-        $this->assertSame('produto-tutory-contagem', $contagemCourse->fresh()->tutory_product_id);
     }
 
     public function test_generic_santos_combo_product_links_student_to_all_active_santos_courses(): void

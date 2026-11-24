@@ -71,10 +71,7 @@ class UserSpreadsheetImporter
     protected function resolveCourses(array $courses): array
     {
         return collect($courses)
-            ->flatMap(fn (array $courseData) => $this->courseAccessResolver->coursesForProduct(
-                $courseData['tutory_product_id'] ?? null,
-                $courseData['name'] ?? null,
-            ))
+            ->flatMap(fn (array $courseData) => $this->courseAccessResolver->coursesForProduct($courseData['name'] ?? null))
             ->unique('id')
             ->values()
             ->all();
@@ -84,7 +81,7 @@ class UserSpreadsheetImporter
     {
         return collect($courses)
             ->filter(fn (array $courseData): bool => $this->courseAccessResolver
-                ->coursesForProduct($courseData['tutory_product_id'] ?? null, $courseData['name'] ?? null)
+                ->coursesForProduct($courseData['name'] ?? null)
                 ->isEmpty())
             ->count();
     }

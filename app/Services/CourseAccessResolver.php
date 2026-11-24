@@ -8,7 +8,11 @@ use Illuminate\Support\Str;
 
 class CourseAccessResolver
 {
-    public function coursesForProduct(?string $productId, ?string $productName): Collection
+    /**
+     * O ID do produto da Tutory não é usado: os IDs vêm de outro sistema e não
+     * correspondem aos cursos daqui. A correspondência é feita apenas pelo nome.
+     */
+    public function coursesForProduct(?string $productName): Collection
     {
         $comboCourses = $this->coursesForCombo($productName);
 
@@ -16,7 +20,7 @@ class CourseAccessResolver
             return $comboCourses;
         }
 
-        $course = $this->courseForProduct($productId, $productName);
+        $course = $this->courseForProduct($productName);
 
         return $course ? collect([$course]) : collect();
     }
@@ -36,84 +40,28 @@ class CourseAccessResolver
             ->whereNotNull('combo_name')
             ->get()
             ->filter(fn (Course $course): bool => collect($this->normalizedComboNames((string) $course->combo_name))
-                ->contains(fn (string $courseComboName): bool => $this->comboNamesMatch($normalizedComboName, $courseComboName)))
+                ->contains($normalizedComboName))
             ->values();
     }
 
     /**
-     * Nomes de combo iguais após a normalização, ou quase iguais: tolera um erro de digitação
-     * pequeno (até 2 letras, em nomes longos) entre o produto da Tutory e o campo Combo do curso,
-     * como "Agnte de Transportes" x "Agente de Transportes". Números precisam ser idênticos,
-     * para que combos como "Turma 1" e "Turma 2" nunca se misturem.
+     * Procura o curso cujo nome é exatamente o nome do produto (ignorando só
+     * maiúsculas, acentos, pontuação e espaços extras).
      */
-    protected function comboNamesMatch(string $normalizedProductName, string $normalizedComboName): bool
+    public function courseForProduct(?string $productName): ?Course
     {
-        if ($normalizedProductName === $normalizedComboName) {
-            return true;
-        }
+        $normalizedProductName = $this->normalizedName((string) $productName);
 
-        if (mb_strlen($normalizedProductName) < 20 || mb_strlen($normalizedComboName) < 20) {
-            return false;
-        }
-
-        preg_match_all('/\d+/', $normalizedProductName, $productNumbers);
-        preg_match_all('/\d+/', $normalizedComboName, $comboNumbers);
-
-        if ($productNumbers[0] !== $comboNumbers[0]) {
-            return false;
-        }
-
-        return levenshtein($normalizedProductName, $normalizedComboName) <= 2;
-    }
-
-    public function courseForProduct(?string $productId, ?string $productName): ?Course
-    {
-        if (filled($productId)) {
-            $course = Course::query()
-                ->where('tutory_product_id', $productId)
-                ->orderByDesc('is_active')
-                ->orderByRaw("case when status = 'published' then 1 else 0 end desc")
-                ->get()
-                ->first(fn (Course $course): bool => blank($productName) || $this->namesAreCompatible($course->name, $productName));
-
-            if ($course) {
-                return $course;
-            }
-        }
-
-        if (filled($productId) && blank($productName)) {
-            $course = Course::query()
-                ->where('tutory_product_id', $productId)
-                ->orderByDesc('is_active')
-                ->orderByRaw("case when status = 'published' then 1 else 0 end desc")
-                ->first();
-
-            if ($course) {
-                return $course;
-            }
-        }
-
-        if (blank($productName)) {
+        if ($normalizedProductName === '') {
             return null;
         }
 
-        $normalizedProductName = $this->normalizedName($productName);
-
         return Course::query()
+            ->orderBy('id')
             ->get()
-            ->filter(fn (Course $course): bool => $this->normalizedName($course->name) === $normalizedProductName
-                || $this->namesAreCompatible($course->name, $productName))
+            ->filter(fn (Course $course): bool => $this->normalizedName((string) $course->name) === $normalizedProductName)
             ->sortByDesc(fn (Course $course): int => ((int) $course->is_active * 2) + ($course->status === 'published' ? 1 : 0))
             ->first();
-    }
-
-    public function rememberProductId(Course $course, ?string $productId): void
-    {
-        if (blank($productId) || filled($course->tutory_product_id)) {
-            return;
-        }
-
-        $course->forceFill(['tutory_product_id' => $productId])->save();
     }
 
     public function publishedEquivalentFor(Course $course): ?Course
@@ -123,18 +71,6 @@ class CourseAccessResolver
         }
 
         $normalizedName = $this->normalizedName($course->name);
-
-        if (filled($course->tutory_product_id)) {
-            $equivalentByProduct = Course::query()
-                ->where('is_active', true)
-                ->where('status', 'published')
-                ->where('tutory_product_id', $course->tutory_product_id)
-                ->first();
-
-            if ($equivalentByProduct) {
-                return $equivalentByProduct;
-            }
-        }
 
         return Course::query()
             ->where('is_active', true)
@@ -148,9 +84,6 @@ class CourseAccessResolver
         return Str::of($name)
             ->ascii()
             ->lower()
-            ->replaceMatches('/\b(curso|preparatorio|preparatório|pacote|combo|turma|online|completo|edital|pos[- ]?edital|p[oó]s[- ]?edital)\b/u', ' ')
-            ->replaceMatches('/\b(para|do|da|dos|das|de|e|a|o|as|os)\b/u', ' ')
-            ->replaceMatches('/\b(20\d{2})\b/u', ' ')
             ->replaceMatches('/[^a-z0-9]+/', ' ')
             ->squish()
             ->trim()
@@ -163,53 +96,6 @@ class CourseAccessResolver
             ->explode(',')
             ->map(fn (string $comboName): string => $this->normalizedName($comboName))
             ->filter()
-            ->values()
-            ->all();
-    }
-
-    protected function namesAreCompatible(string $courseName, string $productName): bool
-    {
-        $normalizedCourseName = $this->normalizedName($courseName);
-        $normalizedProductName = $this->normalizedName($productName);
-
-        if ($normalizedCourseName === '' || $normalizedProductName === '') {
-            return false;
-        }
-
-        if ($normalizedCourseName === $normalizedProductName) {
-            return true;
-        }
-
-        if (mb_strlen($normalizedCourseName) < 8 || mb_strlen($normalizedProductName) < 8) {
-            return false;
-        }
-
-        if (Str::contains($normalizedCourseName, $normalizedProductName)
-            || Str::contains($normalizedProductName, $normalizedCourseName)) {
-            return true;
-        }
-
-        $courseTokens = $this->nameTokens($normalizedCourseName);
-        $productTokens = $this->nameTokens($normalizedProductName);
-
-        if ($courseTokens === [] || $productTokens === []) {
-            return false;
-        }
-
-        $intersection = array_intersect($courseTokens, $productTokens);
-        $minimumSharedTokens = min(count($courseTokens), count($productTokens)) >= 3 ? 2 : 1;
-
-        return count($intersection) >= $minimumSharedTokens
-            && count($intersection) / max(1, min(count($courseTokens), count($productTokens))) >= 0.6;
-    }
-
-    protected function nameTokens(string $normalizedName): array
-    {
-        return Str::of($normalizedName)
-            ->explode(' ')
-            ->map(fn (string $token): string => trim($token))
-            ->filter(fn (string $token): bool => mb_strlen($token) >= 3)
-            ->unique()
             ->values()
             ->all();
     }

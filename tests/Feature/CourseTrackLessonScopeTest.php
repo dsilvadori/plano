@@ -80,17 +80,17 @@ class CourseTrackLessonScopeTest extends TestCase
             ->assertNotFound();
     }
 
-    public function test_course_access_resolver_matches_noisy_product_name(): void
+    public function test_course_access_resolver_requires_exact_product_name(): void
     {
         $course = Course::factory()->create([
             'name' => 'Oficial de Administração',
             'tutory_product_id' => null,
         ]);
 
-        $matched = app(CourseAccessResolver::class)
-            ->courseForProduct(null, 'Pacote Preparatório Oficial Administração 2026 - Online');
+        $resolver = app(CourseAccessResolver::class);
 
-        $this->assertTrue($course->is($matched));
+        $this->assertNull($resolver->courseForProduct('Pacote Preparatório Oficial Administração 2026 - Online'));
+        $this->assertTrue($course->is($resolver->courseForProduct('  OFICIAL de administracao ')));
     }
 
     protected function sharedTrackFixture(): array
