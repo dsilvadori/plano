@@ -1263,9 +1263,51 @@ class CourseSpreadsheetImporter
 
         $matchedLesson = $exactMatchedLesson ?? ($matchedLesson->first()['lesson'] ?? null);
 
-        return $matchedLesson
-            ?? $this->resolveReusableVideoLesson($title, $module, $track, $lessonData, $excludeLessonIds)
-            ?? $fallbackLesson;
+        if ($matchedLesson && $this->lessonHasReadyMedia($matchedLesson)) {
+            return $matchedLesson;
+        }
+
+        // A aula sem mídia (ex.: criada por uma importação anterior da planilha) não pode esconder
+        // o vídeo que chegou depois pela Biblioteca de Vídeos: sem isso ela fica pendente para sempre.
+        $videoLesson = $this->resolveReusableVideoLesson($title, $module, $track, $lessonData, $excludeLessonIds);
+        $lessonAwaitingMedia = $matchedLesson ?? $fallbackLesson;
+
+        if (! $videoLesson || ! $lessonAwaitingMedia) {
+            return $lessonAwaitingMedia ?? $videoLesson;
+        }
+
+        if (! $this->lessonCanReceiveLibraryVideo($lessonAwaitingMedia)) {
+            return $lessonAwaitingMedia;
+        }
+
+        return $this->attachLibraryVideoToLesson($lessonAwaitingMedia, $videoLesson);
+    }
+
+    /**
+     * Envio ou processamento em andamento já tem vídeo a caminho e não pode ser trocado.
+     */
+    protected function lessonCanReceiveLibraryVideo(Lesson $lesson): bool
+    {
+        return ! in_array($lesson->source_status, ['uploading', 'upload_queued', 'upload_failed', 'panda_processing'], true);
+    }
+
+    /**
+     * Liga o vídeo à aula que o curso já usa, mantendo o id dela (e o progresso dos alunos).
+     */
+    protected function attachLibraryVideoToLesson(Lesson $lesson, Lesson $videoLesson): Lesson
+    {
+        $lesson->fill([
+            'video_id' => $videoLesson->video_id,
+            'panda_video_id' => $videoLesson->panda_video_id,
+            'panda_embed_url' => $videoLesson->panda_embed_url,
+            'panda_player_url' => $videoLesson->panda_player_url,
+            'thumbnail_url' => $videoLesson->thumbnail_url ?: $lesson->thumbnail_url,
+            'duration_seconds' => (int) $videoLesson->duration_seconds > 0 ? $videoLesson->duration_seconds : $lesson->duration_seconds,
+            'source_status' => $videoLesson->source_status ?: 'media_ready',
+        ]);
+        $lesson->setRelation('video', Video::query()->find($videoLesson->video_id));
+
+        return $lesson;
     }
 
     protected function resolveReusableVideoLesson(string $title, CourseModule $module, ?CourseModuleTrack $track = null, array $lessonData = [], array $excludeLessonIds = []): ?Lesson

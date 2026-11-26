@@ -1337,6 +1337,46 @@ class CourseSpreadsheetImportTest extends TestCase
         $this->assertTrue($track->lessons()->whereKey($lesson->id)->exists());
     }
 
+    public function test_reimport_links_library_video_to_lesson_still_awaiting_media(): void
+    {
+        $csv = implode("\n", [
+            'course_name,module_name,module_type,module_sort_order,track_name,lesson_title,lesson_minutes',
+            'Curso Pendente,Português,basic,1,Crase,Crase - Casos Proibidos,16',
+        ]);
+        $path = tempnam(sys_get_temp_dir(), 'course-import-pending-').'.csv';
+        file_put_contents($path, $csv);
+
+        try {
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+            $track = $course->modules()->where('name', 'Português')->firstOrFail()
+                ->tracks()->where('name', 'Crase')->firstOrFail();
+            $pending = $track->lessons()->firstOrFail();
+            $this->assertSame('awaiting_media', $pending->source_status);
+
+            $video = Video::query()->create([
+                'title' => 'Crase - Casos Proibidos',
+                'slug' => 'crase-casos-proibidos',
+                'provider' => 'panda',
+                'provider_video_id' => 'panda-crase-proibidos',
+                'embed_url' => 'https://player.example.com/crase-proibidos',
+                'duration_seconds' => 960,
+                'source_status' => 'media_ready',
+                'metadata' => ['library_folder_path' => 'Português / Crase'],
+            ]);
+
+            $course = app(CourseSpreadsheetImporter::class)->import($path);
+        } finally {
+            @unlink($path);
+        }
+
+        $lesson = $course->modules()->where('name', 'Português')->firstOrFail()
+            ->tracks()->where('name', 'Crase')->firstOrFail()
+            ->lessons()->firstOrFail();
+
+        $this->assertSame('media_ready', $lesson->source_status);
+        $this->assertSame('panda-crase-proibidos', $lesson->panda_video_id ?: $lesson->video?->provider_video_id);
+    }
+
     public function test_spreadsheet_import_does_not_drop_good_title_match_by_duration_or_missing_search_token(): void
     {
         $existingLesson = Lesson::query()->create([
