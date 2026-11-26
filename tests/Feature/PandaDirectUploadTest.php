@@ -309,6 +309,145 @@ class PandaDirectUploadTest extends TestCase
         Queue::assertPushed(UploadDirectVideoToPanda::class, fn (UploadDirectVideoToPanda $job): bool => $job->lessonId === $lesson->id);
     }
 
+    public function test_admin_bulk_uploads_folder_creating_lessons_in_file_name_order(): void
+    {
+        Queue::fake();
+        $module = CourseModule::factory()->create(['course_id' => null, 'name' => 'Português']);
+        $track = CourseModuleTrack::query()->create([
+            'course_module_id' => $module->id,
+            'name' => 'Crase',
+            'slug' => 'crase',
+            'sort_order' => 1,
+            'status' => 'published',
+            'panda_folder_id' => self::FOLDER_ID,
+        ]);
+        $existing = $this->lessonWithoutMedia(['title' => '02 - Casos proibidos']);
+        $existing->tracks()->attach($track->id, ['sort_order' => 1]);
+        $this->actingAs(User::factory()->admin()->create());
+
+        Livewire::test(ListLessons::class)
+            ->callAction('bulkUploadVideosToPanda', data: [
+                'video_files' => [
+                    UploadedFile::fake()->create('10 - Revisão.mp4', 1024, 'video/mp4'),
+                    UploadedFile::fake()->create('02 - Casos proibidos.mp4', 1024, 'video/mp4'),
+                    UploadedFile::fake()->create('01_Introducao.mov', 1024, 'video/quicktime'),
+                    UploadedFile::fake()->create('3 - Exercícios.mp4', 1024, 'video/mp4'),
+                ],
+                'course_module_id' => $module->id,
+                'course_module_track_id' => $track->id,
+                'lesson_status' => 'published',
+                'skip_existing_titles' => true,
+            ])
+            ->assertHasNoActionErrors();
+
+        $created = $track->lessons()
+            ->whereKeyNot($existing->id)
+            ->orderByPivot('sort_order')
+            ->get();
+
+        $this->assertSame(['01 Introducao', '3 - Exercícios', '10 - Revisão'], $created->pluck('title')->all());
+        $this->assertSame([2, 3, 4], $created->pluck('pivot.sort_order')->map(fn ($order): int => (int) $order)->all());
+        $this->assertSame(1, Lesson::query()->where('title', '02 - Casos proibidos')->count(), 'Título repetido é pulado.');
+
+        foreach ($created as $lesson) {
+            $this->assertSame('published', $lesson->status);
+            $this->assertSame('upload_queued', $lesson->source_status);
+            $this->assertSame(self::FOLDER_ID, $lesson->metadata['panda_folder_id']);
+            Storage::disk('local')->assertExists($lesson->metadata['panda_direct_upload']['path']);
+        }
+
+        $this->assertSame('01_Introducao.mov', $created->first()->metadata['panda_direct_upload']['original_name']);
+        Queue::assertPushed(UploadDirectVideoToPanda::class, 3);
+        $this->assertCount(3, Storage::disk('local')->files('panda-uploads'), 'O arquivo pulado é apagado.');
+    }
+
+    public function test_bulk_upload_without_panda_folder_creates_nothing_and_discards_files(): void
+    {
+        Queue::fake();
+        $this->actingAs(User::factory()->admin()->create());
+
+        Livewire::test(ListLessons::class)
+            ->callAction('bulkUploadVideosToPanda', data: [
+                'video_files' => [
+                    UploadedFile::fake()->create('aula-1.mp4', 1024, 'video/mp4'),
+                    UploadedFile::fake()->create('aula-2.mp4', 1024, 'video/mp4'),
+                ],
+                'lesson_status' => 'draft',
+            ])
+            ->assertHasNoActionErrors();
+
+        $this->assertSame(0, Lesson::query()->count());
+        $this->assertSame([], Storage::disk('local')->files('panda-uploads'));
+        Queue::assertNothingPushed();
+    }
+
+    public function test_bulk_upload_without_panda_folder_does_not_create_new_folder_or_subfolder(): void
+    {
+        Queue::fake();
+        $this->actingAs(User::factory()->admin()->create());
+
+        Livewire::test(ListLessons::class)
+            ->callAction('bulkUploadVideosToPanda', data: [
+                'video_files' => [UploadedFile::fake()->create('aula-1.mp4', 1024, 'video/mp4')],
+                'course_module_id' => '__new_module__:Pasta Nova',
+                'course_module_track_id' => '__new_track__:Subpasta Nova',
+                'lesson_status' => 'draft',
+            ])
+            ->assertHasNoActionErrors();
+
+        $this->assertFalse(CourseModule::query()->where('name', 'Pasta Nova')->exists());
+        $this->assertFalse(CourseModuleTrack::query()->where('name', 'Subpasta Nova')->exists());
+        $this->assertSame(0, Lesson::query()->count());
+    }
+
+    public function test_bulk_upload_discards_lesson_when_video_cannot_be_queued(): void
+    {
+        Queue::fake();
+        $module = CourseModule::factory()->create(['course_id' => null, 'panda_folder_id' => self::FOLDER_ID]);
+        $this->partialMock(LessonDirectVideoUploader::class, function ($mock): void {
+            $mock->shouldReceive('queue')->andThrow(new RuntimeException('Fila indisponível.'));
+        });
+        $this->actingAs(User::factory()->admin()->create());
+
+        Livewire::test(ListLessons::class)
+            ->callAction('bulkUploadVideosToPanda', data: [
+                'video_files' => [UploadedFile::fake()->create('aula-1.mp4', 1024, 'video/mp4')],
+                'course_module_id' => $module->id,
+                'lesson_status' => 'draft',
+            ])
+            ->assertHasNoActionErrors();
+
+        $this->assertSame(0, Lesson::query()->count(), 'A aula sem vídeo na fila é descartada.');
+        $this->assertSame(0, $module->onlineLessons()->count());
+        $this->assertSame([], Storage::disk('local')->files('panda-uploads'));
+    }
+
+    public function test_bulk_upload_gives_unique_slugs_to_repeated_titles(): void
+    {
+        Queue::fake();
+        $module = CourseModule::factory()->create(['course_id' => null, 'panda_folder_id' => self::FOLDER_ID]);
+        $this->actingAs(User::factory()->admin()->create());
+
+        Livewire::test(ListLessons::class)
+            ->callAction('bulkUploadVideosToPanda', data: [
+                'video_files' => [
+                    UploadedFile::fake()->create('Aula.mp4', 1024, 'video/mp4'),
+                    UploadedFile::fake()->create('aula.mp4', 1024, 'video/mp4'),
+                ],
+                'course_module_id' => $module->id,
+                'lesson_status' => 'draft',
+                'skip_existing_titles' => false,
+            ])
+            ->assertHasNoActionErrors();
+
+        $lessons = Lesson::query()->orderBy('id')->get();
+
+        $this->assertCount(2, $lessons);
+        $this->assertSame(['aula', 'aula-2'], $lessons->pluck('slug')->all());
+        $this->assertTrue($lessons->every(fn (Lesson $lesson): bool => (int) $lesson->course_module_id === $module->id));
+        Queue::assertPushed(UploadDirectVideoToPanda::class, 2);
+    }
+
     /**
      * @return array{0: Lesson, 1: UploadDirectVideoToPanda}
      */
