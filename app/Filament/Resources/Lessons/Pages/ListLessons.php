@@ -12,6 +12,7 @@ use App\Models\Lesson;
 use App\Services\LessonDirectVideoUploader;
 use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
+use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -19,6 +20,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Throwable;
@@ -30,6 +32,8 @@ class ListLessons extends ListRecords
     protected const NEW_MODULE_PREFIX = '__new_module__:';
 
     protected const NEW_TRACK_PREFIX = '__new_track__:';
+
+    protected const BULK_UPLOAD_MAX_FILES = 100;
 
     protected function getHeaderActions(): array
     {
@@ -204,34 +208,12 @@ class ListLessons extends ListRecords
                         return;
                     }
 
-                    $title = trim((string) $data['title']);
-
-                    $lesson = Lesson::query()->create([
-                        'course_id' => null,
-                        'course_module_id' => null,
-                        'course_module_track_id' => null,
-                        'title' => $title,
-                        'slug' => Str::slug($title) ?: 'aula-'.Str::lower(Str::random(6)),
-                        'description' => 'Aula em vídeo.',
-                        'type' => 'video',
-                        'duration_seconds' => 0,
-                        'sort_order' => $track ? ((int) $track->lessons()->max('course_module_track_lessons.sort_order')) + 1 : 1,
-                        'status' => in_array($data['lesson_status'] ?? null, ['draft', 'published'], true) ? $data['lesson_status'] : 'draft',
-                        'source_status' => 'awaiting_media',
-                    ]);
-
-                    if ($track) {
-                        $lesson->tracks()->syncWithoutDetaching([
-                            $track->id => ['sort_order' => (int) $lesson->sort_order],
-                        ]);
-                    } elseif ($module) {
-                        $lesson->modules()->syncWithoutDetaching([
-                            $module->id => ['sort_order' => (int) $lesson->sort_order],
-                        ]);
-                    }
-
-                    LessonResource::syncPrimaryCatalogLinks($lesson);
-                    LessonResource::forgetCatalogCachesForLesson($lesson);
+                    $lesson = $this->createVideoLesson(
+                        trim((string) $data['title']),
+                        $module,
+                        $track,
+                        (string) ($data['lesson_status'] ?? 'draft'),
+                    );
 
                     try {
                         $uploader->queue(
@@ -259,8 +241,317 @@ class ListLessons extends ListRecords
 
                     $this->redirect(LessonResource::getUrl('edit', ['record' => $lesson]));
                 }),
+            Action::make('bulkUploadVideosToPanda')
+                ->label('Enviar pasta de vídeos')
+                ->icon('heroicon-o-folder-arrow-down')
+                ->modalHeading('Enviar vários vídeos ao Panda')
+                ->modalDescription('Cada vídeo vira uma aula, com o nome do arquivo como título e na ordem dos nomes (01, 02, 03...). Os envios ao Panda seguem em segundo plano, um de cada vez.')
+                ->modalSubmitActionLabel('Criar aulas e enviar')
+                ->modalWidth('3xl')
+                ->form(fn (): array => [
+                    FileUpload::make('video_files')
+                        ->label('Vídeos')
+                        ->multiple()
+                        ->maxFiles(self::BULK_UPLOAD_MAX_FILES)
+                        ->maxParallelUploads(2)
+                        ->appendFiles()
+                        ->panelLayout('grid')
+                        ->disk(LessonDirectVideoUploader::disk())
+                        ->directory(LessonDirectVideoUploader::directory())
+                        ->visibility('private')
+                        ->acceptedFileTypes(PandaVideoUploadForm::ACCEPTED_VIDEO_TYPES)
+                        ->maxSize(LessonDirectVideoUploader::maxSizeKilobytes())
+                        ->storeFileNamesIn('video_file_names')
+                        ->helperText('Arraste a pasta inteira para cá ou selecione vários arquivos (Ctrl+A na janela de arquivos). Até '.self::BULK_UPLOAD_MAX_FILES.' vídeos, cada um até '.((int) (LessonDirectVideoUploader::maxSizeKilobytes() / 1024)).' MB. Arquivos que não são vídeo são recusados. Aguarde todas as barras terminarem antes de confirmar e não feche a página.')
+                        ->required(),
+                    Select::make('course_module_id')
+                        ->label('Pasta')
+                        ->options(fn (): array => $this->moduleOptions(null))
+                        ->getSearchResultsUsing(fn (?string $search): array => $this->moduleSearchResults(null, $search))
+                        ->getOptionLabelUsing(fn ($value): ?string => $this->moduleOptionLabel($value))
+                        ->searchable()
+                        ->preload()
+                        ->live()
+                        ->nullable()
+                        ->helperText('Opcional. Digite um nome e pressione Enter para criar uma pasta nova.')
+                        ->afterStateUpdated(fn (Set $set) => $set('course_module_track_id', null)),
+                    Select::make('course_module_track_id')
+                        ->label('Subpasta')
+                        ->options(fn (Get $get): array => $this->trackOptions($get('course_module_id')))
+                        ->getSearchResultsUsing(fn (Get $get, ?string $search): array => $this->trackSearchResults($get('course_module_id'), $search))
+                        ->getOptionLabelUsing(fn ($value): ?string => $this->trackOptionLabel($value))
+                        ->searchable()
+                        ->preload()
+                        ->nullable()
+                        ->helperText('Opcional. As aulas entram no fim desta subpasta, na ordem dos nomes dos arquivos.')
+                        ->afterStateUpdated(fn ($state, Set $set) => $this->syncModuleFromTrack($state, $set)),
+                    Select::make('lesson_status')
+                        ->label('Status das aulas')
+                        ->options([
+                            'draft' => 'Rascunho',
+                            'published' => 'Publicado',
+                        ])
+                        ->default('draft')
+                        ->required(),
+                    TextInput::make('panda_folder_reference')
+                        ->label('Pasta no Panda')
+                        ->helperText('Aceita URL completa, ID ou nome da pasta. Se ficar vazio, usa a pasta Panda da subpasta ou da pasta escolhida. O envio para a raiz do Panda é bloqueado.')
+                        ->maxLength(2048),
+                    Toggle::make('create_panda_folder')
+                        ->label('Criar a pasta no Panda se ela não existir')
+                        ->helperText('Só vale quando a pasta for informada pelo nome.')
+                        ->default(false),
+                    Toggle::make('skip_existing_titles')
+                        ->label('Pular vídeos que já têm aula com o mesmo título no destino')
+                        ->helperText('Útil para reenviar uma pasta depois de uma falha sem duplicar aulas.')
+                        ->default(true),
+                ])
+                ->action(function (array $data, LessonDirectVideoUploader $uploader): void {
+                    $this->bulkUploadVideos($data, $uploader);
+                }),
             CreateAction::make(),
         ];
+    }
+
+    protected function bulkUploadVideos(array $data, LessonDirectVideoUploader $uploader): void
+    {
+        $files = $this->bulkUploadFiles($data);
+        $disk = Storage::disk(LessonDirectVideoUploader::disk());
+
+        if ($files === []) {
+            Notification::make()
+                ->title('Selecione pelo menos um vídeo.')
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        try {
+            // Resolve a pasta do Panda uma vez só, antes de criar pasta, subpasta ou aula aqui:
+            // se ela não existir, nada fica criado pela metade.
+            $folderId = $uploader->resolveFolderId(
+                $this->bulkUploadFolderReference($data),
+                (bool) ($data['create_panda_folder'] ?? false),
+            );
+
+            [$module, $track] = $this->resolveImportStructure($data, null);
+        } catch (Throwable $exception) {
+            $disk->delete(array_keys($files));
+
+            Notification::make()
+                ->title('Nenhum vídeo foi enviado ao Panda')
+                ->body($exception->getMessage())
+                ->danger()
+                ->persistent()
+                ->send();
+
+            return;
+        }
+
+        $skipExistingTitles = (bool) ($data['skip_existing_titles'] ?? true);
+        $existingTitles = $skipExistingTitles ? $this->existingLessonTitles($module, $track) : [];
+
+        $queued = [];
+        $skipped = [];
+        $failed = [];
+
+        foreach ($files as $path => $originalName) {
+            $title = $this->lessonTitleFromFileName($originalName);
+
+            if ($skipExistingTitles && isset($existingTitles[Str::lower($title)])) {
+                $disk->delete($path);
+                $skipped[] = $originalName;
+
+                continue;
+            }
+
+            $lesson = null;
+
+            try {
+                $lesson = $this->createVideoLesson($title, $module, $track, (string) ($data['lesson_status'] ?? 'draft'));
+                $uploader->queue($lesson, $path, $originalName, $folderId);
+
+                $existingTitles[Str::lower($title)] = true;
+                $queued[] = $originalName;
+            } catch (Throwable $exception) {
+                report($exception);
+                $disk->delete($path);
+                $this->discardLessonWithoutVideo($lesson);
+                $failed[] = $originalName.': '.$exception->getMessage();
+            }
+        }
+
+        $body = collect([
+            count($queued).' aula(s) criada(s) com vídeo na fila do Panda.',
+            $skipped !== [] ? count($skipped).' pulado(s) por já existir aula com o mesmo título: '.implode(', ', array_slice($skipped, 0, 10)).(count($skipped) > 10 ? '...' : '') : null,
+            $failed !== [] ? count($failed).' com erro: '.implode(' | ', array_slice($failed, 0, 5)).(count($failed) > 5 ? '...' : '') : null,
+            $queued !== [] ? 'Os envios seguem em segundo plano, um de cada vez. Acompanhe pelo status de origem de cada aula.' : null,
+        ])->filter()->implode("\n");
+
+        $notification = Notification::make()
+            ->title($queued !== [] ? 'Envio em massa iniciado.' : 'Nenhum vídeo foi enviado ao Panda.')
+            ->body($body)
+            ->persistent();
+
+        match (true) {
+            $failed !== [] && $queued === [] => $notification->danger(),
+            $failed !== [] || $skipped !== [] => $notification->warning(),
+            default => $notification->success(),
+        };
+
+        $notification->send();
+    }
+
+    /**
+     * Pasta do Panda informada no formulário, ou a da subpasta/pasta já existente escolhida.
+     * Pasta e subpasta novas ainda não têm pasta no Panda.
+     */
+    protected function bulkUploadFolderReference(array $data): ?string
+    {
+        if (filled($data['panda_folder_reference'] ?? null)) {
+            return (string) $data['panda_folder_reference'];
+        }
+
+        $trackValue = $data['course_module_track_id'] ?? null;
+        $moduleValue = $data['course_module_id'] ?? null;
+
+        $track = filled($trackValue) && ! $this->isNewTrackValue($trackValue)
+            ? CourseModuleTrack::query()->find((int) $trackValue)
+            : null;
+        $module = filled($moduleValue) && ! $this->isNewModuleValue($moduleValue)
+            ? CourseModule::query()->find((int) $moduleValue)
+            : null;
+
+        return $track?->panda_folder_id ?: $module?->panda_folder_id;
+    }
+
+    /**
+     * A aula criada para um vídeo que não entrou na fila ficaria pendente para sempre.
+     */
+    protected function discardLessonWithoutVideo(?Lesson $lesson): void
+    {
+        if (! $lesson?->exists) {
+            return;
+        }
+
+        try {
+            LessonResource::forgetCatalogCachesForLesson($lesson);
+            $lesson->tracks()->detach();
+            $lesson->modules()->detach();
+            $lesson->delete();
+        } catch (Throwable $exception) {
+            report($exception);
+        }
+    }
+
+    /**
+     * Arquivos enviados, em ordem natural pelo nome original (01, 02, ..., 10).
+     *
+     * @return array<string, string> caminho armazenado => nome original
+     */
+    protected function bulkUploadFiles(array $data): array
+    {
+        $paths = array_values(array_filter(
+            Arr::wrap($data['video_files'] ?? []),
+            fn ($path): bool => is_string($path) && $path !== '',
+        ));
+        $names = is_array($data['video_file_names'] ?? null) ? $data['video_file_names'] : [];
+
+        $files = [];
+
+        foreach ($paths as $path) {
+            $name = $names[$path] ?? null;
+            $files[$path] = is_string($name) && trim($name) !== '' ? trim($name) : basename($path);
+        }
+
+        uasort($files, fn (string $a, string $b): int => strnatcasecmp($a, $b));
+
+        return $files;
+    }
+
+    protected function lessonTitleFromFileName(string $fileName): string
+    {
+        $title = pathinfo($fileName, PATHINFO_FILENAME);
+        $title = preg_replace('/[_\s]+/u', ' ', $title) ?? $title;
+        $title = Str::limit(trim($title), 255, '');
+
+        return $title !== '' ? $title : 'Aula em vídeo';
+    }
+
+    /**
+     * @return array<string, true> títulos em minúsculas já usados no destino
+     */
+    protected function existingLessonTitles(?CourseModule $module, ?CourseModuleTrack $track): array
+    {
+        $query = match (true) {
+            $track !== null => $track->lessons(),
+            $module !== null => $module->onlineLessons(),
+            default => null,
+        };
+
+        if ($query === null) {
+            return [];
+        }
+
+        return $query->pluck('lessons.title')
+            ->mapWithKeys(fn (string $title): array => [Str::lower(trim($title)) => true])
+            ->all();
+    }
+
+    /**
+     * O slug é único por pasta principal da aula, que é definida depois pelos vínculos.
+     */
+    protected function uniqueLessonSlug(string $title, ?int $moduleId): string
+    {
+        $baseSlug = Str::slug($title) ?: 'aula-'.Str::lower(Str::random(6));
+        $slug = $baseSlug;
+        $suffix = 2;
+
+        while (Lesson::query()->where('course_module_id', $moduleId)->where('slug', $slug)->exists()) {
+            $slug = $baseSlug.'-'.$suffix;
+            $suffix++;
+        }
+
+        return $slug;
+    }
+
+    protected function createVideoLesson(string $title, ?CourseModule $module, ?CourseModuleTrack $track, string $status): Lesson
+    {
+        $sortOrder = match (true) {
+            $track !== null => ((int) $track->lessons()->max('course_module_track_lessons.sort_order')) + 1,
+            $module !== null => ((int) $module->onlineLessons()->max('course_module_lessons.sort_order')) + 1,
+            default => 1,
+        };
+
+        $lesson = Lesson::query()->create([
+            'course_id' => null,
+            'course_module_id' => null,
+            'course_module_track_id' => null,
+            'title' => $title,
+            'slug' => $this->uniqueLessonSlug($title, $track?->course_module_id ?? $module?->id),
+            'description' => 'Aula em vídeo.',
+            'type' => 'video',
+            'duration_seconds' => 0,
+            'sort_order' => $sortOrder,
+            'status' => in_array($status, ['draft', 'published'], true) ? $status : 'draft',
+            'source_status' => 'awaiting_media',
+        ]);
+
+        if ($track) {
+            $lesson->tracks()->syncWithoutDetaching([
+                $track->id => ['sort_order' => $sortOrder],
+            ]);
+        } elseif ($module) {
+            $lesson->modules()->syncWithoutDetaching([
+                $module->id => ['sort_order' => $sortOrder],
+            ]);
+        }
+
+        LessonResource::syncPrimaryCatalogLinks($lesson);
+        LessonResource::forgetCatalogCachesForLesson($lesson);
+
+        return $lesson;
     }
 
     protected function moduleOptions(mixed $courseId): array
